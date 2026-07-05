@@ -188,35 +188,6 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         m_currentResultSet = newSet;
         updateResults();
     });
-    
-    connect(m_controller, &ScanController::entryAdded, this, [this](std::shared_ptr<ResultSet> newSet, uint64_t key, int row) {
-        Q_UNUSED(key);
-        m_currentResultSet = newSet;
-        if (row <= m_displayCount) {
-            beginInsertRows(QModelIndex(), row, row);
-            m_displayCount++;
-            endInsertRows();
-        }
-    });
-
-    connect(m_controller, &ScanController::entryRemoved, this, [this](std::shared_ptr<ResultSet> newSet, uint64_t key, int row) {
-        Q_UNUSED(key);
-        m_currentResultSet = newSet;
-        if (row < m_displayCount) {
-            beginRemoveRows(QModelIndex(), row, row);
-            m_displayCount--;
-            endRemoveRows();
-        }
-    });
-
-    connect(m_controller, &ScanController::entryUpdated, this, [this](std::shared_ptr<ResultSet> newSet, uint64_t key, int row) {
-        Q_UNUSED(key);
-        m_currentResultSet = newSet;
-        if (row < m_displayCount) {
-            m_pendingRows.insert(row);
-            if (!m_throttleTimer->isActive()) m_throttleTimer->start();
-        }
-    });
 }
 ScanTableModel::~ScanTableModel() {}
 
@@ -776,8 +747,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     });
 
     // 2026-05-28 核心补丁：监听引擎增量信号，实现标题栏计数实时更新
-    connect(&MftReader::instance(), &MftReader::entryAdded, this, [this](uint32_t) { updateStatus("就绪"); });
-    connect(&MftReader::instance(), &MftReader::entryRemoved, this, [this](uint64_t) { updateStatus("就绪"); });
+    connect(&MftReader::instance(), &MftReader::entriesChangedBatch, this, [this]() { updateStatus("就绪"); });
 
     // 2026-05-16 物理重载：断开基类 Qt 置顶逻辑，改用 Win32 原生 SetWindowPos 以实现无损切换
     if (m_pinBtn) {

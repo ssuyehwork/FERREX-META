@@ -191,56 +191,43 @@ void ScanController::processBatchUpdates() {
         };
 
         if (ev.type == MftReader::ChangeEvent::Added) {
-            if (itPos != newSet->keyToPos.end()) continue; // 已存在
+            if (itPos != newSet->keyToPos.end()) continue;
             if (checkMatch(ev.index)) {
-                auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), ev.key, [this](uint64_t a, uint64_t b) {
-                    return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-                });
-                newSet->keys.insert(itInsert, ev.key);
+                newSet->keys.push_back(ev.key);
                 changed = true;
             }
         } else if (ev.type == MftReader::ChangeEvent::Removed) {
             if (itPos != newSet->keyToPos.end()) {
-                newSet->keys.erase(newSet->keys.begin() + itPos->second);
+                newSet->keys[itPos->second] = 0; // 标记删除
                 changed = true;
-                // 注意：由于我们在循环内修改了 keys 数组，原有的 keyToPos 映射对后续项失效了。
-                // 解决方案：在 Remove 之后立即清除或重建 keyToPos，或者在循环中仅标记删除，循环外统一处理。
-                // 这里为了简单，如果发生过 Remove/Update，循环内就不断全量 rebuild keyToPos (虽然慢，但在事件少于 1000 时可接受)
-                updateKeyToPosMapping(*newSet);
             }
         } else if (ev.type == MftReader::ChangeEvent::Updated) {
             bool matches = checkMatch(ev.index);
             if (itPos != newSet->keyToPos.end()) {
                 if (!matches) {
-                    newSet->keys.erase(newSet->keys.begin() + itPos->second);
-                    updateKeyToPosMapping(*newSet);
+                    newSet->keys[itPos->second] = 0; // 标记删除
+                    changed = true;
                 }
-                changed = true;
+                // 命中且匹配的情况，由于复合 Key 不变，SoA 数据由 MftReader 负责，此处无需操作
             } else if (matches) {
-                auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), ev.key, [this](uint64_t a, uint64_t b) {
-                    return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-                });
-                newSet->keys.insert(itInsert, ev.key);
-                updateKeyToPosMapping(*newSet);
+                newSet->keys.push_back(ev.key);
                 changed = true;
             }
         }
     }
 
     if (changed) {
-        // 批量处理后，执行一次全量同步
-        if (events.size() > 50) {
-            // 大量变动时，重新获取全量 keys 并排序最稳健
-            // 或者，如果只是少数 Add/Remove，在 newSet->keys 上做原地操作后 rebuild
-            updateKeyToPosMapping(*newSet);
-            m_resultSet = newSet;
-            emit resultsSwapped(newSet);
-        } else {
-            // 少数变动，为了保证 Model 动画，可以尝试逐个发射信号，但这里为了简单先统一处理
-            updateKeyToPosMapping(*newSet);
-            m_resultSet = newSet;
-            emit resultsSwapped(newSet);
-        }
+        // 物理清理标记删除的项
+        newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
+
+        // 重新排序
+        std::sort(newSet->keys.begin(), newSet->keys.end(), [this](uint64_t a, uint64_t b) {
+            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+        });
+
+        updateKeyToPosMapping(*newSet);
+        m_resultSet = newSet;
+        emit resultsSwapped(newSet);
     }
 }
 

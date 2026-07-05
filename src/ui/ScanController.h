@@ -65,9 +65,6 @@ signals:
     
     // 2026-06-xx 响应式信号 (携带原子快照，确保 Model 同步绝对安全)
     void resultsSwapped(std::shared_ptr<ResultSet> newSet);
-    void entryAdded(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
-    void entryRemoved(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
-    void entryUpdated(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
 
 private slots:
     void onMftEntryAdded(uint32_t index);
