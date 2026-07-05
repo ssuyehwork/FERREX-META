@@ -189,17 +189,11 @@ public:
         menu->setAttribute(Qt::WA_TranslucentBackground);
         menu->setWindowFlag(Qt::FramelessWindowHint);
         menu->setStyleSheet(
-            "QMenu { background-color: #1A1A1A; color: #CCC; border: 1px solid #333; padding: 4px; border-radius: 8px; }"
-            "QMenu::item { padding: 6px 30px 6px 10px; border-radius: 4px; font-size: 12px; }"
-            "QMenu::item:selected { background-color: #232D37; color: white; }"
-            "QMenu::separator { height: 1px; background: #333; margin: 4px 8px; }"
-            "QMenu::right-arrow { "
-            "  image: url(\"data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMTAyNCAxMDI0IiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxwYXRoIGQ9Ik0zNDEuMzMzIDUwLjY2N2w1MTIgNDYxLjMzMy01MTIgNDYxLjMzM3oiIGZpbGw9IiNGRkZGRkYiLz48L3N2Zz4=\"); "
-            "  width: 8px; height: 8px; "
-            "  subcontrol-origin: padding; "
-            "  subcontrol-position: center right; "
-            "  right: 10px; "
-            "}"
+            "QMenu { background-color: #2D2D2D; color: #EEE; border: 1px solid #444; padding: 4px; border-radius: 8px; }"
+            "QMenu::item { padding: 6px 25px 6px 10px; border-radius: 4px; font-size: 12px; }"
+            "QMenu::item:selected { background-color: #3E3E42; color: white; }"
+            "QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }"
+            "QMenu::right-arrow { image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRUVFRUVFIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBvbHlsaW5lIHBvaW50cz0iOSAxOCAxNSAxMiA5IDYiPjwvcG9seWxpbmU+PC9zdmc+); width: 12px; height: 12px; right: 8px; }"
         );
     }
 

@@ -574,16 +574,8 @@ int CategoryRepo::getUncategorizedItemCount() {
 
 QMap<QString, int> CategoryRepo::getSystemCounts() {
     if (m_isJsonMode) {
-        // 2026-05-29 逻辑优化 (Plan-45)：JSON 模式下优先尝试从 MetadataManager 回填数据库缺失的计数
         QMap<QString, int> counts;
         QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
-        
-        // 如果 items 表由于切换初始化未完成而为空，则触发一次基于 JSON 离散文件的物理索引补全
-        QSqlQuery qCheck("SELECT COUNT(*) FROM items", db);
-        if (qCheck.next() && qCheck.value(0).toInt() == 0) {
-            MetadataManager::instance().initFromJsonMode();
-        }
-
         double now = (double)QDateTime::currentMSecsSinceEpoch();
         double startOfToday = (double)QDateTime(QDate::currentDate(), QTime(0, 0)).toMSecsSinceEpoch();
         double startOfYesterday = (double)QDateTime(QDate::currentDate().addDays(-1), QTime(0, 0)).toMSecsSinceEpoch();
@@ -612,11 +604,15 @@ QMap<QString, int> CategoryRepo::getSystemCounts() {
         
         counts["uncategorized"] = getUncategorizedItemCount();
         
-        // 2026-05-29 性能优化：在 JSON 模式下，直接利用 MetadataManager 的 searchInCache 统计未标签项
-        // 杜绝 O(N) 的数据库全路径遍历查询，提升侧边栏加载速度。
-        counts["untagged"] = 0;
-        QSqlQuery qUntagged("SELECT COUNT(DISTINCT file_id_128) FROM items WHERE deleted=0 AND type='file' AND (tags IS NULL OR tags = '' OR tags = '[]')", db);
-        if (qUntagged.next()) counts["untagged"] = qUntagged.value(0).toInt();
+        QSqlQuery qFiles("SELECT path FROM items WHERE deleted=0 AND type='file'", db);
+        int untaggedCount = 0;
+        while (qFiles.next()) {
+            std::wstring path = qFiles.value(0).toString().toStdWString();
+            if (MetadataManager::instance().getMeta(path).tags.isEmpty()) {
+                untaggedCount++;
+            }
+        }
+        counts["untagged"] = untaggedCount;
         
         QSqlQuery qTags("SELECT COUNT(*) FROM tags", db);
         if (qTags.next()) counts["tags"] = qTags.value(0).toInt();
@@ -775,7 +771,7 @@ std::vector<std::string> CategoryRepo::getFileIdsRecursive(int categoryId) {
     return results;
 }
 
-bool CategoryRepo::syncDatabaseAndJson() {
+void CategoryRepo::syncDatabaseAndJson() {
     // 1. 获取 SQLite 数据库中的所有分类
     std::vector<Category> dbCats;
     {
@@ -923,17 +919,17 @@ bool CategoryRepo::syncDatabaseAndJson() {
     // 7. 保存更新后的 JSON
     root["categories"] = jsonCats;
     root["category_items"] = jsonItems;
-    if (!JsonCategoryEngine::saveCategoriesJson(root)) return false;
+    JsonCategoryEngine::saveCategoriesJson(root);
 
     // 2026-05-28 新增：对账后如果数据库被重置（items表为空），引导元数据恢复
     QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery qCheck("SELECT COUNT(*) FROM items", db);
     if (qCheck.next() && qCheck.value(0).toInt() == 0) {
-        qDebug() << "[Sync] 对账检测到数据库为空，正在引导 MetadataManager 从离散 JSON 恢复物理索引...";
-        // 2026-05-29 物理修复：数据库为空时，应强制从 JSON 离散元数据回填 items 表，否则计数必为 0
-        MetadataManager::instance().initFromJsonMode();
+        qDebug() << "[Sync] 对账检测到数据库为空，正在引导 MetadataManager 恢复物理索引...";
+        // 逻辑：此时 category_items 已从 JSON 恢复，但 items 为空。
+        // 调用 initFromDatabase 将触发 MetadataManager 对数据库的再次感应或尝试回填基础记录。
+        MetadataManager::instance().initFromDatabase();
     }
-    return true;
 }
 
 

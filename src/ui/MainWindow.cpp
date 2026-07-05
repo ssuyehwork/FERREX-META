@@ -160,11 +160,6 @@ MainWindow::MainWindow(QWidget* parent)
 void MainWindow::initUi() {
     initToolbar();
     setupSplitters();
-
-    // 2026-05-29 性能优化：ResizeEventFilter 仅针对 MainWindow 安装
-    if (m_resizeFilter) {
-        this->installEventFilter(m_resizeFilter);
-    }
     setupCustomTitleBarButtons();
     
     // 2026-04-11 按照用户要求：物理锁定侧边栏宽度，最大化时仅“内容”区拉伸
@@ -1083,8 +1078,9 @@ void MainWindow::initIdleDetector() {
     // 启动闲置计时
     m_idleTimer->start();
     
-    // 2026-05-29 性能优化：事件过滤器仅安装在 MainWindow 实例上，减少 qApp 全局事件分发的 overhead。
-    this->installEventFilter(this);
+    // 安装全局事件过滤器以感应操作（在 QApplication 级别感应更佳，这里先按窗口级实现）
+    qApp->installEventFilter(this);
+    qApp->installEventFilter(m_resizeFilter);
 }
 
 void MainWindow::navigateTo(const QString& path, bool record) {

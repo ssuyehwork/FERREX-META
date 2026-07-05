@@ -46,9 +46,9 @@ public:
 
 signals:
     void dataChanged(int index = -1);
-    void entryAdded(uint64_t key);   // 2026-05-29 新增：实时增量信号
-    void entryRemoved(uint64_t key); // 2026-05-29 新增：实时删除信号
-    void entryUpdated(uint64_t key); // 2026-05-29 新增：实时更新信号
+    void entryAdded(uint32_t index);   // 2026-05-28 性能优化：改用索引直接定位
+    void entryRemoved(uint64_t key);   // 2026-06-xx 新增：实时删除信号
+    void entryUpdated(uint32_t index); // 2026-05-28 性能优化：改用索引直接定位
     void driveLoaded(const QString& drive, int count, int total); // 2026-05-14 新增：驱动器就绪信号
 
 public:
@@ -64,7 +64,7 @@ public:
     bool isDriveIndexed(const QString& drive);
 
     // 查询接口 (支持驱动器掩码隔离)
-    // 2026-05-29 物理重构：返回稳定的复合 FRN 主键而非数组下标，杜绝跨线程索引漂移
+    // 2026-06-xx 物理重构：返回稳定的复合 FRN 主键而非数组下标，杜绝跨线程索引漂移
     std::vector<uint64_t> search(const QString& query, bool useRegex = false, bool caseSensitive = false, 
                                  const QStringList& extensionList = QStringList(), 
                                  bool includeHidden = true, bool includeSystem = true,
@@ -94,14 +94,10 @@ public:
 
     // USN 更新
     void updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& volume);
-    void updateEntriesFromUsnBatch(const std::vector<USN_RECORD_V2*>& records, const std::wstring& volume);
     void removeEntryByFrn(const std::wstring& volume, uint64_t frn);
     std::wstring getPathFast(size_t driveIdx, uint64_t frn);
 
 private:
-    // 2026-05-29 物理修复：提供无锁内部接口，解决嵌套调用引起的 QReadWriteLock 递归死锁
-    std::wstring getPathFastInternal(size_t driveIdx, uint64_t frn);
-
     MftReader();
     ~MftReader();
 
@@ -154,16 +150,7 @@ private:
     QHash<QString, QIcon>  m_icon_cache;
 
     bool m_isInitialized = false;
-    std::atomic<bool> m_is_saving{false};   // 防止并发存盘导致的文件损坏与性能竞争
-    std::atomic<bool> m_is_clearing{false}; // 标识是否处于异步清理过程中
-    
-    // 方案一：盘符级状态隔离 (隔离冲突)
-    std::atomic<uint32_t> m_drive_dirty_counts[32]{}; 
-
-    // 方案三：增量变更队列 (极致性能)
-    // 存储每个驱动器拥有的条目在主 SoA 数组中的索引
-    std::vector<uint32_t> m_drive_entry_indices[32];
-
+    uint32_t m_dirty_count = 0;
     size_t   m_dead_count = 0;
     size_t   m_wasted_string_bytes = 0;
     std::vector<uint32_t> m_sorted_indices;

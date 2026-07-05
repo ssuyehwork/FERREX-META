@@ -506,9 +506,6 @@ ContentPanel::ContentPanel(QWidget* parent)
      
     // 2026-04-12 深度修复：强制锁定过滤列为第 0 列（名称列），确保搜索逻辑不偏离 
     m_proxyModel->setFilterKeyColumn(0); 
-    // 2026-05-29 物理修复：开启动态排序，确保“置顶优先”逻辑能在数据加载后自动生效
-    m_proxyModel->setDynamicSortFilter(true);
-    m_proxyModel->sort(0, Qt::AscendingOrder);
  
     // 2026-06-05 按照要求：从配置中加载上次保存的缩放比例 
     m_zoomLevel = AppConfig::instance().getValue("UI/GridZoomLevel", 96).toInt(); 
@@ -1182,20 +1179,6 @@ void ContentPanel::onCustomContextMenuRequested(const QPoint& pos) {
         bool isPinned = currentIndex.data(IsLockedRole).toBool(); 
         menu.addAction(isPinned ? "取消置顶" : "置顶")->setData(isPinned ? ActionUnpin : ActionPin); 
  
-        QMenu* ratingMenu = menu.addMenu("评分");
-        UiHelper::applyMenuStyle(ratingMenu);
-        int currentRating = currentIndex.data(RatingRole).toInt();
-        for (int i = 0; i <= 5; ++i) {
-            QString star = (i == 0) ? "无评分" : QString(i, QChar(0x2605));
-            QAction* act = ratingMenu->addAction(star);
-            act->setData(ActionSetRating);
-            act->setProperty("value", i);
-            if (currentRating == i) {
-                act->setCheckable(true);
-                act->setChecked(true);
-            }
-        }
-
         // --- 2026-05-16 图像分析：从图中提取主色调 ---
         QString ext = QFileInfo(path).suffix().toLower();
         if (UiHelper::isGraphicsFile(ext)) {
@@ -1218,9 +1201,6 @@ void ContentPanel::onCustomContextMenuRequested(const QPoint& pos) {
         menu.addSeparator(); 
  
         // [通用编辑区] 
-        menu.addAction("编辑标签...")->setData(ActionEditTags);
-        menu.addAction("编辑备注...")->setData(ActionEditNote);
-        menu.addSeparator();
         menu.addAction("重命名")->setData(ActionRename); 
         menu.addAction("复制")->setData(ActionCopy); 
         menu.addAction("剪切")->setData(ActionCut); 
@@ -1259,27 +1239,6 @@ void ContentPanel::onCustomContextMenuRequested(const QPoint& pos) {
         QAction* actPaste = menu.addAction("粘贴"); 
         actPaste->setData(ActionPaste); 
         actPaste->setEnabled(!m_currentPath.isEmpty() && m_currentPath != "computer://"); 
-
-        menu.addSeparator();
-        QMenu* viewMenu = menu.addMenu("视图(V)");
-        UiHelper::applyMenuStyle(viewMenu);
-        QAction* gvAct = viewMenu->addAction("网格视图");
-        gvAct->setData(ActionViewGridView);
-        gvAct->setCheckable(true);
-        gvAct->setChecked(m_viewStack->currentIndex() == 0);
-        
-        QAction* lvAct = viewMenu->addAction("列表视图");
-        lvAct->setData(ActionViewListView);
-        lvAct->setCheckable(true);
-        lvAct->setChecked(m_viewStack->currentIndex() == 1);
-
-        QMenu* sortMenu = menu.addMenu("排序(S)");
-        UiHelper::applyMenuStyle(sortMenu);
-        sortMenu->addAction("名称")->setData(ActionSortName);
-        sortMenu->addAction("大小")->setData(ActionSortSize);
-        sortMenu->addAction("修改日期")->setData(ActionSortTime);
-
-        menu.addAction("刷新(R)")->setData(ActionRefresh);
  
         menu.addSeparator(); 
         QAction* actProp = menu.addAction("当前文件夹属性"); 
@@ -1333,55 +1292,6 @@ void ContentPanel::onCustomContextMenuRequested(const QPoint& pos) {
             } 
             break; 
         } 
-        case ActionSetRating: {
-            int rating = selectedAction->property("value").toInt();
-            auto indexes = view->selectionModel()->selectedIndexes();
-            for (const auto& idx : indexes) {
-                if (idx.column() == 0) {
-                    m_proxyModel->setData(idx, rating, RatingRole);
-                }
-            }
-            break;
-        }
-        case ActionEditTags: {
-            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
-            bool ok;
-            QString text = QInputDialog::getText(this, "编辑标签", "标签 (逗号分隔):", QLineEdit::Normal, meta.tags.join(","), &ok);
-            if (ok) {
-                auto indexes = view->selectionModel()->selectedIndexes();
-                QStringList tagList = text.split(",", Qt::SkipEmptyParts);
-                for (int i = 0; i < tagList.size(); ++i) tagList[i] = tagList[i].trimmed();
-                
-                for (const auto& idx : indexes) {
-                    if (idx.column() == 0) {
-                        QString itemPath = idx.data(PathRole).toString();
-                        MetadataManager::instance().setTags(itemPath.toStdWString(), tagList);
-                        // 触发模型更新
-                        m_proxyModel->setData(idx, QVariant(), TagsRole);
-                    }
-                }
-                ToolTipOverlay::instance()->showText(QCursor::pos(), "标签已更新", 1500, QColor("#2ecc71"));
-            }
-            break;
-        }
-        case ActionEditNote: {
-            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
-            bool ok;
-            QString text = QInputDialog::getMultiLineText(this, "编辑备注", "备注内容:", QString::fromStdWString(meta.note), &ok);
-            if (ok) {
-                auto indexes = view->selectionModel()->selectedIndexes();
-                for (const auto& idx : indexes) {
-                    if (idx.column() == 0) {
-                        QString itemPath = idx.data(PathRole).toString();
-                        MetadataManager::instance().setNote(itemPath.toStdWString(), text.toStdWString());
-                        // 备注变化目前没有对应的 Role 直接刷新，通常伴随 meta 刷新
-                        m_proxyModel->setData(idx, QVariant(), Qt::EditRole); 
-                    }
-                }
-                ToolTipOverlay::instance()->showText(QCursor::pos(), "备注已更新", 1500, QColor("#2ecc71"));
-            }
-            break;
-        }
         case ActionColorTag: { 
             QString colorName = selectedAction->property("colorName").toString(); 
             auto indexes = view->selectionModel()->selectedIndexes(); 
@@ -1619,12 +1529,6 @@ void ContentPanel::onCustomContextMenuRequested(const QPoint& pos) {
             ShellHelper::showProperties(onItem ? path : m_currentPath); 
             break; 
         } 
-        case ActionViewGridView: setViewMode(GridView); break;
-        case ActionViewListView: setViewMode(ListView); break;
-        case ActionSortName: m_proxyModel->sort(0, m_proxyModel->sortOrder()); break;
-        case ActionSortSize: m_proxyModel->sort(6, m_proxyModel->sortOrder()); break;
-        case ActionSortTime: m_proxyModel->sort(7, m_proxyModel->sortOrder()); break;
-        case ActionRefresh: loadDirectory(m_currentPath, m_isRecursive); break;
         default: break; 
     } 
 } 
@@ -1769,8 +1673,6 @@ void ContentPanel::loadDirectory(const QString& path, bool recursive) {
             driveRecords.push_back(r);
         } 
         m_model->setRecords(driveRecords);
-        // 2026-05-29 物理对齐：在加载“此电脑”后显式触发一次排序，确保置顶硬盘排在首位
-        m_proxyModel->sort(0, Qt::AscendingOrder);
         m_isLoading = false;
         recalculateAndEmitStats();
         return; 

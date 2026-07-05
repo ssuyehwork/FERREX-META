@@ -153,12 +153,12 @@ void ScanController::updateKeyToPosMapping(ResultSet& rs) {
     }
 }
 
-void ScanController::onMftEntryAdded(uint64_t key) {
+void ScanController::onMftEntryAdded(uint32_t index) {
+    uint64_t key = MftReader::instance().getKeyByIndex(index);
     std::lock_guard<std::mutex> lock(m_resultsMutex);
     if (m_resultSet->keyToPos.count(key)) return;
 
-    int idx = MftReader::instance().getIndexByKey(key);
-    if (idx == -1) return;
+    int idx = (int)index;
 
     bool matches = MftReader::instance().matchEntry(idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
                                                    m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
@@ -201,10 +201,11 @@ void ScanController::onMftEntryRemoved(uint64_t key) {
     }
 }
 
-void ScanController::onMftEntryUpdated(uint64_t key) {
+void ScanController::onMftEntryUpdated(uint32_t index) {
+    uint64_t key = MftReader::instance().getKeyByIndex(index);
     std::lock_guard<std::mutex> lock(m_resultsMutex);
     auto itPos = m_resultSet->keyToPos.find(key);
-    int idx = MftReader::instance().getIndexByKey(key);
+    int idx = (int)index;
     
     bool matches = (idx != -1) && MftReader::instance().matchEntry(idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
                                                                   m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,

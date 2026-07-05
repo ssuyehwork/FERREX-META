@@ -149,16 +149,7 @@ public:
         ActionRestore,
         ActionCopyPath,
         ActionProperties,
-        ActionExtractColor,
-        ActionSetRating,
-        ActionEditTags,
-        ActionEditNote,
-        ActionViewGridView,
-        ActionViewListView,
-        ActionSortName,
-        ActionSortSize,
-        ActionSortTime,
-        ActionRefresh
+        ActionExtractColor
     };
 
     explicit ContentPanel(QWidget* parent = nullptr);

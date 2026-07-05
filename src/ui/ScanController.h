@@ -70,9 +70,9 @@ signals:
     void entryUpdated(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
 
 private slots:
-    void onMftEntryAdded(uint64_t key);
+    void onMftEntryAdded(uint32_t index);
     void onMftEntryRemoved(uint64_t key);
-    void onMftEntryUpdated(uint64_t key);
+    void onMftEntryUpdated(uint32_t index);
 
 private:
     void performSearch();

@@ -684,31 +684,10 @@ void CategoryPanel::initUi() {
         m_btnSwitch->setProperty("tooltipText", "工作模式切换：当前为数据库模式");
     }
 
-    connect(m_btnSwitch, &QPushButton::clicked, this, [this](bool checked) {
-        // 2026-05-29 优化点 1：增加切换确认机制 (Plan-44)
-        QString modeName = checked ? "JSON 模式 (内存)" : "数据库模式";
-        FramelessConfirmDialog confirmDlg("模式切换确认", QString("切换到<b>%1</b>将重新加载数据引擎，是否继续？").arg(modeName), this);
-        if (confirmDlg.exec() != QDialog::Accepted) {
-            m_btnSwitch->blockSignals(true);
-            m_btnSwitch->setChecked(!checked);
-            m_btnSwitch->blockSignals(false);
-            return;
-        }
-
-        // 2026-05-29 优化点 2：增强切换时的视觉反馈 (UX)
-        m_btnSwitch->setEnabled(false);
-        m_btnSwitch->setIcon(UiHelper::getIcon("sync", WarningOrange)); // 临时旋转图标或等待图标
-
-        // 2026-05-29 优化点 3：异常处理与原子性保证
-        if (!CategoryRepo::syncDatabaseAndJson()) {
-            ToolTipOverlay::instance()->showText(QCursor::pos(), "<b style='color:#E74C3C;'>[ERROR] 双轨同步失败，已中止切换</b>", 2000, ErrorRed);
-            m_btnSwitch->blockSignals(true);
-            m_btnSwitch->setChecked(!checked);
-            m_btnSwitch->setIcon(UiHelper::getIcon(!checked ? "switch_on" : "switch_off", !checked ? SuccessGreen : TextDim));
-            m_btnSwitch->blockSignals(false);
-            m_btnSwitch->setEnabled(true);
-            return;
-        }
+    connect(m_btnSwitch, &QPushButton::toggled, this, [this](bool checked) {
+        
+        // 先发拉起物理对账同步，确保双轨数据一致、零数据落差平滑迁移！
+        CategoryRepo::syncDatabaseAndJson();
 
         if (checked) {
             m_btnSwitch->setIcon(UiHelper::getIcon("switch_on", SuccessGreen));
@@ -736,10 +715,6 @@ void CategoryPanel::initUi() {
         if (m_categoryModel) {
             m_categoryModel->refresh();
         }
-
-        m_btnSwitch->setEnabled(true);
-        // 2026-05-29 优化点 4：状态栏/气泡即时反馈
-        ToolTipOverlay::instance()->showText(QCursor::pos(), QString("<b style='color:#2ecc71;'>已切换至 %1</b>").arg(modeName), 1500, QColor("#2ecc71"));
     });
     headerLayout->addWidget(m_btnSwitch, 0, Qt::AlignVCenter);
 

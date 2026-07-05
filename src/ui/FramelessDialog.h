@@ -66,15 +66,6 @@ private:
     QLineEdit* m_edit;
 };
 
-/**
- * @brief 无边框确认/消息对话框
- */
-class FramelessConfirmDialog : public FramelessDialog {
-    Q_OBJECT
-public:
-    explicit FramelessConfirmDialog(const QString& title, const QString& message, QWidget* parent = nullptr);
-};
-
 } // namespace ArcMeta
 
 #endif // FRAMELESSDIALOG_H

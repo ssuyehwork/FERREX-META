@@ -516,7 +516,12 @@ ScanDialog::ScanDialog(QWidget* parent)
             ); 
             connect(viewBtn, &QPushButton::clicked, this, [this, viewBtn]() { 
                 QMenu* menu = new QMenu(this); 
-                UiHelper::applyMenuStyle(menu);
+                menu->setStyleSheet( 
+                    "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; }" 
+                    "QMenu::item { padding: 6px 24px; }" 
+                    "QMenu::item:selected { background: #2A2A2A; color: #FFF; }" 
+                    "QMenu::item:checked { color: #FF8C00; }" 
+                ); 
                 struct ViewDef { QString label; int stackIdx; int size; }; 
                 for (auto& v : QList<ViewDef>{ 
                     {"超大图标", 1, 192}, {"大图标", 1, 128}, {"中图标", 1, 64}, 
@@ -756,6 +761,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     connect(&MftReader::instance(), &MftReader::driveLoaded, this, [this](const QString& drive, int count, int total) {
         updateStatus(QString("正在加载快照 %1 (%2)...").arg(drive).arg(formatNumber(count)), true, total);
     });
+
+    // 2026-05-28 核心补丁：监听引擎增量信号，实现标题栏计数实时更新
+    connect(&MftReader::instance(), &MftReader::entryAdded, this, [this](uint32_t) { updateStatus("就绪"); });
+    connect(&MftReader::instance(), &MftReader::entryRemoved, this, [this](uint64_t) { updateStatus("就绪"); });
 
     // 2026-05-16 物理重载：断开基类 Qt 置顶逻辑，改用 Win32 原生 SetWindowPos 以实现无损切换
     if (m_pinBtn) {
@@ -1202,7 +1211,7 @@ void ScanDialog::updateDriveButtonStyles() {
 
 void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/) {
     QMenu menu(this);
-    UiHelper::applyMenuStyle(&menu);
+    menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
     
     bool isDefault = m_config.defaultDrives.contains(drive);
     menu.addAction(isDefault ? "取消默认选项" : "设为默认选项", [this, drive, isDefault]() {
@@ -1226,7 +1235,7 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
 void ScanDialog::onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos) {
     Q_UNUSED(pos);
     QMenu menu(this);
-    UiHelper::applyMenuStyle(&menu);
+    menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
     menu.addAction("恢复驱动器", [this, drive]() {
         m_config.ignoredDrives.remove(drive);
         m_config.save();
@@ -1259,7 +1268,7 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     }
     
     QMenu menu(this);
-    UiHelper::applyMenuStyle(&menu);
+    menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
 
     if (!selectedRows.isEmpty()) {
         int count = selectedRows.size();
@@ -1313,7 +1322,6 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
             auto meta = MetadataManager::instance().getMeta(path);
 
             QMenu* ratingMenu = menu.addMenu("评分");
-            UiHelper::applyMenuStyle(ratingMenu);
             for (int i = 0; i <= 5; ++i) {
                 QString star = (i == 0) ? "无评分" : QString(i, QChar(0x2605));
                 QAction* act = ratingMenu->addAction(star, [this, path, i]() {
@@ -1324,7 +1332,6 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
             }
 
             QMenu* labelMenu = menu.addMenu("标记颜色");
-            UiHelper::applyMenuStyle(labelMenu);
             
             // --- 2026-05-16 图像分析：从图中提取主色调 ---
             QString ext = QFileInfo(QString::fromStdWString(path)).suffix().toLower();
@@ -1428,7 +1435,6 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
-    UiHelper::applyMenuStyle(viewMenu);
     QActionGroup* viewGroup = new QActionGroup(this);
     
     auto addViewAction = [this, viewMenu, viewGroup](const QString& text, const QString& shortcut, int stackIdx, int iconSize) {
@@ -1471,7 +1477,6 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     }
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
-    UiHelper::applyMenuStyle(sortMenu);
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};
     for (int i = 0; i < sortOptions.size(); ++i) {
         QAction* act = sortMenu->addAction(sortOptions[i]);
@@ -1764,7 +1769,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
         
         if (!history.isEmpty()) {
             QMenu menu(this);
-            UiHelper::applyMenuStyle(&menu);
+            menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
             
             for (const QString& item : history) {
                 menu.addAction(item, [this, isQuery, item]() {
