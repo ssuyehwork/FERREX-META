@@ -1,0 +1,97 @@
+# 默认忽略所有文件夹
+*/
+
+# 允许上传 resources 和 src 文件夹及其所有内容
+!resources/
+!resources/**
+!src/
+!src/**
+!仅供参考-不可修改/
+!仅供参考-不可修改/**
+!ferrex_source-原版/
+!ferrex_source-原版/**
+!FERREX-Rust-原版/
+!FERREX-Rust-原版/**
+!mainwindowUI参数/
+!mainwindowUI参数/**
+!jules_510/
+!jules_510/**
+!src - 副本/
+!src - 副本/**
+!Eagle/
+!Eagle/**
+
+!.cargo/
+!.cargo/**
+!crates/
+!crates/**
+!ferrex_cli/
+!ferrex_cli/**
+!ferrex_gui/
+!ferrex_gui/**
+!ArcMeta-参考版/
+!ArcMeta-参考版/**
+!旧版本-2/
+!旧版本-2/**
+!旧版本-3/
+!旧版本-3/**
+
+# 忽略构建目录
+build/
+build-*/
+Z 作废/
+Z 作废-*/
+attachments/
+attachments-*/
+J 禁止上传/
+J 禁止上传-*/
+backups/
+backups-*/
+.vs-*/
+.vs/
+.qtcreator/
+OCR/
+Cache/
+Cache-*/
+
+# 忽略 Qt Creator 配置
+.qtcreator/
+*.pro.user
+*.qbs.user
+*.creator.user
+*.creator
+*.user
+
+# 忽略临时文件
+*.obj
+*.o
+*.log
+*.cache
+*.tmp
+*.bak
+*.db
+*.exe
+*.zip
+*.dll
+*.dat
+*.db-shm
+*.dmp
+*.BridgeSort
+*.BridgeLabelsAndRatings
+
+# 忽略 CMake 生成内容
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# 忽略 VS 相关
+*.pdb
+*.ilk
+*.idb
+*.suo
+*.ncb
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb

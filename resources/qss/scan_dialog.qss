@@ -1,0 +1,121 @@
+/* ScanDialog 专用样式 */
+QWidget#ScanDialogContent {
+    background-color: #1E1E1E;
+}
+
+QWidget#SearchContainer, QWidget#DriveContainer, QStackedWidget#ViewStack { 
+    background: transparent; border: none; 
+}
+
+#mainSearchEdit, #extSearchEdit { 
+    background: #2D2D2D; 
+    border: 1px solid #3F3F3F; 
+    border-radius: 6px; 
+    color: #EEE; 
+    font-size: 14px; 
+    padding: 0 10px;
+    outline: none;
+}
+
+#mainSearchEdit:focus, #extSearchEdit:focus { border: 1px solid #FF8C00 !important; }
+#mainSearchEdit:hover, #extSearchEdit:hover { border: 1px solid #555; }
+
+#mainSearchEdit::placeholder, #extSearchEdit::placeholder {
+    color: rgba(238, 238, 238, 0.3);
+}
+
+QPushButton#searchIconButton { 
+    background: #FF8C00; 
+    border: 1px solid #FF8C00;
+    border-radius: 6px; 
+    color: #000;
+    font-weight: bold;
+    padding: 0 15px;
+} 
+QPushButton#searchIconButton:hover { background: #FFA500; } 
+QPushButton#searchIconButton:pressed { background: #CC6600; }
+
+QPushButton[isActive="true"] {
+    background: rgba(255, 140, 0, 30); 
+    color: #FF8C00; 
+    border: 1px solid #FF8C00; 
+    padding: 0 10px; 
+    font-size: 12px; 
+    font-weight: bold;
+    border-radius: 4px;
+}
+QPushButton[isActive="false"] {
+    background: #111519; 
+    color: #7A8F9E; 
+    border: 1px solid #252E37; 
+    padding: 0 10px; 
+    font-size: 12px;
+    border-radius: 4px;
+}
+
+QProgressBar#ScanProgressBar { background: transparent; border: none; } 
+QProgressBar#ScanProgressBar::chunk { background: #FF8C00; }
+
+QCheckBox { color: #AAA; }
+
+#PageBtn {
+    background: #2D2D2D; 
+    color: #CCC; 
+    border: 1px solid #3F3F3F; 
+    border-radius: 4px;
+}
+#PageBtn:hover { background: #3F3F3F; }
+#PageBtn:disabled { color: #555; border-color: #2D2D2D; }
+
+QTableView#ScanResultView {
+    background-color: #1E1E1E;
+    alternate-background-color: #000000;
+    border: 1px solid #333;
+    color: #D4D4D4;
+    selection-background-color: #094771;
+    selection-color: #FFFFFF;
+    outline: none;
+    gridline-color: transparent;
+    padding: 10px 0 0 10px;
+}
+
+QTableView#ScanResultView::item { 
+    border-bottom: 1px solid #252526; 
+}
+
+QHeaderView::section { 
+    background-color: #252526; 
+    color: #888; 
+    border: none; 
+    border-right: 1px solid #333; 
+    padding: 4px; 
+    height: 24px; 
+}
+
+QHeaderView::section:horizontal:first { 
+    padding-left: 14px; 
+}
+
+QHeaderView { 
+    background-color: #252526; 
+    border: none; 
+}
+
+QListView#ScanIconView { 
+    background-color: #1E1E1E; 
+    border: 1px solid #333; 
+    color: #D4D4D4; 
+    outline: none; 
+    padding: 10px 0 0 10px; 
+}
+
+QListView#ScanIconView::item:hover { 
+    background-color: #2D2D2D; 
+    border-radius: 4px; 
+}
+
+QListView#ScanIconView::item:selected { 
+    background-color: #094771; 
+    border-radius: 4px; 
+    color: #FFFFFF; 
+}
