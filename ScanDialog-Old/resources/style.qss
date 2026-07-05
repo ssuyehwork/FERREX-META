@@ -1,0 +1,99 @@
+/* 全局基础样式 */
+QMainWindow { background-color: #1E1E1E; color: #EEEEEE; }
+
+/* 标题栏与导航栏切割线 */
+#TitleBar {
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #333333;
+}
+#NavBar {
+    background-color: #1E1E1E;
+    border-bottom: 1px solid #333333;
+}
+
+/* 核心容器样式 - 强化 1 像素物理切割感 */
+#SidebarContainer, #ListContainer, #EditorContainer, #MetadataContainer, #FilterContainer {
+    background-color: #1E1E1E;
+    border: 1px solid #333333;
+    border-radius: 0px;
+    color: #EEEEEE;
+}
+
+/* 容器标题栏样式 (回归绝对直角设计) */
+#ContainerHeader {
+    background-color: #252526;
+    border-bottom: 1px solid #333333;
+    border-top-left-radius: 0px;
+    border-top-right-radius: 0px;
+}
+
+/* 底部状态栏 */
+#StatusBar {
+    background-color: #252525;
+    border-top: 1px solid #333333;
+}
+
+/* 全局滚动条美化 (基于 Memories.md 规范) */
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 7px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #333333;
+    min-height: 20px;
+    border-radius: 3px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #444444;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 7px;
+    margin: 0px;
+}
+QScrollBar::handle:horizontal {
+    background: #333333;
+    min-width: 20px;
+    border-radius: 3px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #444444;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
+/* 统一复选框样式 */
+QCheckBox { color: #EEEEEE; font-size: 12px; spacing: 5px; }
+QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #444; border-radius: 2px; background: #1E1E1E; }
+QCheckBox::indicator:hover { border: 1px solid #666; }
+QCheckBox::indicator:checked { 
+    border: 1px solid #378ADD; 
+    background: #1E1E1E; 
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzc4QUREIiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSIyMCA2IDkgMTcgNCAxMiI+PC9wb2x5bGluZT48L3N2Zz4=);
+}
+
+/* 统一输入框与多行文本框样式，应用 6px 圆角规范 */
+QLineEdit, QPlainTextEdit, QTextEdit {
+    background: #1E1E1E;
+    border: 1px solid #333333;
+    border-radius: 6px;
+    color: #EEEEEE;
+    padding-left: 8px;
+}
+QLineEdit:focus {
+    border: 1px solid #378ADD;
+}

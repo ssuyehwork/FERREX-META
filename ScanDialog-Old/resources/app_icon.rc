@@ -1,0 +1,6 @@
+IDI_ICON1 ICON "app_icon.ico"
+
+// 2026-03-xx 按照用户要求：MSVC 环境下移除手动清单定义，避免链接冲突。
+// 清单加载已迁移至 CMakeLists.txt 中通过链接器选项实现。
+// #include <windows.h>
+// 1 RT_MANIFEST "app.manifest"
