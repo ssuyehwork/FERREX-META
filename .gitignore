@@ -39,8 +39,8 @@
 # 忽略构建目录
 build/
 build-*/
-Z 作废/
-Z 作废-*/
+作废/
+作废-*/
 attachments/
 attachments-*/
 J 禁止上传/
