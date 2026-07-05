@@ -73,6 +73,7 @@ private slots:
     void onMftEntryAdded(uint32_t index);
     void onMftEntryRemoved(uint64_t key);
     void onMftEntryUpdated(uint32_t index);
+    void processBatchUpdates();
 
 private:
     void performSearch();
@@ -87,6 +88,16 @@ private:
     mutable std::mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;
+    QTimer* m_batchTimer = nullptr;
+
+    struct PendingEvent {
+        enum Type { Add, Remove, Update } type;
+        uint64_t key;
+        uint32_t index; // Only for Add/Update
+    };
+    std::vector<PendingEvent> m_pendingEvents;
+    std::mutex m_pendingMutex;
+
     QFutureWatcher<std::vector<uint64_t>> m_watcher;
     QFutureWatcher<std::vector<uint64_t>> m_sortWatcher;
 };

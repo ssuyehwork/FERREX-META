@@ -46,9 +46,7 @@ public:
 
 signals:
     void dataChanged(int index = -1);
-    void entryAdded(uint32_t index);   // 2026-05-28 性能优化：改用索引直接定位
-    void entryRemoved(uint64_t key);   // 2026-06-xx 新增：实时删除信号
-    void entryUpdated(uint32_t index); // 2026-05-28 性能优化：改用索引直接定位
+    void entriesChangedBatch();        // 2026-06-xx 新增：批量变动信号，解决信号风暴
     void driveLoaded(const QString& drive, int count, int total); // 2026-05-14 新增：驱动器就绪信号
 
 public:
@@ -95,6 +93,14 @@ public:
     // USN 更新
     void updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& volume);
     void removeEntryByFrn(const std::wstring& volume, uint64_t frn);
+
+    // 变动日志访问 (供 Controller 批量拉取)
+    struct ChangeEvent {
+        enum Type { Added, Removed, Updated } type;
+        uint64_t key;
+        uint32_t index;
+    };
+    std::vector<ChangeEvent> pullChangeJournal();
     std::wstring getPathFast(size_t driveIdx, uint64_t frn);
 
 private:
@@ -136,6 +142,7 @@ private:
 
     std::vector<std::wstring> m_drive_list;
     std::atomic<uint32_t>     m_drive_active_mask{0}; // 驱动器过滤掩码 (位图)
+    std::atomic<uint64_t>     m_generation{0};        // 数据代数，用于检测 compact
 
     std::unordered_map<uint64_t, uint32_t>              m_frn_to_idx;
 
@@ -151,6 +158,10 @@ private:
 
     bool m_isInitialized = false;
     uint32_t m_dirty_count = 0;
+
+    std::vector<ChangeEvent> m_changeJournal;
+    std::mutex               m_journalMutex;
+    QTimer*                  m_notifyTimer = nullptr;
     size_t   m_dead_count = 0;
     size_t   m_wasted_string_bytes = 0;
     std::vector<uint32_t> m_sorted_indices;

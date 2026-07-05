@@ -70,6 +70,11 @@ MftReader& MftReader::instance() {
 
 MftReader::MftReader() {
     clearInternal();
+    m_notifyTimer = new QTimer(this);
+    m_notifyTimer->setInterval(150); // 150ms 聚合通知
+    connect(m_notifyTimer, &QTimer::timeout, this, [this]() {
+        emit entriesChangedBatch();
+    });
 }
 
 MftReader::~MftReader() {
@@ -564,8 +569,10 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, bool caseSensitive, 
                                        const QStringList& extensionList, bool includeHidden, bool includeSystem,
                                        bool includeDollar) {
-    QReadLocker lock(&m_dataLock);
-    if (!m_isInitialized) return {};
+    {
+        QReadLocker lock(&m_dataLock);
+        if (!m_isInitialized) return {};
+    }
 
     bool hasQuery = !query.isEmpty();
     bool hasExt = !extensionList.isEmpty();
@@ -598,22 +605,30 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<size_t> chunkIndices(numChunks);
     std::iota(chunkIndices.begin(), chunkIndices.end(), 0);
 
-    // 2026-06-xx 极致算法重构：返回稳定的复合 FRN 主键
+    // 2026-06-xx 极致算法重构：分块加锁搜索
+    // 不再持有全局读锁，而是在并行的分块任务内部按需加锁，允许 USN 写入线程在分块间隙插队
     if (hasQuery && !useRegex && !caseSensitive && !hasExt) {
-        auto it_start = std::lower_bound(m_sorted_indices.begin(), m_sorted_indices.end(), queryUtf8.constData(), 
+        std::vector<uint32_t> sortedIndicesSnapshot;
+        {
+            QReadLocker lock(&m_dataLock);
+            sortedIndicesSnapshot = m_sorted_indices;
+        }
+
+        auto it_start = std::lower_bound(sortedIndicesSnapshot.begin(), sortedIndicesSnapshot.end(), queryUtf8.constData(),
             [this](uint32_t idx, const char* q) {
+                QReadLocker lock(&m_dataLock);
                 const char* name = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[idx]);
                 return _strnicmp(name, q, strlen(q)) < 0;
             });
         
-        for (auto it = it_start; it != m_sorted_indices.end(); ++it) {
+        for (auto it = it_start; it != sortedIndicesSnapshot.end(); ++it) {
+            QReadLocker lock(&m_dataLock);
             uint32_t i = *it;
-            if (m_frns[i] == 0) continue;
+            if (i >= m_frns.size() || m_frns[i] == 0) continue;
             
             const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
             if (_strnicmp(p, queryUtf8.constData(), queryUtf8.size()) != 0) break; 
 
-            // $ 过滤
             if (!includeDollar && p[0] == '$') continue;
 
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
@@ -626,77 +641,62 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
             finalRes.push_back(makeKey(dIdx, m_frns[i]));
             if (finalRes.size() > 200000) break; 
         }
-
-        for (size_t i = m_sorted_indices.size(); i < m_frns.size(); ++i) {
-            if (m_frns[i] == 0) continue;
-            const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
-            if (_strnicmp(p, queryUtf8.constData(), queryUtf8.size()) == 0) {
-                // $ 过滤
-                if (!includeDollar && p[0] == '$') continue;
-
-                size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-                if (dIdx >= 32 || !(m_drive_active_mask.load(std::memory_order_relaxed) & (1 << dIdx))) continue;
-                uint32_t at = m_attributes[i];
-                if (!includeHidden && (at & FILE_ATTRIBUTE_HIDDEN)) continue;
-                if (!includeSystem && (at & FILE_ATTRIBUTE_SYSTEM)) continue;
-                finalRes.push_back(makeKey(dIdx, m_frns[i]));
-            }
-        }
     } else {
-        std::for_each((std::execution::par), chunkIndices.begin(), chunkIndices.end(), [&](size_t chunkIdx) {
+        size_t currentTotal = 0;
+        { QReadLocker lock(&m_dataLock); currentTotal = m_frns.size(); }
+
+        size_t numChunks = (currentTotal + grainSize - 1) / grainSize;
+        std::vector<size_t> chunks(numChunks);
+        std::iota(chunks.begin(), chunks.end(), 0);
+
+        std::for_each((std::execution::par), chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
-            localRes.reserve(grainSize / 16);
             size_t startPos = chunkIdx * grainSize;
-            size_t endPos = (std::min)(startPos + grainSize, total);
 
-            for (size_t i = startPos; i < endPos; ++i) {
-                if (m_frns[i] == 0) continue;
-                
-                size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-                if (dIdx >= 32 || !(m_drive_active_mask.load(std::memory_order_relaxed) & (1 << dIdx))) continue;
+            {
+                QReadLocker lock(&m_dataLock);
+                size_t endPos = (std::min)(startPos + grainSize, m_frns.size());
 
-                uint32_t at = m_attributes[i];
-                if (!includeHidden && (at & FILE_ATTRIBUTE_HIDDEN)) continue;
-                if (!includeSystem && (at & FILE_ATTRIBUTE_SYSTEM)) continue;
+                for (size_t i = startPos; i < endPos; ++i) {
+                    if (m_frns[i] == 0) continue;
 
-                const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
-                
-                // $ 过滤
-                if (!includeDollar && p[0] == '$') continue;
+                    size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
+                    if (dIdx >= 32 || !(m_drive_active_mask.load(std::memory_order_relaxed) & (1 << dIdx))) continue;
 
-                if (!hasQuery && !hasExt) {
-                    localRes.push_back(makeKey(dIdx, m_frns[i]));
-                    continue;
-                }
+                    uint32_t at = m_attributes[i];
+                    if (!includeHidden && (at & FILE_ATTRIBUTE_HIDDEN)) continue;
+                    if (!includeSystem && (at & FILE_ATTRIBUTE_SYSTEM)) continue;
 
-                if (hasExt) {
-                    bool extMatch = false;
-                    size_t nameLen = strlen(p);
-                    for (const auto& ex : extUtf8) {
-                        if (nameLen >= (size_t)ex.size()) {
-                            if (_stricmp(p + nameLen - ex.size(), ex.constData()) == 0) {
-                                extMatch = true;
-                                break;
+                    const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
+                    if (!includeDollar && p[0] == '$') continue;
+
+                    if (!hasQuery && !hasExt) {
+                        localRes.push_back(makeKey(dIdx, m_frns[i]));
+                        continue;
+                    }
+
+                    if (hasExt) {
+                        bool extMatch = false;
+                        size_t nameLen = strlen(p);
+                        for (const auto& ex : extUtf8) {
+                            if (nameLen >= (size_t)ex.size() && _stricmp(p + nameLen - ex.size(), ex.constData()) == 0) {
+                                extMatch = true; break;
                             }
                         }
+                        if (!extMatch) continue;
                     }
-                    if (!extMatch) continue;
-                }
 
-                if (!hasQuery) {
-                    localRes.push_back(makeKey(dIdx, m_frns[i]));
-                } else {
-                    bool match = false;
-                    if (useRegex) {
-                        match = re.match(QString::fromUtf8(p)).hasMatch();
+                    if (!hasQuery) {
+                        localRes.push_back(makeKey(dIdx, m_frns[i]));
                     } else {
-                        if (caseSensitive) {
-                            match = (strstr(p, queryUtf8.constData()) != nullptr);
-                        } else {
-                            match = (StrStrIA(p, queryUtf8.constData()) != nullptr);
+                        bool match = false;
+                        if (useRegex) match = re.match(QString::fromUtf8(p)).hasMatch();
+                        else {
+                            if (caseSensitive) match = (strstr(p, queryUtf8.constData()) != nullptr);
+                            else match = (StrStrIA(p, queryUtf8.constData()) != nullptr);
                         }
+                        if (match) localRes.push_back(makeKey(dIdx, m_frns[i]));
                     }
-                    if (match) localRes.push_back(makeKey(dIdx, m_frns[i]));
                 }
             }
             if (!localRes.empty()) { std::lock_guard<std::mutex> l(mtx); finalRes.insert(finalRes.end(), localRes.begin(), localRes.end()); }
@@ -837,19 +837,33 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         finalIdx = m_frn_to_idx[compositeKey];
     }
 
+    bool shouldSave = false;
     if (m_dirty_count >= 1000) { 
         m_dirty_count = 0; 
-        saveDriveToCacheInternal(dIdx); 
+        shouldSave = true;
     }
     
-    lock.unlock(); // 2026-05-28 物理释放：信号发射前必须先解开写锁，防止槽函数重入死锁
-    if (isNew) {
-        qDebug() << "[MftReader] 实时发现新文件:" << name << "Index:" << finalIdx;
-        emit entryAdded(finalIdx);
-    } else {
-        qDebug() << "[MftReader] 实时更新文件:" << name << "Index:" << finalIdx;
-        emit entryUpdated(finalIdx);
+    lock.unlock();
+
+    if (shouldSave) {
+        // 2026-06-xx 物理分离：将耗时 I/O 移出写锁范围，杜绝 UI 挂起
+        QtConcurrent::run([this, dIdx]() {
+            saveDriveToCache(dIdx);
+        });
     }
+
+    {
+        std::lock_guard<std::mutex> journalLock(m_journalMutex);
+        m_changeJournal.push_back({isNew ? ChangeEvent::Added : ChangeEvent::Updated, compositeKey, finalIdx});
+        if (!m_notifyTimer->isActive()) {
+            QMetaObject::invokeMethod(m_notifyTimer, "start", Qt::QueuedConnection);
+        }
+    }
+}
+
+std::vector<MftReader::ChangeEvent> MftReader::pullChangeJournal() {
+    std::lock_guard<std::mutex> lock(m_journalMutex);
+    return std::move(m_changeJournal);
 }
 
 void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
@@ -886,17 +900,28 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
         
         { std::lock_guard<std::mutex> lockCache(m_pathCacheMutex); m_path_cache.erase(compositeKey); }
         
-        if (m_dead_count > 50000 || m_wasted_string_bytes > 10 * 1024 * 1024) {
+        bool shouldCompact = (m_dead_count > 50000 || m_wasted_string_bytes > 10 * 1024 * 1024);
+
+        lock.unlock();
+
+        if (shouldCompact) {
+            // Compact 必须在持有写锁时执行，但我们可以选择在空闲时段触发
+            // 或者暂时维持现状，但将其移出 removeEntryByFrn 的紧凑循环
+            QWriteLocker compactLock(&m_dataLock);
             compact();
         }
-        
-        lock.unlock(); // 物理安全：解锁后再发射信号
-        emit entryRemoved(compositeKey);
-        emit dataChanged(-1);
+        {
+            std::lock_guard<std::mutex> journalLock(m_journalMutex);
+            m_changeJournal.push_back({ChangeEvent::Removed, compositeKey, 0});
+            if (!m_notifyTimer->isActive()) {
+                QMetaObject::invokeMethod(m_notifyTimer, "start", Qt::QueuedConnection);
+            }
+        }
     }
 }
 
 void MftReader::compact() {
+    m_generation.fetch_add(1, std::memory_order_relaxed);
     // 2026-05-14 内存管理优化：执行碎片整理，回收无效条目和字符串池空间
     std::vector<uint64_t>  new_frns;
     std::vector<uint64_t>  new_parent_frns;
