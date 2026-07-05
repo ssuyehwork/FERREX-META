@@ -3,7 +3,7 @@
 #include <QObject>
 #include <QSystemTrayIcon>
 #include <QMenu>
-#include <QMainWindow>
+#include <QWidget>
 
 namespace ArcMeta {
 
@@ -15,7 +15,7 @@ class TrayController : public QObject {
     Q_OBJECT
 
 public:
-    explicit TrayController(QMainWindow* mainWindow);
+    explicit TrayController(QWidget* mainWindow);
     ~TrayController() override;
 
     void show();
@@ -27,7 +27,7 @@ private slots:
     void onQuitApp();
 
 private:
-    QMainWindow* m_mainWindow;
+    QWidget* m_mainWindow;
     QSystemTrayIcon* m_trayIcon;
     QMenu* m_trayMenu;
 };

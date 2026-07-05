@@ -173,6 +173,9 @@ private:
 
     std::unique_ptr<CacheManager> m_cacheManager;
     ScanConfig m_config;
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 };
 
 } // namespace ArcMeta

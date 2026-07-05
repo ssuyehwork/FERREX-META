@@ -76,7 +76,11 @@ void ScanConfig::load() {
     QFile file("arcmeta_scan_config.json");
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-        QJsonObject obj = doc.object();
+        QJsonObject root = doc.object();
+
+        // Plan-136: 使用 ScanDialog 独享配置域
+        QJsonObject obj = root["ScanDialog"].toObject();
+        if (obj.isEmpty()) obj = root; // 兼容旧版
         
         auto loadSet = [&](const QString& key, QSet<QString>& set) {
             set.clear();
@@ -109,8 +113,15 @@ void ScanConfig::load() {
 }
 
 void ScanConfig::save() {
+    QJsonObject root;
+    QFile readFile("arcmeta_scan_config.json");
+    if (readFile.open(QIODevice::ReadOnly)) {
+        root = QJsonDocument::fromJson(readFile.readAll()).object();
+        readFile.close();
+    }
+
     QFile file("arcmeta_scan_config.json");
-    if (file.open(QIODevice::WriteOnly)) {
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QJsonObject obj;
         auto saveSet = [&](const QString& key, const QSet<QString>& set) {
             QJsonArray arr;
@@ -140,7 +151,9 @@ void ScanConfig::save() {
         obj["includeDollar"] = includeDollar;
         obj["autoDisplay"] = autoDisplay;
         
-        file.write(QJsonDocument(obj).toJson());
+        // Plan-136: 写入 ScanDialog 独享配置域
+        root["ScanDialog"] = obj;
+        file.write(QJsonDocument(root).toJson());
     }
 }
 
@@ -810,6 +823,13 @@ ScanDialog::~ScanDialog() {
     // 2026-06-xx 内存优化专项：按照用户要求实现“按需加载、及时卸载”。
     // 关闭搜索窗口时物理卸载 MFT 索引，释放可能高达数百 MB 的内存占用。
     MftReader::instance().clear();
+}
+
+void ScanDialog::closeEvent(QCloseEvent* event) {
+    // Plan-136: 在 closeEvent 中拦截关闭信号，若未点击“彻底退出”，则仅执行 hide()
+    // 对应用户原话：“保留托盘图标支持”
+    hide();
+    event->ignore();
 }
 
 void ScanDialog::setupUi() {
