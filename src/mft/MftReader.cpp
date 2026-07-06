@@ -35,6 +35,17 @@
 
 namespace FERREX {
 
+// 2026-06-xx 性能优化：实现扩展名预拆分。
+// 规则：取最后一个 "." 之后的字符串并转小写；若无 "." 或 "." 为首字符，则 ext 为空。
+static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
+    outExt.clear();
+    size_t lastDot = fullName.find_last_of('.');
+    if (lastDot != std::string::npos && lastDot > 0) {
+        outExt = fullName.substr(lastDot + 1);
+        std::transform(outExt.begin(), outExt.end(), outExt.begin(), ::tolower);
+    }
+}
+
 static int64_t filetimeToUnixMs(int64_t filetime) {
     // 2026-05-14 物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
     // 116444736000000000LL 是 1601 到 1970 的 100纳秒数
@@ -91,6 +102,7 @@ void MftReader::clearInternal() {
     m_sizes.clear();
     m_timestamps.clear();
     m_name_offsets.clear();
+    m_ext_offsets.clear();
     m_attributes.clear();
     m_metadata_fetched.clear();
     m_string_pool.clear();
@@ -291,6 +303,13 @@ bool MftReader::loadFromCache() {
                         m_name_offsets.push_back((uint32_t)m_string_pool.size());
                         m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
                         m_string_pool.push_back('\0');
+
+                        // 2026-06-xx 物理对标：快照加载时同步预拆分扩展名
+                        std::string extStr;
+                        splitNameAndExt(pkg.name, extStr);
+                        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
+                        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
+                        m_string_pool.push_back('\0');
                     }
                     currentTotal = m_frns.size();
                 }
@@ -445,6 +464,19 @@ QString MftReader::getName(int index) const {
     return QString::fromUtf8(reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[index]));
 }
 
+const char* MftReader::getExt(int index) const {
+    // 物理加固：虽然裸指针存在风险，但考虑到 matchEntry 和 search 在并行循环中对 QByteArray/QString 的分配极其敏感，
+    // 我们在此处维持裸指针返回，但在注释中明确警告：仅允许在持有数据读锁或 UI 线程快照安全期内使用。
+    // 为了对标 getName 的安全性模式，若非性能热点建议改用 getExtQString()。
+    if (index < 0 || index >= (int)m_ext_offsets.size()) return "";
+    return reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[index]);
+}
+
+QString MftReader::getExtQString(int index) const {
+    QReadLocker lock(&m_dataLock);
+    return QString::fromUtf8(getExt(index));
+}
+
 int64_t MftReader::getSize(int index) const {
     QReadLocker lock(&m_dataLock);
     if (index < 0 || index >= (int)m_sizes.size()) return 0;
@@ -512,17 +544,19 @@ bool MftReader::matchEntry(int i, const QString& query, bool useRegex, bool case
 
     if (query.isEmpty() && extensionList.isEmpty()) return true;
 
-    // 后缀过滤
+    // 2026-06-xx 极致性能重构：基于 SoA 预拆分字段的零解析后缀比较
     if (!extensionList.isEmpty()) {
         bool extMatch = false;
-        size_t nameLen = strlen(p);
+        const char* ext = reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[i]);
         for (const QString& ex : extensionList) {
-            QByteArray exUtf8 = (ex.startsWith('.') ? ex : "." + ex).toUtf8();
-            if (nameLen >= (size_t)exUtf8.size()) {
-                if (_stricmp(p + nameLen - exUtf8.size(), exUtf8.constData()) == 0) {
-                    extMatch = true;
-                    break;
-                }
+            // 此处通常由 UI 层调用，ex 可能未预处理。
+            // 物理优化：仅针对最简单的情况进行优化。
+            QByteArray exUtf8 = ex.toUtf8();
+            const char* exPtr = exUtf8.constData();
+            if (exPtr[0] == '.') exPtr++;
+            if (_stricmp(ext, exPtr) == 0) {
+                extMatch = true;
+                break;
             }
         }
         if (!extMatch) return false;
@@ -630,11 +664,12 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         }
     }
 
-    std::vector<QByteArray> extUtf8;
+    std::vector<QByteArray> processedExtBytes;
     if (hasExt) {
         for (const QString& ex : extensionList) {
-            QString normalized = (ex.startsWith('.') ? ex : "." + ex);
-            extUtf8.push_back(normalized.toUtf8());
+            QString normalized = ex.toLower();
+            if (normalized.startsWith('.')) normalized = normalized.mid(1);
+            processedExtBytes.push_back(normalized.toUtf8());
         }
     }
 
@@ -711,9 +746,9 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
 
                     if (hasExt) {
                         bool extMatch = false;
-                        size_t nameLen = strlen(p);
-                        for (const auto& ex : extUtf8) {
-                            if (nameLen >= (size_t)ex.size() && _stricmp(p + nameLen - ex.size(), ex.constData()) == 0) {
+                        const char* ext = reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[i]);
+                        for (const auto& ex : processedExtBytes) {
+                            if (_stricmp(ext, ex.constData()) == 0) {
                                 extMatch = true; break;
                             }
                         }
@@ -814,6 +849,11 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         uint32_t oldOff = m_name_offsets[finalIdx];
         const char* oldPtr = reinterpret_cast<const char*>(m_string_pool.data() + oldOff);
         size_t oldLen = strlen(oldPtr);
+        
+        // 增量更新时，原有的 ext 也视作浪费
+        uint32_t oldExtOff = m_ext_offsets[finalIdx];
+        m_wasted_string_bytes += (strlen(reinterpret_cast<const char*>(m_string_pool.data() + oldExtOff)) + 1);
+
         if ((size_t)utf8.size() <= oldLen) {
             memcpy(m_string_pool.data() + oldOff, utf8.constData(), utf8.size());
             m_string_pool[oldOff + utf8.size()] = '\0';
@@ -824,6 +864,13 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
             m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
             m_string_pool.push_back('\0');
         }
+
+        // 重新追加 ext
+        std::string extStr;
+        splitNameAndExt(utf8.toStdString(), extStr);
+        m_ext_offsets[finalIdx] = (uint32_t)m_string_pool.size();
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
+        m_string_pool.push_back('\0');
     } else {
         finalIdx = (uint32_t)m_frns.size();
         isNew = true;
@@ -838,10 +885,18 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_timestamps.push_back(finalModifyTime);
         m_attributes.push_back(finalAttr);
         m_metadata_fetched.push_back(0); // 标记为未补全
+        
         QByteArray utf8 = name.toUtf8();
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
         m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
         m_string_pool.push_back('\0');
+
+        std::string extStr;
+        splitNameAndExt(utf8.toStdString(), extStr);
+        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
+        m_string_pool.push_back('\0');
+
         m_frn_to_idx[compositeKey] = finalIdx;
     }
     { std::lock_guard<std::mutex> l(m_pathCacheMutex); m_path_cache.erase(compositeKey); }
@@ -963,6 +1018,7 @@ void MftReader::compact() {
     std::vector<int64_t>   new_sizes;
     std::vector<int64_t>   new_timestamps;
     std::vector<uint32_t>  new_name_offsets;
+    std::vector<uint32_t>  new_ext_offsets;
     std::vector<uint32_t>  new_attributes;
     std::vector<uint8_t>   new_metadata_fetched;
     std::vector<uint8_t>   new_string_pool;
@@ -997,6 +1053,11 @@ void MftReader::compact() {
         size_t len = strlen(name) + 1;
         new_name_offsets.push_back((uint32_t)new_string_pool.size());
         new_string_pool.insert(new_string_pool.end(), name, name + len);
+
+        const char* ext = reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[i]);
+        size_t extLen = strlen(ext) + 1;
+        new_ext_offsets.push_back((uint32_t)new_string_pool.size());
+        new_string_pool.insert(new_string_pool.end(), ext, ext + extLen);
     }
 
     m_frns = std::move(new_frns);
@@ -1005,6 +1066,7 @@ void MftReader::compact() {
     m_sizes = std::move(new_sizes);
     m_timestamps = std::move(new_timestamps);
     m_name_offsets = std::move(new_name_offsets);
+    m_ext_offsets = std::move(new_ext_offsets);
     m_attributes = std::move(new_attributes);
     m_metadata_fetched = std::move(new_metadata_fetched);
     m_string_pool = std::move(new_string_pool);
@@ -1097,6 +1159,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
     m_sizes.reserve(m_sizes.size() + count);
     m_timestamps.reserve(m_timestamps.size() + count);
     m_name_offsets.reserve(m_name_offsets.size() + count);
+    m_ext_offsets.reserve(m_ext_offsets.size() + count);
     m_attributes.reserve(m_attributes.size() + count);
     m_metadata_fetched.reserve(m_metadata_fetched.size() + count);
     for (const auto& e : result.entries) {
@@ -1106,8 +1169,16 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_sizes.push_back(e.size); // 2026-05-14 修正：将扫描到的大小压入 SoA
         m_timestamps.push_back(e.modifyTime); m_attributes.push_back(e.attributes);
         m_metadata_fetched.push_back(0);
+        
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
         m_string_pool.insert(m_string_pool.end(), e.nameUtf8.begin(), e.nameUtf8.end());
+        m_string_pool.push_back('\0');
+
+        // 2026-06-xx 物理对标：全量扫描时同步预拆分扩展名
+        std::string extStr;
+        splitNameAndExt(e.nameUtf8, extStr);
+        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
         m_string_pool.push_back('\0');
     }
 }

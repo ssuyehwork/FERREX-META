@@ -235,9 +235,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             }
         }
     } else if (role == Qt::DecorationRole && index.column() == 0) {
-        QString name = reader.getName(actualIndex);
-        int dotIdx = name.lastIndexOf('.');
-        QString ext = (dotIdx != -1) ? name.mid(dotIdx + 1).toLower() : "";
+        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
+        QString ext = reader.getExtQString(actualIndex);
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
@@ -323,9 +322,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return key;
     } else if (role == Qt::UserRole + 1) {
         // 返回缩略图状态：0=不支持, 1=就绪, 2=加载中 (用于 Delegate 实施“缩略图优先”绘制)
-        QString name = reader.getName(actualIndex);
-        int dotIdx = name.lastIndexOf('.');
-        QString ext = (dotIdx != -1) ? name.mid(dotIdx + 1).toLower() : "";
+        // 2026-06-xx 性能优化：对接 MftReader 预拆分字段
+        QString ext = reader.getExtQString(actualIndex);
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
         if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
