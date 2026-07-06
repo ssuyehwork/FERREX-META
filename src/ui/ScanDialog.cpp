@@ -241,10 +241,11 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            QString fullPath = reader.getFullPath(actualIndex);
+            // 2026-06-xx 极致性能优化：废除 DecorationRole 中的 getFullPath()
+            // 使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
             int64_t size = reader.getSize(actualIndex);
             int64_t mtime = reader.getModifyTime(actualIndex);
-            QString cacheKey = QString("%1_%2_%3").arg(fullPath).arg(size).arg(mtime);
+            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
 
             QPixmap* cached = m_thumbCache.object(cacheKey);
             if (cached) return *cached;
@@ -255,7 +256,11 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
 
-                (void)QtConcurrent::run([mutableThis, key, fullPath, cacheKey, thumbSize, ext]() {
+                // 2026-06-xx 异步架构：在子线程中获取物理路径，彻底解耦 UI 线程与 I/O
+                (void)QtConcurrent::run([mutableThis, key, actualIndex, cacheKey, thumbSize, ext]() {
+                    QString fullPath = MftReader::instance().getFullPath(actualIndex);
+                    if (fullPath.isEmpty()) return;
+
                     QImage img;
                     if (ext == "svg") {
                         QSvgRenderer renderer(fullPath);
@@ -272,18 +277,15 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                     if (!img.isNull()) {
                         double ar = (double)img.width() / img.height();
                         QMetaObject::invokeMethod(mutableThis, [mutableThis, key, cacheKey, img, ar]() {
-                            // 物理加固：显式转换并验证，杜绝类型初始化错误
                             QPixmap pix = QPixmap::fromImage(img);
                             if (!pix.isNull()) {
                                 mutableThis->m_thumbCache.insert(cacheKey, new QPixmap(pix));
                             }
                             mutableThis->m_aspectRatios[key] = ar;
                             
-                            // 2026-06-xx 物理安全：直接从 Snapshot 中定位 Position，杜绝脱节
                             auto snapshot = mutableThis->m_controller->snapshot();
                             auto itPos = snapshot->keyToPos.find(key);
                             if (itPos != snapshot->keyToPos.end() && itPos->second < mutableThis->m_displayCount) {
-                                // 2026-06-xx 布局优化：显式发射 UserRole+2 角色，通知 JustifiedView 真实宽高比已就绪，触发重排
                                 emit mutableThis->dataChanged(mutableThis->index(itPos->second, 0), mutableThis->index(itPos->second, 0), {Qt::DecorationRole, Qt::UserRole + 1, Qt::UserRole + 2});
                             }
                         });
@@ -320,17 +322,20 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole) {
         return key;
     } else if (role == Qt::UserRole + 1) {
-        // 返回是否是缩略图 (用于 Delegate 区分绘制逻辑)
+        // 返回缩略图状态：0=不支持, 1=就绪, 2=加载中 (用于 Delegate 实施“缩略图优先”绘制)
         QString name = reader.getName(actualIndex);
         int dotIdx = name.lastIndexOf('.');
         QString ext = (dotIdx != -1) ? name.mid(dotIdx + 1).toLower() : "";
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
+        if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
+
         int64_t size = reader.getSize(actualIndex);
         int64_t mtime = reader.getModifyTime(actualIndex);
-        QString cacheKey = QString("%1_%2_%3").arg(reader.getFullPath(actualIndex)).arg(size).arg(mtime);
+        QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
-        return thumbExts.contains(ext) && m_thumbCache.contains(cacheKey);
+        if (m_thumbCache.contains(cacheKey)) return 1;
+        return 2;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
         return m_aspectRatios.value(key, 1.0);
