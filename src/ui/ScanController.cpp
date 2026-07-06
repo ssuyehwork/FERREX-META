@@ -25,12 +25,22 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
 
     connect(&m_sortWatcher, &QFutureWatcher<std::vector<uint64_t>>::finished, this, [this]() {
         if (m_sortWatcher.isCanceled()) return;
+
+        std::vector<uint64_t> resultKeys = m_sortWatcher.result();
+        if (resultKeys.empty()) return;
+
         auto newSet = std::make_shared<ResultSet>();
-        newSet->keys = m_sortWatcher.result();
+        newSet->keys = std::move(resultKeys);
         updateKeyToPosMapping(*newSet);
         
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
+            // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
+            // 此时后台异步完成的增量排序结果已经失效（基于旧数据），必须舍弃，防止搜索结果被“秒消失”。
+            if (m_resultSet != m_sortBaseSnap) {
+                qDebug() << "[ScanController] 舍弃过时的重排序结果";
+                return;
+            }
             m_resultSet = newSet;
         }
         emit resultsSwapped(newSet);
@@ -40,6 +50,8 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
 ScanController::~ScanController() {
     m_watcher.cancel();
     m_watcher.waitForFinished();
+    m_sortWatcher.cancel();
+    m_sortWatcher.waitForFinished();
 }
 
 void ScanController::setSearchText(const QString& text) {
@@ -73,6 +85,7 @@ int ScanController::resultCount() const {
 
 void ScanController::performSearch() {
     if (m_watcher.isRunning()) m_watcher.cancel();
+    if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
 
     emit searchStarted();
     
@@ -103,6 +116,7 @@ void ScanController::performSearch() {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
             m_resultSet = newSet;
         }
+        emit resultsSwapped(newSet);
         emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
     });
 
@@ -152,20 +166,22 @@ void ScanController::sort(int column, int order) {
         std::vector<SortProxy> proxies;
         proxies.reserve(keys.size());
 
-        // 1. 投影阶段：短时持有读锁，执行内存拷贝
+        // 1. 投影阶段：申请单次大范围读锁，直接从 SoA 池物理拷贝数据
+        // 理由：彻底消除 O(N) 次的锁申请/释放开销，并绕过 QString 中转，极致压榨 CPU 性能。
         {
-            // 注意：MftReader::getName() 等接口内部会持锁。
-            // 为了提升投影效率，我们手动控制一次大范围读锁。
-            // 物理修复：由于 MftReader 接口设计原因，我们在此通过公共接口获取。
+            QReadLocker lock(&reader.m_dataLock);
             for (uint64_t k : keys) {
-                int idx = reader.getIndexByKey(k);
-                SortProxy p;
-                p.key = k;
-                if (idx != -1) {
-                    if (column == 0) p.sVal = reader.getName(idx).toStdString();
-                    else if (column == 1) p.sVal = reader.getFullPath(idx).toStdString();
-                    else if (column == 2) p.iVal = reader.getSize(idx);
-                    else if (column == 3) p.iVal = reader.getModifyTime(idx);
+                auto it = reader.m_frn_to_idx.find(k);
+                SortProxy p; p.key = k;
+                if (it != reader.m_frn_to_idx.end()) {
+                    uint32_t idx = it->second;
+                    if (column == 0) p.sVal = reinterpret_cast<const char*>(reader.m_string_pool.data() + reader.m_name_offsets[idx]);
+                    else if (column == 1) {
+                        // 路径投影相对复杂，暂时维持现状或使用缓存。为了安全与一致性，此处调用 getPathFast
+                        p.sVal = QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[idx] >> 48), reader.m_frns[idx])).toStdString();
+                    }
+                    else if (column == 2) p.iVal = reader.m_sizes[idx];
+                    else if (column == 3) p.iVal = reader.m_timestamps[idx];
                 }
                 proxies.push_back(std::move(p));
             }
@@ -187,6 +203,7 @@ void ScanController::sort(int column, int order) {
         return keys;
     });
 
+    m_sortBaseSnap = snap;
     m_sortWatcher.setFuture(future);
 }
 
@@ -267,16 +284,20 @@ void ScanController::processBatchUpdates() {
             // 执行后台安全重排序 (复用投影排序逻辑)
             std::vector<SortProxy> proxies;
             proxies.reserve(newSet->keys.size());
-            for (uint64_t k : newSet->keys) {
-                int idx = reader.getIndexByKey(k);
-                SortProxy p; p.key = k;
-                if (idx != -1) {
-                    if (column == 0) p.sVal = reader.getName(idx).toStdString();
-                    else if (column == 1) p.sVal = reader.getFullPath(idx).toStdString();
-                    else if (column == 2) p.iVal = reader.getSize(idx);
-                    else if (column == 3) p.iVal = reader.getModifyTime(idx);
+            {
+                QReadLocker lock(&reader.m_dataLock);
+                for (uint64_t k : newSet->keys) {
+                    auto it = reader.m_frn_to_idx.find(k);
+                    SortProxy p; p.key = k;
+                    if (it != reader.m_frn_to_idx.end()) {
+                        uint32_t idx = it->second;
+                        if (column == 0) p.sVal = reinterpret_cast<const char*>(reader.m_string_pool.data() + reader.m_name_offsets[idx]);
+                        else if (column == 1) p.sVal = QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[idx] >> 48), reader.m_frns[idx])).toStdString();
+                        else if (column == 2) p.iVal = reader.m_sizes[idx];
+                        else if (column == 3) p.iVal = reader.m_timestamps[idx];
+                    }
+                    proxies.push_back(std::move(p));
                 }
-                proxies.push_back(std::move(p));
             }
 
             std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
@@ -287,10 +308,13 @@ void ScanController::processBatchUpdates() {
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
         }
-        return changed ? newSet->keys : std::vector<uint64_t>();
+        // 2026-06-xx 物理修复：无论 changed 是否为 true，必须返回 keys 副本。
+        // 理由：sortWatcher 的结果会直接替换 m_resultSet，若返回空则会导致 UI 清空。
+        return newSet->keys;
     });
 
-    // 这里通过 sortWatcher 的 finished 信号（由于 keys 为空会返回原有 snap），实现原子更新
+    // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果
+    m_sortBaseSnap = snap;
     m_sortWatcher.setFuture(future);
 }
 

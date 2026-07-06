@@ -214,20 +214,15 @@ void MftReader::buildIndex(const QStringList& drives) {
         bool success = false;
     };
     std::vector<ScannedDrive> scannedResults(toScan.size());
-    // 2026-06-xx 并行策略调整：由于部分环境不支持 <execution>，
-    // 改用 QtConcurrent::blockingMap 实现多驱动器并行扫描，确保高性能与高兼容性
-    QtConcurrent::blockingMap(toScan.begin(), toScan.end(), [&](const std::wstring& volume) {
-        if (m_isStopping.load()) return;
+    // 2026-06-xx 性能策略：使用 QtConcurrent 索引映射实现多驱动器并行扫描
+    // 理由：避免 blockingMap 内部嵌套循环查找，将对齐复杂度由 O(N^2) 降至 O(N)
+    std::vector<int> taskIndices((int)toScan.size());
+    std::iota(taskIndices.begin(), taskIndices.end(), 0);
 
-        // 寻找对应的结果槽位 (由于 toScan 与 scannedResults 是一一对应的，我们直接通过索引或查找)
-        // 简单起见，此处使用临时的 lambda 捕获来对齐结果
-        for (size_t i = 0; i < scannedResults.size(); ++i) {
-            if (toScan[i] == volume) {
-                scannedResults[i].volume = volume;
-                scannedResults[i].success = loadMftDirect(volume, scannedResults[i].res);
-                break;
-            }
-        }
+    QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [&](int i) {
+        if (m_isStopping.load()) return;
+        scannedResults[i].volume = toScan[i];
+        scannedResults[i].success = loadMftDirect(toScan[i], scannedResults[i].res);
     });
 
     if (m_isStopping.load()) return;
