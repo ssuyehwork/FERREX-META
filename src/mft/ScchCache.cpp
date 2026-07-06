@@ -13,6 +13,8 @@
 #include <array>
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <cstddef>
 
 #ifdef min
 #undef min
@@ -77,6 +79,17 @@ static size_t serializeRecord(const ScchDataPackage& pkg, std::vector<uint8_t>& 
     if (nameLen > 0) {
         memcpy(buf.data() + start + sizeof(ScchRecord), pkg.name.data(), nameLen);
     }
+
+    // 2026-06-xx 增强：计算记录级别 CRC
+    // 覆盖范围：除 record_crc32 以外的所有字段 + 文件名内容
+    std::vector<uint8_t> temp_for_crc;
+    temp_for_crc.reserve(offsetof(ScchRecord, record_crc32) + nameLen);
+    temp_for_crc.insert(temp_for_crc.end(), reinterpret_cast<const uint8_t*>(rec), reinterpret_cast<const uint8_t*>(rec) + offsetof(ScchRecord, record_crc32));
+    if (nameLen > 0) {
+        temp_for_crc.insert(temp_for_crc.end(), pkg.name.begin(), pkg.name.end());
+    }
+    rec->record_crc32 = ScchCache::computeCrc32(temp_for_crc.data(), temp_for_crc.size());
+
     return totalLen;
 }
 
@@ -211,16 +224,9 @@ bool ScchCache::appendEntries(const std::string& path_base, const std::vector<Sc
             head.tombstone_count += tombstone_inc;
             head.last_usn = last_usn;
             
-            // 重新计算整体 CRC 比较复杂，因为 delta layer 被追加了。
-            // 这里简单处理，先不更新 CRC 或只对主索引做 CRC？
-            // 按照要求，.idx 分为主索引和 delta layer。
-            // 重新读取整个索引部分计算 CRC
-            SetFilePointer(hIdxHead, sizeof(ScchIdxHeader), NULL, FILE_BEGIN);
-            size_t total_idx_size = (size_t)(head.main_index_count + head.delta_index_count) * sizeof(ScchIndexEntry);
-            std::vector<uint8_t> all_indices(total_idx_size);
-            if (ReadFile(hIdxHead, all_indices.data(), (DWORD)total_idx_size, &read, NULL) && read == total_idx_size) {
-                head.crc32 = computeCrc32(all_indices.data(), total_idx_size);
-            }
+            // 2026-06-xx 性能优化：采用“方案 A”，废除增量追加时的全量索引读回重算 CRC。
+            // 理由：单条记录已有 CRC 保护，全局 CRC 在增量追加场景下开销为 O(n)，严重拖慢实时更新。
+            head.crc32 = 0xDEADC0DE; // 使用魔数标记该版本索引不再受全局 CRC 保护
 
             SetFilePointer(hIdxHead, 0, NULL, FILE_BEGIN);
             WriteFile(hIdxHead, &head, sizeof(head), &written, NULL);
@@ -239,7 +245,7 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
 
     // 尝试从索引加载
     bool idx_ok = false;
-    std::map<uint64_t, uint64_t> frn_to_offset;
+    std::vector<ScchIndexEntry> sorted_entries;
 
     if (std::filesystem::exists(idx_path)) {
         FILE* f_idx = fopen(idx_path.c_str(), "rb");
@@ -248,12 +254,24 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
             if (fread(&head, sizeof(head), 1, f_idx) == 1) {
                 if (memcmp(head.magic, SCCH_MAGIC_IDX, 4) == 0 && head.version_major == SCCH_VERSION_MAJOR) {
                     size_t total_count = (size_t)(head.main_index_count + head.delta_index_count);
-                    std::vector<ScchIndexEntry> entries(total_count);
-                    if (fread(entries.data(), sizeof(ScchIndexEntry), total_count, f_idx) == total_count) {
-                        if (computeCrc32(reinterpret_cast<uint8_t*>(entries.data()), total_count * sizeof(ScchIndexEntry)) == head.crc32) {
-                            for (const auto& e : entries) {
-                                frn_to_offset[e.frn] = e.offset;
-                            }
+                    std::vector<ScchIndexEntry> raw_entries(total_count);
+                    if (fread(raw_entries.data(), sizeof(ScchIndexEntry), total_count, f_idx) == total_count) {
+                        // 2026-06-xx 增强：兼容全局 CRC 和 增量魔数标记
+                    bool crc_pass = (head.crc32 == 0xDEADC0DE) || 
+                                       (computeCrc32(reinterpret_cast<uint8_t*>(raw_entries.data()), total_count * sizeof(ScchIndexEntry)) == head.crc32);
+                        
+                        if (crc_pass) {
+                            // 2026-06-xx 性能优化：使用 map 去重（保留最后的 offset）
+                            std::unordered_map<uint64_t, uint64_t> frn_to_offset;
+                            for (const auto& e : raw_entries) frn_to_offset[e.frn] = e.offset;
+                            
+                            // 2026-06-xx 核心性能优化：按 offset 排序实现顺序读取，消除磁头随机寻址跳跃
+                            sorted_entries.reserve(frn_to_offset.size());
+                            for (auto const& [frn, offset] : frn_to_offset) sorted_entries.push_back({frn, offset});
+                            std::sort(sorted_entries.begin(), sorted_entries.end(), [](const ScchIndexEntry& a, const ScchIndexEntry& b) {
+                                return a.offset < b.offset;
+                            });
+
                             out_last_usn = head.last_usn;
                             idx_ok = true;
                         }
@@ -274,11 +292,46 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
     }
 
     if (idx_ok) {
-        for (auto const& [frn, offset] : frn_to_offset) {
-            fseek(f_bin, (long)offset, SEEK_SET);
+        // 获取文件大小用于边界检查
+        fseek(f_bin, 0, SEEK_END);
+        long bin_size = ftell(f_bin);
+        
+        for (const auto& entry : sorted_entries) {
+            fseek(f_bin, (long)entry.offset, SEEK_SET);
             ScchRecord rec;
             if (fread(&rec, sizeof(rec), 1, f_bin) == 1) {
+                // 1. 基础检查：FRN 匹配
+                if (rec.frn != entry.frn) { idx_ok = false; break; }
                 if (rec.tombstone) continue;
+
+                // 2. 边界检查：防止 name_len 异常导致 OOM 或截断读取
+                long current_pos = ftell(f_bin);
+                long remaining = bin_size - current_pos;
+                if (rec.name_len > (uint32_t)remaining || rec.name_len > 1024 * 2) {
+                    idx_ok = false; break;
+                }
+
+                // 3. 记录级别 CRC 校验
+                std::string name;
+                if (rec.name_len > 0) {
+                    name.resize(rec.name_len);
+                    if (fread(&name[0], 1, rec.name_len, f_bin) != rec.name_len) {
+                        idx_ok = false; break;
+                    }
+                }
+
+                std::vector<uint8_t> temp_for_crc;
+                temp_for_crc.reserve(offsetof(ScchRecord, record_crc32) + rec.name_len);
+                temp_for_crc.insert(temp_for_crc.end(), reinterpret_cast<const uint8_t*>(&rec), reinterpret_cast<const uint8_t*>(&rec) + offsetof(ScchRecord, record_crc32));
+                if (rec.name_len > 0) {
+                    temp_for_crc.insert(temp_for_crc.end(), name.begin(), name.end());
+                }
+                
+                if (computeCrc32(temp_for_crc.data(), temp_for_crc.size()) != rec.record_crc32) {
+                    idx_ok = false; break;
+                }
+
+                // 4. 校验通过，装载数据
                 ScchDataPackage pkg;
                 pkg.frn = rec.frn;
                 pkg.parent_frn = rec.parent_frn;
@@ -287,38 +340,65 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
                 pkg.attributes = rec.attributes;
                 pkg.metadata_fetched = rec.metadata_fetched;
                 pkg.tombstone = 0;
-                if (rec.name_len > 0) {
-                    pkg.name.resize(rec.name_len);
-                    fread(&pkg.name[0], 1, rec.name_len, f_bin);
-                }
+                pkg.name = std::move(name);
                 out_records.push_back(std::move(pkg));
+            } else {
+                idx_ok = false; break;
             }
         }
-    } else {
+        
+        if (!idx_ok) {
+            out_records.clear();
+            // 如果索引加载过程中失败，则后续会进入全量扫描降级路径
+        }
+    }
+
+    if (!idx_ok) {
         // 全量扫描重建
+        fseek(f_bin, 0, SEEK_END);
+        long bin_size = ftell(f_bin);
         fseek(f_bin, sizeof(ScchBinHeader), SEEK_SET);
+
         std::map<uint64_t, ScchDataPackage> rebuild_map;
-        while (!feof(f_bin)) {
+        while (ftell(f_bin) < bin_size) {
             ScchRecord rec;
             if (fread(&rec, sizeof(rec), 1, f_bin) != 1) break;
-            if (rec.tombstone) {
-                rebuild_map.erase(rec.frn);
-                if (rec.name_len > 0) fseek(f_bin, rec.name_len, SEEK_CUR);
-                continue;
+
+            // 健壮性检查：边界与阈值
+            if (rec.name_len > 1024 * 2 || ftell(f_bin) + rec.name_len > bin_size) {
+                break; // 停止扫描
             }
-            ScchDataPackage pkg;
-            pkg.frn = rec.frn;
-            pkg.parent_frn = rec.parent_frn;
-            pkg.size = rec.size;
-            pkg.timestamp = rec.timestamp;
-            pkg.attributes = rec.attributes;
-            pkg.metadata_fetched = rec.metadata_fetched;
-            pkg.tombstone = 0;
+
+            std::string name;
             if (rec.name_len > 0) {
-                pkg.name.resize(rec.name_len);
-                fread(&pkg.name[0], 1, rec.name_len, f_bin);
+                name.resize(rec.name_len);
+                if (fread(&name[0], 1, rec.name_len, f_bin) != rec.name_len) break;
             }
-            rebuild_map[pkg.frn] = std::move(pkg);
+
+            // CRC 校验
+            std::vector<uint8_t> temp_for_crc;
+            temp_for_crc.reserve(offsetof(ScchRecord, record_crc32) + rec.name_len);
+            temp_for_crc.insert(temp_for_crc.end(), reinterpret_cast<const uint8_t*>(&rec), reinterpret_cast<const uint8_t*>(&rec) + offsetof(ScchRecord, record_crc32));
+            if (rec.name_len > 0) {
+                temp_for_crc.insert(temp_for_crc.end(), name.begin(), name.end());
+            }
+
+            if (computeCrc32(temp_for_crc.data(), temp_for_crc.size()) == rec.record_crc32) {
+                if (rec.tombstone) {
+                    rebuild_map.erase(rec.frn);
+                } else {
+                    ScchDataPackage pkg;
+                    pkg.frn = rec.frn;
+                    pkg.parent_frn = rec.parent_frn;
+                    pkg.size = rec.size;
+                    pkg.timestamp = rec.timestamp;
+                    pkg.attributes = rec.attributes;
+                    pkg.metadata_fetched = rec.metadata_fetched;
+                    pkg.tombstone = 0;
+                    pkg.name = std::move(name);
+                    rebuild_map[pkg.frn] = std::move(pkg);
+                }
+            }
         }
         for (auto& pair : rebuild_map) {
             out_records.push_back(std::move(pair.second));
