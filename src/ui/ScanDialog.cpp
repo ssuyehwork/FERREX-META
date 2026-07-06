@@ -239,6 +239,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         int dotIdx = name.lastIndexOf('.');
         QString ext = (dotIdx != -1) ? name.mid(dotIdx + 1).toLower() : "";
         
+        // 2026-06-xx 性能优化：优先从缓存读取缩略图，若不命中则返回默认图标并启动异步加载。
+        // 这确保了在海量列表滚动时，UI 不会因为等待 I/O 而掉帧。
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
             QString fullPath = reader.getFullPath(actualIndex);

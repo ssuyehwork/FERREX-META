@@ -157,12 +157,8 @@ void ScanController::sort(int column, int order) {
         // 1. 投影阶段：单次锁申请，预提取所有排序键
         // 注意：对于字符串，我们存储原始 utf8 指针以实现“零分配”比较
         {
-            // 获取数据锁（由 reader 管理）
-            // 注意：这里需要确保 reader 的内部 SoA 在排序期间不发生 compact 导致的指针失效
-            // 实际上 MftReader 的 compact 会递增 generation。
-            // 这里我们采用最稳妥的方案：在投影期间持有读锁提取数据。
-            // 如果是数值，直接拷贝。如果是字符串，暂时拷贝 QString 或 utf8。
-            // 为追求极致，我们直接从 SoA 的 string_pool 提取。
+            // 2026-06-xx 物理对标：显式申请数据锁，防止排序投影期间 SoA 发生变动
+            QReadLocker lock(MftReader::instance().getDataLock());
 
             for (uint64_t k : keys) {
                 int idx = reader.getIndexByKey(k);

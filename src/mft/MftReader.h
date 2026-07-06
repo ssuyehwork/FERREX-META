@@ -105,6 +105,9 @@ public:
     std::vector<ChangeEvent> pullChangeJournal();
     std::wstring getPathFast(size_t driveIdx, uint64_t frn);
 
+    // 2026-06-xx 物理对标：暴露数据锁以支持外部原子化操作
+    QReadWriteLock* getDataLock() const { return &m_dataLock; }
+
 private:
     MftReader();
     ~MftReader();

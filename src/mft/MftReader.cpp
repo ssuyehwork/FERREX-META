@@ -402,6 +402,20 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
 
     // [I/O START POINT] - 执行磁盘操作，杜绝假死
     std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
+
+    bool isCompacting = false;
+    {
+        QReadLocker lock(&m_dataLock);
+        isCompacting = m_is_compacting[driveIdx];
+    }
+
+    // 合并期间到达的新事件，追加到独立缓冲区，避免阻塞合并流程或产生竞争
+    if (isCompacting && !isFullSave) {
+        QWriteLocker lock(&m_dataLock);
+        m_compaction_buffer[driveIdx].insert(m_compaction_buffer[driveIdx].end(), dirtyData.begin(), dirtyData.end());
+        return true;
+    }
+
     if (isFullSave) {
         return ScchCache::saveAll(path_base, dirtyData, lastUsn);
     } else {
@@ -413,11 +427,14 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                 m_is_compacting[driveIdx] = true;
             }
             QThreadPool::globalInstance()->start([this, path_base, driveIdx]() {
+                // 合并期间读一遍 bin（跳过 tombstone）+ 应用 delta，写出全新的 .bin + .idx
                 ScchCache::compact(path_base);
+
                 std::vector<ScchDataPackage> buffered;
                 uint64_t finalUsn = 0;
                 {
                     QWriteLocker lock(&m_dataLock);
+                    // 合并完成后，统一追加合并期间产生的增量数据
                     buffered = std::move(m_compaction_buffer[driveIdx]);
                     m_is_compacting[driveIdx] = false;
                     finalUsn = m_next_usns[m_drive_list[driveIdx]];
@@ -561,7 +578,7 @@ QString MftReader::getFullPath(int index) const {
 
 std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
     // 2026-05-16 核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
-    uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
+    uint64_t compositeKey = makeKey(driveIdx, frn);
 
     {
         std::lock_guard<std::mutex> lock(m_pathCacheMutex);
@@ -573,6 +590,7 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 
     // 2026-06-xx 极致架构优化：采用 SoA 直连下标进行路径回溯。
     // 理由：getPathFast 常在 UI 渲染的热点路径被调用，消除 Map 查找是实现百万级数据“瞬间回溯”的关键。
+    QReadLocker lock(&m_dataLock);
     auto idxIt = m_frn_to_idx.find(compositeKey);
     if (idxIt == m_frn_to_idx.end()) return L"";
 

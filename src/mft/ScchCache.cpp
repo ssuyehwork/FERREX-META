@@ -15,6 +15,7 @@
 #include <map>
 #include <unordered_map>
 #include <cstddef>
+#include <cstdio>
 
 #ifdef min
 #undef min
