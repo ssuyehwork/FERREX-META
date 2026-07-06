@@ -28,10 +28,7 @@ struct IdxHeader {
     uint64_t delta_count;
 };
 
-/**
- * @brief 索引条目：FRN 到文件偏移量的映射
- */
-struct ScchIndexEntry {
+struct IndexEntry {
     uint64_t frn;
     uint64_t offset;
 };
@@ -57,18 +54,18 @@ public:
      * @brief 从 .idx 加载索引项
      */
     static bool loadIndex(const std::string& idxPath, uint64_t volumeSerial, uint64_t& nextUsn,
-                         std::vector<ScchIndexEntry>& mainIndex, std::vector<ScchIndexEntry>& deltaLayer);
+                         std::vector<IndexEntry>& mainIndex, std::vector<IndexEntry>& deltaLayer);
 
     /**
      * @brief 批量从 .bin 读取记录 (优化性能)
      */
-    static bool readRecords(const std::string& binPath, const std::vector<ScchIndexEntry>& entries, std::vector<Record>& records);
+    static bool readRecords(const std::string& binPath, const std::vector<IndexEntry>& entries, std::vector<Record>& records);
 
     /**
      * @brief 如果 .idx 缺失或损坏，从 .bin 全量重建
      */
     static bool rebuildIndexFromBin(const std::string& binPath, uint64_t volumeSerial,
-                                    std::vector<ScchIndexEntry>& mainIndex);
+                                    std::vector<IndexEntry>& mainIndex);
 
     /**
      * @brief 执行合并：读取 bin，应用 delta，写出全新的 bin+idx

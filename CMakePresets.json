@@ -5,9 +5,9 @@
             "name": "windows-base",
             "description": "面向具有 Visual Studio 开发环境的 Windows。",
             "hidden": true,
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/../ArcMeta_Build/${presetName}",
-            "installDir": "${sourceDir}/../ArcMeta_Build/install/${presetName}",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/../FERREX-META_Build/${presetName}",
+            "installDir": "${sourceDir}/../FERREX-META_Build/install/${presetName}",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe"
