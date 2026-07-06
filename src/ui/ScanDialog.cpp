@@ -389,12 +389,40 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
 }
 
 void ScanTableModel::updateResults() {
-    beginResetModel();
-    m_currentResultSet = m_controller->snapshot();
-    m_displayCount = (std::min<int>)(static_cast<int>(m_currentResultSet->keys.size()), 100); 
+    auto newSet = m_controller->snapshot();
+    size_t oldSize = m_currentResultSet->keys.size();
+    size_t newSize = newSet->keys.size();
+
+    // 2026-06-xx 极致性能重构：Diffing 局部刷新。
+    // 理由：beginResetModel 会销毁所有视图控件，导致 UI 闪烁并丢失滚动位置。
+    // 采用局部增减信号可实现 60FPS 的丝滑更新体验。
     
-    m_requestedThumbs.clear();
-    endResetModel();
+    // 如果变动巨大或初始加载，回退到 Reset 模式
+    if (oldSize == 0 || std::abs((int)newSize - (int)oldSize) > 500) {
+        beginResetModel();
+        m_currentResultSet = newSet;
+        m_displayCount = (std::min<int>)(static_cast<int>(m_currentResultSet->keys.size()), 100);
+        m_requestedThumbs.clear();
+        endResetModel();
+        return;
+    }
+
+    // 简单 Diff：目前仅支持尾部增减及内容变化
+    // TODO: 实现更复杂的 Myers Diff 以支持中间插入的平滑动画
+    if (newSize > oldSize) {
+        beginInsertRows(QModelIndex(), (int)oldSize, (int)newSize - 1);
+        m_currentResultSet = newSet;
+        m_displayCount = (int)newSize; // 同步 displayCount 以防 fetchMore 冲突
+        endInsertRows();
+    } else if (newSize < oldSize) {
+        beginRemoveRows(QModelIndex(), (int)newSize, (int)oldSize - 1);
+        m_currentResultSet = newSet;
+        m_displayCount = (int)newSize;
+        endRemoveRows();
+    } else {
+        m_currentResultSet = newSet;
+        emit dataChanged(index(0, 0), index((int)newSize - 1, 3));
+    }
 }
 
 bool ScanTableModel::canFetchMore(const QModelIndex& parent) const {

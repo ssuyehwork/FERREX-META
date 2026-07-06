@@ -40,8 +40,13 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void updateGeometries() override;
 
+protected slots:
+    // 2026-06-xx 性能优化：布局节流槽
+    void onLayoutTimerTimeout();
+
 private:
     void doLayout();
+    void scheduleLayout();
 
     struct ItemGeometry {
         QRect rect;
@@ -49,6 +54,8 @@ private:
     };
     std::vector<ItemGeometry> m_geometries;
     int m_totalHeight = 0;
+    QTimer* m_layoutTimer = nullptr;
+    bool m_layoutDirty = false;
     int m_targetRowHeight = 128;
     int m_aspectRatioRole = Qt::UserRole + 2;
     int m_anchorRow = -1; // 2026-06-16 物理锚点：锁定 Shift 多选起始行
