@@ -762,7 +762,6 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     uint64_t fileSize = 0; // 物理大小暂时设为 0，由 requestMetadata 异步补全
     int64_t finalModifyTime = filetimeToUnixMs(timestamp.QuadPart);
     uint32_t finalAttr = attr;
-    bool fetchedSuccess = false;
 
     QWriteLocker lock(&m_dataLock);
     QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
@@ -1152,7 +1151,7 @@ void MftReader::requestMetadata(int index) {
     std::wstring volume = m_drive_list[dIdx];
     writeLock.unlock();
 
-    QtConcurrent::run(m_metadataPool, [this, index, frn, volume]() {
+    (void)QtConcurrent::run(m_metadataPool, [this, index, frn, volume]() {
         // 2026-05-14 极致性能重构：对标 Rust 原版，采用 API 分级拉取策略
         // 1. 优先使用 GetFileAttributesExW (不涉及文件句柄，非侵入式，性能极高)
         QString fullPath = getFullPath(index);
