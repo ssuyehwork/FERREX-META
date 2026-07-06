@@ -172,15 +172,25 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     m_metadataTimer->setSingleShot(true);
     connect(m_metadataTimer, &QTimer::timeout, this, [this]() {
         if (m_visibleTop < 0 || m_visibleBottom < 0) return;
-        auto& reader = MftReader::instance();
-        for (int i = m_visibleTop; i <= m_visibleBottom; ++i) {
-            if (i >= (int)m_currentResultSet->keys.size()) break;
-            uint64_t key = m_currentResultSet->keys[i];
-            int idx = reader.getIndexByKey(key);
-            if (idx != -1 && !reader.isMetadataFetched(idx)) {
-                const_cast<MftReader&>(reader).requestMetadata(idx);
+
+        // 2026-06-xx 物理修复：视口扫描异步化。
+        // 理由：虽然 requestMetadata 是异步的，但其内部会触发 MftReader 的读写锁申请。
+        // 在 220万数据下，如果 UI 线程密集触发 lock 申请，会造成明显的微卡顿甚至假死。
+        auto snap = m_currentResultSet;
+        int top = m_visibleTop;
+        int bottom = m_visibleBottom;
+
+        (void)QtConcurrent::run([snap, top, bottom]() {
+            auto& reader = MftReader::instance();
+            for (int i = top; i <= bottom; ++i) {
+                if (i >= (int)snap->keys.size()) break;
+                uint64_t key = snap->keys[i];
+                int idx = reader.getIndexByKey(key);
+                if (idx != -1 && !reader.isMetadataFetched(idx)) {
+                    const_cast<MftReader&>(reader).requestMetadata(idx);
+                }
             }
-        }
+        });
     });
 
     m_thumbTimer = new QTimer(this);
@@ -1224,22 +1234,33 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
-            // 2026-06-xx 物理修复：确保 C 盘可见。撤销之前的强制忽略逻辑。
-            // 策略：C 盘必须显示。如果配置中意外包含了 C 盘作为忽略项，则在此处强制修正。
+            // 2026-06-xx 物理修复：确保 C 盘显示且可扫描。
+            // 1. 强制撤销任何对 C 盘的忽略
             if (weakThis->m_config.ignoredDrives.contains("C:")) {
                 weakThis->m_config.ignoredDrives.remove("C:");
-                weakThis->m_config.save();
             }
 
-            // 首次启动时，如果没有选中任何盘符，则激活所有可用的 NTFS 盘符（含系统盘 C:）。
+            // 2. 策略调整：确保 C 盘始终被激活（除非被显式忽略）。
+            // 对于其它盘符，如果是首次运行（activeDrives为空）则全部激活。
             if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
                     if (info.hasMedia && info.isNtfs) {
                         weakThis->m_config.activeDrives.insert(info.letter);
                     }
                 }
-                weakThis->m_config.save();
+            } else {
+                // 核心修复：如果 C 盘被探测到且未被忽略，也未在激活列表，则强制激活。
+                // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
+                if (!weakThis->m_config.ignoredDrives.contains("C:") && !weakThis->m_config.activeDrives.contains("C:")) {
+                    for (const auto& info : drives) {
+                        if (info.letter == "C:" && info.isNtfs) {
+                            weakThis->m_config.activeDrives.insert("C:");
+                            break;
+                        }
+                    }
+                }
             }
+            weakThis->m_config.save();
 
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
@@ -1248,13 +1269,28 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveButtonMap.clear();
 
+            // 核心修复：检查是否有已激活但尚未建立索引的盘符，若有则自动触发补课扫描。
+            bool missingIndex = false;
+            for (const auto& d : weakThis->m_config.activeDrives) {
+                if (!MftReader::instance().isDriveIndexed(d)) {
+                    missingIndex = true;
+                    break;
+                }
+            }
+
+            if (missingIndex) {
+                weakThis->onStartScan();
+            }
+
             // 2026-05-14 用户要求彻底移除 "DRIVES" 标签
             // QLabel* driveLabel = new QLabel("DRIVES");
             // driveLabel->setStyleSheet("color: #3D5060; font-weight: bold; font-size: 10px;");
             // weakThis->m_driveLayout->addWidget(driveLabel);
 
             for (const auto& info : drives) {
-                if (!info.hasMedia || !info.isNtfs) continue;
+                if (!info.hasMedia) continue;
+                // C 盘必须显示，无论是否标记为 NTFS (防止某些环境下 GetVolumeInformation 失败)
+                if (!info.isNtfs && info.letter != "C:") continue;
                 if (weakThis->m_config.ignoredDrives.contains(info.letter)) continue;
 
                 QString label = info.label.isEmpty() ? "本地磁盘" : info.label;
