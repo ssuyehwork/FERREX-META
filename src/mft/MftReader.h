@@ -78,6 +78,7 @@ public:
     uint64_t getKeyByIndex(int index) const;
     QString  getName(int index) const;
     const char* getExt(int index) const; // 2026-06-xx 新增：获取预拆分的扩展名 C-String
+    QString     getExtQString(int index) const; // 2026-06-xx 新增：获取预拆分的扩展名 QString (线程安全)
     int64_t getSize(int index) const;
     int64_t getModifyTime(int index) const;
     uint32_t getAttributes(int index) const;

@@ -472,6 +472,11 @@ const char* MftReader::getExt(int index) const {
     return reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[index]);
 }
 
+QString MftReader::getExtQString(int index) const {
+    QReadLocker lock(&m_dataLock);
+    return QString::fromUtf8(getExt(index));
+}
+
 int64_t MftReader::getSize(int index) const {
     QReadLocker lock(&m_dataLock);
     if (index < 0 || index >= (int)m_sizes.size()) return 0;
