@@ -416,18 +416,19 @@ void ScanTableModel::fetchMore(const QModelIndex& parent) {
 
 void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
-    auto tasks = std::move(m_thumbTaskQueue);
-    ScanTableModel* mutableThis = this;
+    auto currentTasks = std::move(m_thumbTaskQueue);
 
     // 2026-06-xx 极致性能流水线：后台并行生成 + 批量结果归并
-    (void)QtConcurrent::run([mutableThis, tasks]() {
-        struct Result { uint64_t key; QString cacheKey; QImage img; double ar; };
-        QVector<Result> results(tasks.size());
+    (void)QtConcurrent::run([this, currentTasks]() {
+        struct ThumbResult { uint64_t key; QString cacheKey; QImage img; double ar; };
+        QVector<ThumbResult> results(currentTasks.size());
 
         // 使用 QtConcurrent::blockingMap 充分利用多核 CPU 处理图片生成/IO
-        QVector<int> taskIndices(tasks.size()); std::iota(taskIndices.begin(), taskIndices.end(), 0);
-        QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [&](int i) {
-            const auto& t = tasks[i];
+        QVector<int> taskIndices((int)currentTasks.size());
+        std::iota(taskIndices.begin(), taskIndices.end(), 0);
+
+        QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [this, &currentTasks, &results](int i) {
+            const auto& t = currentTasks[i];
             auto& reader = MftReader::instance();
             
             // 物理加固：后台寻址。由于 MFT 可能是动态的，必须基于 Key 重新定位
@@ -441,40 +442,40 @@ void ScanTableModel::processThumbQueue() {
             if (t.ext == "svg") {
                 QSvgRenderer renderer(fullPath);
                 if (renderer.isValid()) {
-                    img = QImage(t.size, t.size, QImage::Format_ARGB32);
+                    img = QImage(QSize(t.size, t.size), QImage::Format_ARGB32);
                     img.fill(Qt::transparent);
                     QPainter painter(&img);
                     renderer.render(&painter);
                     painter.end();
                 }
             } else {
-                img = UiHelper::getShellThumbnail(fullPath, t.size);
+                img = FERREX::UiHelper::getShellThumbnail(fullPath, t.size);
             }
 
             if (!img.isNull()) {
-                results[i] = { t.key, t.cacheKey, img, (double)img.width() / img.height() };
+                results[i] = { t.key, t.cacheKey, img, (double)img.width() / (double)img.height() };
             }
         });
 
         // 批量切回主线程登记结果
-        QMetaObject::invokeMethod(mutableThis, [mutableThis, results]() {
-            auto snapshot = mutableThis->m_controller->snapshot();
+        QMetaObject::invokeMethod(this, [this, results]() {
+            auto snapshot = m_controller->snapshot();
             for (const auto& r : results) {
                 if (r.img.isNull()) continue;
                 
                 QPixmap pix = QPixmap::fromImage(r.img);
                 if (!pix.isNull()) {
-                    mutableThis->m_thumbCache.insert(r.cacheKey, new QPixmap(pix));
+                    m_thumbCache.insert(r.cacheKey, new QPixmap(pix));
                 }
-                mutableThis->m_aspectRatios[r.key] = r.ar;
+                m_aspectRatios[r.key] = r.ar;
 
                 auto itPos = snapshot->keyToPos.find(r.key);
-                if (itPos != snapshot->keyToPos.end() && itPos->second < mutableThis->m_displayCount) {
+                if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
                     // 2026-06-xx 批量 UI 同步：加入 pending 队列，由 throttleTimer 统一发射信号
-                    mutableThis->m_pendingRows.insert(itPos->second);
+                    m_pendingRows.insert(itPos->second);
                 }
             }
-            if (!mutableThis->m_throttleTimer->isActive()) mutableThis->m_throttleTimer->start();
+            if (!m_throttleTimer->isActive()) m_throttleTimer->start();
         });
     });
 }
