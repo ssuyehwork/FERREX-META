@@ -77,6 +77,7 @@ public:
     int      getIndexByKey(uint64_t compositeKey) const;
     uint64_t getKeyByIndex(int index) const;
     QString  getName(int index) const;
+    const char* getExt(int index) const; // 2026-06-xx 新增：获取预拆分的扩展名 C-String
     int64_t getSize(int index) const;
     int64_t getModifyTime(int index) const;
     uint32_t getAttributes(int index) const;
@@ -140,6 +141,7 @@ private:
     std::vector<int64_t>   m_sizes;
     std::vector<int64_t>   m_timestamps;   
     std::vector<uint32_t>  m_name_offsets;
+    std::vector<uint32_t>  m_ext_offsets;    // 2026-06-xx 新增：扩展名在字符串池中的偏移，实现零解析搜索
     std::vector<uint32_t>  m_attributes;
     std::vector<uint8_t>   m_metadata_fetched; // 0: 未获取, 1: 获取中, 2: 已完成
     std::vector<uint8_t>   m_string_pool;
