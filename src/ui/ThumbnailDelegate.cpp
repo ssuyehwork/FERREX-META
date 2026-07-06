@@ -70,16 +70,12 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     Metrics m = calculateMetrics(option);
     bool isSelected = (option.state & QStyle::State_Selected);
 
-    bool hasThumb = index.data(m_hasThumbnailRole).toBool();
+    // 2026-06-xx 状态机驱动渲染：0=不支持缩略图, 1=缩略图就绪, 2=加载中 (占位状态)
+    int thumbStatus = index.data(m_hasThumbnailRole).toInt();
     QVariant decoData = index.data(Qt::DecorationRole);
     QPixmap thumb;
-    if (decoData.canConvert<QPixmap>()) {
+    if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
-    } else if (decoData.canConvert<QIcon>()) {
-        QIcon icon = decoData.value<QIcon>();
-        if (!icon.isNull()) {
-            thumb = icon.pixmap(m.cardRect.size());
-        }
     }
 
     painter->save();
@@ -92,25 +88,31 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     clipPath.addRoundedRect(m.cardRect, 6, 6);
     painter->setClipPath(clipPath);
 
-    // 绘制卡片背景 (填充整个矩形)
+    // 绘制卡片背景
     painter->setPen(Qt::NoPen);
     painter->setBrush(QColor("#2d2d2d"));
     painter->drawRect(m.cardRect);
 
-    if (hasThumb && !thumb.isNull()) {
+    if (thumbStatus == 1 && !thumb.isNull()) {
+        // 第一优先级：显示就绪的缩略图
         QPixmap scaled = thumb.scaled(m.cardRect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
         int x = m.cardRect.center().x() - scaled.width() / 2;
         int y = m.cardRect.center().y() - scaled.height() / 2;
         painter->drawPixmap(x, y, scaled);
     } else {
+        // 第二优先级 (加载中) 或 第三优先级 (不支持)：绘制图标
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
-            // 确保图标在正方形背景中居中显示，且不留白（由背景色填充）
+            // 物理优化：如果是加载中状态，图标应用半透明效果
+            if (thumbStatus == 2) painter->setOpacity(0.5);
+            
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,
                            iconSize, iconSize);
             icon.paint(painter, iconRect);
+            
+            if (thumbStatus == 2) painter->setOpacity(1.0);
         }
     }
     painter->restore();
@@ -149,8 +151,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (ext.isEmpty()) ext = "FILE";
         QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-        // 2026-06-xx 物理优化：针对无缩略图项应用半透明角标，减少视觉冲击
-        if (!hasThumb) {
+        // 2026-06-xx 物理优化：针对非就绪状态应用半透明角标，减少视觉冲击
+        if (thumbStatus != 1) {
             badgeColor.setAlpha(160);
         }
 
@@ -158,7 +160,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         painter->setPen(Qt::NoPen);
         painter->setBrush(badgeColor);
         painter->drawRoundedRect(extRect, 2, 2);
-        painter->setPen(hasThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+        painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
         QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
         painter->setFont(extFont);
         painter->drawText(extRect, Qt::AlignCenter, ext);
