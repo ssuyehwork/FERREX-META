@@ -200,7 +200,7 @@ bool MftReader::loadFromCache() {
             if (bh.magic != BIN_MAGIC_VAL) continue;
 
             uint64_t nextUsn = 0;
-            std::vector<IndexEntry> mainIndex, deltaLayer;
+            std::vector<ScchIndexEntry> mainIndex, deltaLayer;
             if (!ScchCache::loadIndex(idxPath, bh.volume_serial, nextUsn, mainIndex, deltaLayer)) {
                 if (!ScchCache::rebuildIndexFromBin(binPath, bh.volume_serial, mainIndex)) continue;
             }
@@ -224,7 +224,7 @@ bool MftReader::loadFromCache() {
                     m_attributes[idx] = r.attributes;
                     QByteArray utf8 = QString::fromStdString(r.name).toUtf8();
                     m_name_offsets[idx] = (uint32_t)m_string_pool.size();
-                    m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
+                    m_string_pool.insert(m_string_pool.end(), (const uint8_t*)utf8.constData(), (const uint8_t*)utf8.constData() + utf8.size());
                     m_string_pool.push_back('\0');
                 } else {
                     uint32_t currentIdx = (uint32_t)m_frns.size();
@@ -236,7 +236,7 @@ bool MftReader::loadFromCache() {
                     m_metadata_fetched.push_back(0);
                     QByteArray utf8 = QString::fromStdString(r.name).toUtf8();
                     m_name_offsets.push_back((uint32_t)m_string_pool.size());
-                    m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
+                    m_string_pool.insert(m_string_pool.end(), (const uint8_t*)utf8.constData(), (const uint8_t*)utf8.constData() + utf8.size());
                     m_string_pool.push_back('\0');
                     m_frn_to_idx[compositeKey] = currentIdx;
                 }
@@ -295,7 +295,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         for (; it != m_sorted_indices.end(); ++it) {
             uint32_t i = *it;
             const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
-            if (_strnicmp(p, qUtf8.constData(), qUtf8.size()) != 0) break;
+            if (_strnicmp(p, qUtf8.constData(), (size_t)qUtf8.size()) != 0) break;
             
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
             if (!(m_drive_active_mask.load() & (1 << dIdx))) continue;
@@ -407,7 +407,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_attributes[targetIdx] = record->FileAttributes;
         QByteArray utf8 = name.toUtf8();
         m_name_offsets[targetIdx] = (uint32_t)m_string_pool.size();
-        m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
+        m_string_pool.insert(m_string_pool.end(), (const uint8_t*)utf8.constData(), (const uint8_t*)utf8.constData() + utf8.size());
         m_string_pool.push_back('\0');
     } else {
         targetIdx = (uint32_t)m_frns.size();
@@ -419,7 +419,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_metadata_fetched.push_back(0);
         QByteArray utf8 = name.toUtf8();
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
+        m_string_pool.insert(m_string_pool.end(), (const uint8_t*)utf8.constData(), (const uint8_t*)utf8.constData() + utf8.size());
         m_string_pool.push_back('\0');
         m_frn_to_idx[key] = targetIdx;
     }
@@ -437,7 +437,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_dirty_buffers[dIdx].push_back(r);
         if (m_dirty_buffers[dIdx].size() >= 100) {
             size_t idx = dIdx;
-            QtConcurrent::run([this, idx]() { flushDirtyToDisk(idx); });
+            QThreadPool::globalInstance()->start([this, idx]() { flushDirtyToDisk(idx); });
         }
     }
 
@@ -537,7 +537,7 @@ void MftReader::mergeDriveResultInternal(const std::wstring& volume, const Drive
         m_metadata_fetched.push_back(0);
         QByteArray utf8 = QString::fromStdString(e.name).toUtf8();
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
+        m_string_pool.insert(m_string_pool.end(), (const uint8_t*)utf8.constData(), (const uint8_t*)utf8.constData() + utf8.size());
         m_string_pool.push_back('\0');
         m_frn_to_idx[makeKey(driveIdx, e.frn)] = idx;
         std::lock_guard<std::mutex> lock(m_dirtyMutex);
