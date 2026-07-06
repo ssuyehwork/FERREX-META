@@ -242,12 +242,16 @@ void ScanController::processBatchUpdates() {
     std::shared_ptr<ResultSet> snap = snapshot();
     auto future = QtConcurrent::run([this, snap, events, text = m_searchText, state = m_filterState, 
                                      column = m_currentSortColumn, order = m_currentSortOrder]() {
-        auto newSet = std::make_shared<ResultSet>(*snap);
+        // 2026-06-xx 极致性能优化：延迟拷贝。
+        // 理由：直接对 snap 进行 * 解引用拷贝会克隆整个 unordered_map (200万项)，
+        // 这在 UI 线程频繁触发时会导致严重的亚秒级停顿（假死）。
+        std::shared_ptr<ResultSet> newSet;
         bool changed = false;
 
         auto& reader = MftReader::instance();
         for (const auto& ev : events) {
-            auto itPos = newSet->keyToPos.find(ev.key);
+            // 在未确定变动前，使用旧 snap 的映射进行 O(1) 预判
+            auto itPos = snap->keyToPos.find(ev.key);
             
             auto checkMatch = [&](uint32_t idx) {
                 if (idx == (uint32_t)-1) return false;
@@ -259,30 +263,34 @@ void ScanController::processBatchUpdates() {
             };
 
             if (ev.type == MftReader::ChangeEvent::Added) {
-                if (itPos == newSet->keyToPos.end() && checkMatch(ev.index)) {
+                if (itPos == snap->keyToPos.end() && checkMatch(ev.index)) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys.push_back(ev.key);
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Removed) {
-                if (itPos != newSet->keyToPos.end()) {
+                if (itPos != snap->keyToPos.end()) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys[itPos->second] = 0;
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Updated) {
                 bool matches = checkMatch(ev.index);
-                if (itPos != newSet->keyToPos.end()) {
+                if (itPos != snap->keyToPos.end()) {
                     if (!matches) {
+                        if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                         newSet->keys[itPos->second] = 0;
                         changed = true;
                     }
                 } else if (matches) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys.push_back(ev.key);
                     changed = true;
                 }
             }
         }
 
-        if (changed) {
+        if (changed && newSet) {
             newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
             
             // 执行后台安全重排序 (复用投影排序逻辑)
@@ -310,12 +318,13 @@ void ScanController::processBatchUpdates() {
             });
 
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
+            updateKeyToPosMapping(*newSet);
+            return newSet;
         }
 
-        // 2026-06-xx 物理修复：无论 changed 是否为 true，必须重新构建映射并返回 newSet。
-        // 理由：sortWatcher 的结果会直接替换 m_resultSet。
-        updateKeyToPosMapping(*newSet);
-        return newSet;
+        // 2026-06-xx 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
+        // 理由：sortWatcher 的结果会直接替换 m_resultSet，防止 UI 突然清空
+        return std::make_shared<ResultSet>(*snap);
     });
 
     // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果

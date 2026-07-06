@@ -1224,14 +1224,18 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
-            // 2026-06-xx 工业级初始化防御：首次启动若配置为空，智能选择默认盘符
-            // 策略：显示 C 盘但不默认激活，激活所有非系统盘作为初始扫描目标
-            if (weakThis->m_config.activeDrives.isEmpty() && weakThis->m_config.ignoredDrives.isEmpty()) {
+            // 2026-06-xx 物理修复：确保 C 盘可见。撤销之前的强制忽略逻辑。
+            // 策略：C 盘必须显示。如果配置中意外包含了 C 盘作为忽略项，则在此处强制修正。
+            if (weakThis->m_config.ignoredDrives.contains("C:")) {
+                weakThis->m_config.ignoredDrives.remove("C:");
+                weakThis->m_config.save();
+            }
+
+            // 首次启动时，如果没有选中任何盘符，则激活除 C 盘以外的所有 NTFS 盘符。
+            if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
-                    if (info.hasMedia && info.isNtfs) {
-                        if (info.letter != "C:") {
-                            weakThis->m_config.activeDrives.insert(info.letter);
-                        }
+                    if (info.hasMedia && info.isNtfs && info.letter != "C:") {
+                        weakThis->m_config.activeDrives.insert(info.letter);
                     }
                 }
                 weakThis->m_config.save();
