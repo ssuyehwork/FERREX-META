@@ -18,6 +18,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QtConcurrent>
 #include <QFuture>
+#include <QThreadPool>
 #include <QFileIconProvider>
 #include <QFileInfo>
 
@@ -599,11 +600,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<uint64_t> finalRes;
     finalRes.reserve(m_frns.size() / 16);
 
-    size_t total = m_frns.size();
     const size_t grainSize = 4096;
-    size_t numChunks = (total + grainSize - 1) / grainSize;
-    std::vector<size_t> chunkIndices(numChunks);
-    std::iota(chunkIndices.begin(), chunkIndices.end(), 0);
 
     // 2026-06-xx 极致算法重构：分块加锁搜索
     // 不再持有全局读锁，而是在并行的分块任务内部按需加锁，允许 USN 写入线程在分块间隙插队
@@ -847,7 +844,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
 
     if (shouldSave) {
         // 2026-06-xx 物理分离：将耗时 I/O 移出写锁范围，杜绝 UI 挂起
-        QtConcurrent::run([this, dIdx]() {
+        QThreadPool::globalInstance()->start([this, dIdx]() {
             saveDriveToCache(dIdx);
         });
     }
