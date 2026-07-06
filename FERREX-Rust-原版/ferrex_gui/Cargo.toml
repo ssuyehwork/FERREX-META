@@ -1,0 +1,43 @@
+[package]
+name = "ferrex_gui"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+indexer = { path = "../crates/indexer" }
+storage = { path = "../crates/storage" }
+search = { path = "../crates/search" }
+eframe = { version = "0.28", features = ["glow"] }
+egui_extras = { version = "0.28", features = ["image", "svg"] }
+tokio = { version = "1.0", features = ["full"] }
+chrono    = "0.4"
+lru       = "0.12"
+image     = "0.25"
+serde     = { version = "1.0", features = ["derive"] }
+toml      = "0.8"
+usvg      = "0.37"
+resvg     = "0.37"
+
+[target.'cfg(windows)'.dependencies]
+tray-icon = "0.18"
+rfd       = "0.14"
+windows = { version = "0.52", features = [
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Registry"
+] }
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

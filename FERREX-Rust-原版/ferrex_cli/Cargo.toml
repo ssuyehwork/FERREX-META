@@ -1,0 +1,11 @@
+[package]
+name = "ferrex_cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+indexer = { path = "../crates/indexer" }
+storage = { path = "../crates/storage" }
+search = { path = "../crates/search" }
+clap = { version = "4.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }

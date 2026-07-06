@@ -158,6 +158,13 @@ private:
 
     bool m_isInitialized = false;
     uint32_t m_dirty_count = 0;
+    std::unordered_set<uint32_t> m_dirty_indices; // 2026-06-xx 新增：记录变动的 SoA 下标
+    std::unordered_map<uint32_t, uint64_t> m_dead_frns; // 2026-06-xx 新增：记录已删除项的原始 FRN 用于落盘
+    std::mutex   m_dirtyLock; // 2026-06-xx 新增：保护脏数据追踪容器
+    
+    // 2026-06-xx 新增：合并期间的缓冲机制
+    std::unordered_map<size_t, bool> m_is_compacting; 
+    std::unordered_map<size_t, std::vector<ScchDataPackage>> m_compaction_buffer;
 
     std::vector<ChangeEvent> m_changeJournal;
     std::mutex               m_journalMutex;
