@@ -132,7 +132,8 @@ private:
 
     // SoA 主数据
     std::vector<uint64_t>  m_frns;
-    std::vector<uint64_t>  m_parent_frns; // 高 16 位存储盘符索引
+    std::vector<uint64_t>  m_parent_frns;  // 高 16 位存储盘符索引
+    std::vector<uint32_t>  m_parent_indices; // 2026-06-xx 新增：父节点在 SoA 中的下标，加速路径回溯
     std::vector<int64_t>   m_sizes;
     std::vector<int64_t>   m_timestamps;   
     std::vector<uint32_t>  m_name_offsets;
@@ -153,6 +154,7 @@ private:
     std::vector<UsnWatcher*> m_watchers;
 
     mutable QReadWriteLock m_dataLock;
+    QThreadPool*           m_metadataPool = nullptr; // 2026-06-xx 新增：物理属性补全专用线程池
     mutable QReadWriteLock m_iconCacheLock;
     QHash<QString, QIcon>  m_icon_cache;
 
