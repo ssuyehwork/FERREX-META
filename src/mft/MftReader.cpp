@@ -1085,7 +1085,8 @@ void MftReader::compact() {
 
 bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult& result) {
     std::wstring dev = L"\\\\.\\" + volume;
-    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    // 2026-06-xx 物理加固：增加 FILE_SHARE_DELETE 以匹配系统盘极高频的 I/O 竞争环境
+    HANDLE h = CreateFileW(dev.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
     if (h == INVALID_HANDLE_VALUE) return false;
 
     // 2026-05-14 获取根目录句柄作为 Hint，这对于 OpenFileById 的稳定性至关重要

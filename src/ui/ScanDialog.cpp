@@ -1226,6 +1226,16 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 } else {
                     info.isNtfs = false;
                 }
+
+                // 2026-06-xx 物理加固：C 盘豁免机制。
+                // 理由：C 盘作为系统盘，偶尔会因为权限或独占原因导致 GetVolumeInformation 失败。
+                // 本应用专为 C 盘设计，必须确保其至少在列表中可见且可尝试扫描。
+                if (letter == "C:") {
+                    info.hasMedia = true;
+                    info.isNtfs = true;
+                    if (info.label.isEmpty()) info.label = "系统盘";
+                }
+
                 drives.append(info);
             }
         }
@@ -1240,23 +1250,17 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 weakThis->m_config.ignoredDrives.remove("C:");
             }
 
-            // 2. 策略调整：确保 C 盘始终被激活（除非被显式忽略）。
-            // 对于其它盘符，如果是首次运行（activeDrives为空）则全部激活。
-            if (weakThis->m_config.activeDrives.isEmpty()) {
+            // 2. 策略调整：C 盘强制激活机制。
+            // 理由：本应用专为 C 盘设计。只要 C 盘存在且未被显式忽略，必须进入激活列表。
+            if (!weakThis->m_config.ignoredDrives.contains("C:")) {
+                weakThis->m_config.activeDrives.insert("C:");
+            }
+
+            // 首次运行策略：激活所有可用的 NTFS 盘符
+            if (weakThis->m_config.activeDrives.size() <= 1) { // 仅有强制激活的 C 盘或为空
                 for (const auto& info : drives) {
                     if (info.hasMedia && info.isNtfs) {
                         weakThis->m_config.activeDrives.insert(info.letter);
-                    }
-                }
-            } else {
-                // 核心修复：如果 C 盘被探测到且未被忽略，也未在激活列表，则强制激活。
-                // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
-                if (!weakThis->m_config.ignoredDrives.contains("C:") && !weakThis->m_config.activeDrives.contains("C:")) {
-                    for (const auto& info : drives) {
-                        if (info.letter == "C:" && info.isNtfs) {
-                            weakThis->m_config.activeDrives.insert("C:");
-                            break;
-                        }
                     }
                 }
             }
