@@ -63,6 +63,7 @@ struct ScanConfig {
 
 class ScanTableModel : public QAbstractTableModel {
     Q_OBJECT
+    friend class ScanDialog;
 public:
     explicit ScanTableModel(ScanController* controller, QObject* parent = nullptr);
     ~ScanTableModel() override;
@@ -88,6 +89,9 @@ public:
 
     Qt::DropActions supportedDragActions() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
+
+private slots:
+    void processThumbQueue();
 
 private:
     ScanController* m_controller;
