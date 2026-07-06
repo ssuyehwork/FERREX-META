@@ -6,7 +6,7 @@
 
 namespace ArcMeta {
 
-TrayController::TrayController(QWidget* mainWindow)
+TrayController::TrayController(QMainWindow* mainWindow)
     : QObject(mainWindow), m_mainWindow(mainWindow) {
     m_trayIcon = new QSystemTrayIcon(this);
     

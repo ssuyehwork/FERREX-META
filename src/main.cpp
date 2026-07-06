@@ -14,8 +14,7 @@
 #include <objbase.h>
 #include <shellapi.h>
 #include "ui/UiHelper.h"
-#include "ui/ScanDialog.h"
-#include "ui/TrayController.h"
+#include "ui/MainWindow.h"
 #include "db/Database.h"
 #include "db/SyncEngine.h"
 #include "meta/MetadataManager.h"
@@ -77,14 +76,10 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // 3. 简化启动：直接显示 ScanDialog (Plan-136)
-    // 彻底移除 MainWindow，仅保留 ScanDialog 作为唯一主界面
-    ArcMeta::ScanDialog* w = new ArcMeta::ScanDialog();
+    // 3. 简化启动：直接显示主窗口
+    // 2026-04-13 按用户要求移除 LoadingWindow 和 initializeHotIcons()
+    ArcMeta::MainWindow* w = new ArcMeta::MainWindow();
     w->show();
-
-    // 4. 集成托盘图标支持
-    ArcMeta::TrayController* tray = new ArcMeta::TrayController(w);
-    tray->show();
 
     // 5. 启动异步系统扫描（后台初始化，UI 可响应）
     ArcMeta::CoreController::instance().startSystem();

@@ -118,6 +118,7 @@ private slots:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -173,9 +174,6 @@ private:
 
     std::unique_ptr<CacheManager> m_cacheManager;
     ScanConfig m_config;
-
-protected:
-    void closeEvent(QCloseEvent* event) override;
 };
 
 } // namespace ArcMeta
