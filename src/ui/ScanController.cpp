@@ -171,8 +171,8 @@ void ScanController::sort(int column, int order) {
             }
         }
 
-        // 2. 排序阶段：完全去锁化计算 (使用并行加速)
-        std::sort(std::execution::par, proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
+        // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
+        std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
             bool less = false;
             if (column == 0 || column == 1) {
                 less = _stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0;
