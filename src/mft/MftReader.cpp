@@ -7,7 +7,6 @@
 #include <Shlwapi.h>
 #pragma comment(lib, "Shlwapi.lib")
 #include <algorithm>
-#include <execution>
 #include <mutex>
 #include <numeric>
 #include <filesystem>
@@ -215,12 +214,20 @@ void MftReader::buildIndex(const QStringList& drives) {
         bool success = false;
     };
     std::vector<ScannedDrive> scannedResults(toScan.size());
-    std::vector<int> scanIndices((int)toScan.size());
-    std::iota(scanIndices.begin(), scanIndices.end(), 0);
-    std::for_each((std::execution::par), scanIndices.begin(), scanIndices.end(), [&](int i) {
+    // 2026-06-xx 并行策略调整：由于部分环境不支持 <execution>，
+    // 改用 QtConcurrent::blockingMap 实现多驱动器并行扫描，确保高性能与高兼容性
+    QtConcurrent::blockingMap(toScan.begin(), toScan.end(), [&](const std::wstring& volume) {
         if (m_isStopping.load()) return;
-        scannedResults[i].volume = toScan[i];
-        scannedResults[i].success = loadMftDirect(toScan[i], scannedResults[i].res);
+        
+        // 寻找对应的结果槽位 (由于 toScan 与 scannedResults 是一一对应的，我们直接通过索引或查找)
+        // 简单起见，此处使用临时的 lambda 捕获来对齐结果
+        for (size_t i = 0; i < scannedResults.size(); ++i) {
+            if (toScan[i] == volume) {
+                scannedResults[i].volume = volume;
+                scannedResults[i].success = loadMftDirect(volume, scannedResults[i].res);
+                break;
+            }
+        }
     });
 
     if (m_isStopping.load()) return;
@@ -266,8 +273,8 @@ bool MftReader::loadFromCache() {
 
     std::unordered_set<std::string> loadedBases;
     for (auto const& entry : std::filesystem::directory_iterator{cacheDir}) {
-        std::string ext = entry.path().extension().string();
-        if (ext == ".bin" || ext == ".idx") {
+        std::string baseExt = entry.path().extension().string();
+        if (baseExt == ".bin" || baseExt == ".idx") {
             std::string stem = entry.path().stem().string();
             if (loadedBases.count(stem)) continue;
             loadedBases.insert(stem);
@@ -718,7 +725,8 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         std::vector<size_t> chunks(numChunks);
         std::iota(chunks.begin(), chunks.end(), 0);
 
-        std::for_each((std::execution::par), chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
+        // 2026-06-xx 性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
+        QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
             size_t startPos = chunkIdx * grainSize;
             
@@ -1209,7 +1217,8 @@ void MftReader::buildSortedIndices() {
     // 2026-05-14 性能增强：构建预排序索引，支持二分查找 O(log N)
     m_sorted_indices.resize(m_frns.size());
     std::iota(m_sorted_indices.begin(), m_sorted_indices.end(), 0);
-    std::sort((std::execution::par), m_sorted_indices.begin(), m_sorted_indices.end(), [this](uint32_t a, uint32_t b) {
+    // 2026-06-xx 物理降级：std::sort 暂不支持并行模式以适配当前编译器环境
+    std::sort(m_sorted_indices.begin(), m_sorted_indices.end(), [this](uint32_t a, uint32_t b) {
         const char* s1 = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[a]);
         const char* s2 = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[b]);
         return _stricmp(s1, s2) < 0;
