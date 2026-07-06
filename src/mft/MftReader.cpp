@@ -305,10 +305,10 @@ bool MftReader::loadFromCache() {
                         m_string_pool.push_back('\0');
 
                         // 2026-06-xx 物理对标：快照加载时同步预拆分扩展名
-                        std::string ext;
-                        splitNameAndExt(pkg.name, ext);
+                        std::string extStr;
+                        splitNameAndExt(pkg.name, extStr);
                         m_ext_offsets.push_back((uint32_t)m_string_pool.size());
-                        m_string_pool.insert(m_string_pool.end(), ext.begin(), ext.end());
+                        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
                         m_string_pool.push_back('\0');
                     }
                     currentTotal = m_frns.size();
@@ -866,10 +866,10 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         }
 
         // 重新追加 ext
-        std::string ext;
-        splitNameAndExt(utf8.toStdString(), ext);
+        std::string extStr;
+        splitNameAndExt(utf8.toStdString(), extStr);
         m_ext_offsets[finalIdx] = (uint32_t)m_string_pool.size();
-        m_string_pool.insert(m_string_pool.end(), ext.begin(), ext.end());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
         m_string_pool.push_back('\0');
     } else {
         finalIdx = (uint32_t)m_frns.size();
@@ -891,10 +891,10 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
         m_string_pool.push_back('\0');
 
-        std::string ext;
-        splitNameAndExt(utf8.toStdString(), ext);
+        std::string extStr;
+        splitNameAndExt(utf8.toStdString(), extStr);
         m_ext_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), ext.begin(), ext.end());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
         m_string_pool.push_back('\0');
 
         m_frn_to_idx[compositeKey] = finalIdx;
@@ -1175,10 +1175,10 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_string_pool.push_back('\0');
 
         // 2026-06-xx 物理对标：全量扫描时同步预拆分扩展名
-        std::string ext;
-        splitNameAndExt(e.nameUtf8, ext);
+        std::string extStr;
+        splitNameAndExt(e.nameUtf8, extStr);
         m_ext_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), ext.begin(), ext.end());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
         m_string_pool.push_back('\0');
     }
 }
