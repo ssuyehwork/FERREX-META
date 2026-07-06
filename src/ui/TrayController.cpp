@@ -4,7 +4,7 @@
 #include <QDebug>
 #include "../mft/MftReader.h"
 
-namespace ArcMeta {
+namespace FERREX-META {
 
 TrayController::TrayController(QWidget* mainWindow)
     : QObject(mainWindow), m_mainWindow(mainWindow) {
@@ -12,7 +12,7 @@ TrayController::TrayController(QWidget* mainWindow)
     
     // 2026-04-14 物理加固：锁定图标来源为 Qt 资源系统中的标准 ico
     m_trayIcon->setIcon(QIcon(":/app_icon.ico"));
-    m_trayIcon->setToolTip("ArcMeta");
+    m_trayIcon->setToolTip("FERREX-META");
 
     m_trayMenu = new QMenu(mainWindow);
     m_trayMenu->setStyleSheet(
@@ -23,7 +23,7 @@ TrayController::TrayController(QWidget* mainWindow)
 
     QAction* showAction = m_trayMenu->addAction("显示主界面");
     m_trayMenu->addSeparator();
-    QAction* quitAction = m_trayMenu->addAction("退出 ArcMeta");
+    QAction* quitAction = m_trayMenu->addAction("退出 FERREX-META");
 
     connect(showAction, &QAction::triggered, this, &TrayController::onShowMainWindow);
     connect(quitAction, &QAction::triggered, this, &TrayController::onQuitApp);
@@ -69,4 +69,4 @@ void TrayController::onQuitApp() {
     QApplication::quit();
 }
 
-} // namespace ArcMeta
+} // namespace FERREX-META

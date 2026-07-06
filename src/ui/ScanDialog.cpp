@@ -68,12 +68,12 @@
 #endif
 
 
-namespace ArcMeta {
+namespace FERREX-META {
 
 // --- ScanConfig Implementation ---
 
 void ScanConfig::load() {
-    QFile file("arcmeta_scan_config.json");
+    QFile file("FERREX-META_scan_config.json");
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
         QJsonObject root = doc.object();
@@ -117,7 +117,7 @@ void ScanConfig::load() {
 void ScanConfig::save() {
     // 首先尝试读取现有文件，保留其他可能的顶层配置
     QJsonObject root;
-    QFile readFile("arcmeta_scan_config.json");
+    QFile readFile("FERREX-META_scan_config.json");
     if (readFile.open(QIODevice::ReadOnly)) {
         root = QJsonDocument::fromJson(readFile.readAll()).object();
         readFile.close();
@@ -154,7 +154,7 @@ void ScanConfig::save() {
     // 将当前配置存入隔离的命名空间
     root["ScanDialog"] = obj;
     
-    QFile file("arcmeta_scan_config.json");
+    QFile file("FERREX-META_scan_config.json");
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(root).toJson());
     }
@@ -1636,14 +1636,58 @@ void ScanDialog::updateStatusBar() {
 
     if (!selectedRows.isEmpty()) {
         m_selectionLabel->show();
-        int64_t totalSize = 0;
-        auto& reader = MftReader::instance();
-        for (const auto& index : selectedRows) {
-            uint64_t key = m_tableModel->data(index, Qt::UserRole).toULongLong();
-            int actualIdx = reader.getIndexByKey(key);
-            if (actualIdx != -1 && !reader.isDirectory(actualIdx)) totalSize += reader.getSize(actualIdx);
+        
+        // Plan-Smooth: 针对 3.7M 级数据量，selectedRows() 及其后续遍历必须彻底移出 UI 线程。
+        // 我们改用 QItemSelection 范围，并在后台线程解析这些范围以提取主键并累加大小。
+        
+        const auto selection = view->selectionModel()->selection();
+        int totalSelectedCount = 0;
+        for (const auto& range : selection) totalSelectedCount += range.height();
+
+        if (totalSelectedCount > 500) {
+            m_selectionLabel->setText(QString(" | 已选择 %1 项 (计算中...)").arg(totalSelectedCount));
+            
+            auto currentResultSet = m_controller->snapshot();
+            // 提取范围，避免在 UI 线程展开数百万个索引
+            struct Range { int top, bottom; };
+            std::vector<Range> ranges;
+            for (const auto& r : selection) ranges.push_back({ r.top(), r.bottom() });
+
+            QtConcurrent::run([this, currentResultSet, ranges]() {
+                int64_t totalSize = 0;
+                int count = 0;
+                auto& reader = MftReader::instance();
+                QReadLocker lock(&reader.m_dataLock);
+                
+                for (const auto& r : ranges) {
+                    for (int i = r.top; i <= r.bottom; ++i) {
+                        if (i < 0 || i >= (int)currentResultSet->keys.size()) continue;
+                        
+                        // Plan-Smooth: 每 10000 条释放一次读锁，给 USN 写入留下物理空隙，彻底杜绝假死
+                        if (++count % 10000 == 0) { lock.unlock(); lock.relock(); }
+
+                        int actualIdx = reader.getIndexByKeyNoLock(currentResultSet->keys[i]);
+                        if (actualIdx != -1 && !reader.isDirectoryNoLock(actualIdx)) {
+                            totalSize += reader.getSizeNoLock(actualIdx);
+                        }
+                    }
+                }
+                
+                QMetaObject::invokeMethod(this, [this, totalSize, count]() {
+                    m_selectionLabel->setText(QString(" | 已选择 %1 项 (%2)").arg(count).arg(formatSize(totalSize)));
+                });
+            });
+        } else {
+            int64_t totalSize = 0;
+            auto& reader = MftReader::instance();
+            QReadLocker lock(&reader.m_dataLock);
+            for (const auto& index : selectedRows) {
+                uint64_t key = m_tableModel->data(index, Qt::UserRole).toULongLong();
+                int actualIdx = reader.getIndexByKeyNoLock(key);
+                if (actualIdx != -1 && !reader.isDirectoryNoLock(actualIdx)) totalSize += reader.getSizeNoLock(actualIdx);
+            }
+            m_selectionLabel->setText(QString(" | 已选择 %1 项 (%2)").arg(selectedRows.size()).arg(formatSize(totalSize)));
         }
-        m_selectionLabel->setText(QString(" | 已选择 %1 项 (%2)").arg(selectedRows.size()).arg(formatSize(totalSize)));
         
         if (selectedRows.size() > 1) m_csvBtn->show();
         else m_csvBtn->hide();
@@ -1652,6 +1696,7 @@ void ScanDialog::updateStatusBar() {
         m_csvBtn->hide();
     }
     
+    // Plan-Smooth: MftReader::totalCount 必须快。由于 SoA 结构，此处不再加锁获取 size。
     double memoryMb = (MftReader::instance().totalCount() * 184.0) / 1024.0 / 1024.0;
     m_statLabelMemory->setText(QString("数据占用 %1 MB").arg(memoryMb, 0, 'f', 1));
 }
@@ -1816,4 +1861,4 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
     return FramelessDialog::eventFilter(watched, event);
 }
 
-} // namespace ArcMeta
+} // namespace FERREX-META

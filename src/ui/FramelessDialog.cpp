@@ -7,7 +7,7 @@
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 
-namespace ArcMeta {
+namespace FERREX-META {
 
 // ============================================================================
 // FramelessDialog 基类实现
@@ -281,4 +281,4 @@ void FramelessInputDialog::showEvent(QShowEvent* event) {
     QTimer::singleShot(50, m_edit, qOverload<>(&QWidget::setFocus));
 }
 
-} // namespace ArcMeta
+} // namespace FERREX-META

@@ -46,7 +46,7 @@
 
 #include "SvgIcons.h"
 
-namespace ArcMeta {
+namespace FERREX-META {
 
 /**
  * @brief UI 辅助类 (全量热加载版 - 杜绝懒加载)
@@ -117,7 +117,7 @@ public:
         // 2026-06-xx 物理修复：在路径中加入 V3 标识并强制覆盖。
         // 核心修正：Qt QSS 必须使用正斜杠 (/)，反斜杠会被转义导致加载失败。强制转换为正斜杠。
         QString tmpPath = QDir::temp().filePath(
-            QString("arcmeta_%1_%2_v3.png").arg(key).arg(color.name().mid(1))
+            QString("FERREX-META_%1_%2_v3.png").arg(key).arg(color.name().mid(1))
         );
         pix.save(tmpPath, "PNG");
         return QDir::fromNativeSeparators(tmpPath);
@@ -417,4 +417,4 @@ public:
     }
 };
 
-} // namespace ArcMeta
+} // namespace FERREX-META
