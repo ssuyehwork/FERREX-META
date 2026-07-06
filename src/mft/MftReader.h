@@ -16,6 +16,8 @@
 #include <winioctl.h>
 #include <QIcon>
 #include <QHash>
+#include <QThreadPool>
+#include <QTimer>
 #include "ScchCache.h"
 
 #ifdef min
