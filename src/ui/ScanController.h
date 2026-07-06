@@ -82,6 +82,7 @@ private:
     int m_currentSortOrder = 0;
 
     std::shared_ptr<ResultSet> m_resultSet;
+    std::shared_ptr<ResultSet> m_sortBaseSnap; // 2026-06-xx 新增：记录重排序任务的基准快照，防止数据过期覆盖
     mutable std::mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;

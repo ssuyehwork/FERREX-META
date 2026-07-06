@@ -80,7 +80,11 @@ public:
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults();
-    void clearThumbCache() { m_thumbCache.clear(); }
+    void clearThumbCache() { 
+        m_thumbCache.clear(); 
+        m_requestedThumbs.clear(); 
+        m_thumbTaskQueue.clear();
+    }
 
     Qt::DropActions supportedDragActions() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
@@ -94,6 +98,16 @@ private:
     mutable QSet<uint64_t> m_requestedThumbs;
     mutable QMap<uint64_t, double> m_aspectRatios; // 存储宽高比
     
+    // 2026-06-xx 极致架构：并行批处理缩略图队列
+    struct ThumbTask {
+        uint64_t key;
+        int size;
+        QString ext;
+        QString cacheKey;
+    };
+    mutable QList<ThumbTask> m_thumbTaskQueue;
+    QTimer* m_thumbTimer = nullptr;
+
     QSet<int> m_pendingRows;  
     QTimer* m_throttleTimer = nullptr;
 };

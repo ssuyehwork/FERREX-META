@@ -40,6 +40,7 @@ class UsnWatcher;
  */
 class MftReader : public QObject {
     Q_OBJECT
+    friend class ScanController; // 2026-06-xx 极致架构：允许控制器直接访问 SoA，消除锁竞争开销
 public:
     static MftReader& instance();
 
