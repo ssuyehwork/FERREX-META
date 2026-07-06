@@ -49,23 +49,25 @@ uint32_t ScchCache::computeCrc32(const uint8_t* data, size_t len) {
 bool ScchCache::appendBatch(const std::string& binPath, const std::string& idxPath,
                             uint64_t volumeSerial, uint64_t nextUsn, const std::vector<Record>& records) {
     if (records.empty()) {
-        // 即使没有新记录，也更新 idx 的 USN
         std::fstream idxFile(idxPath, std::ios::binary | std::ios::in | std::ios::out);
         if (idxFile) {
-            IdxHeader h; idxFile.read(reinterpret_cast<char*>(&h), sizeof(h));
+            IdxHeader h; idxFile.read(reinterpret_cast<char*>(&h), sizeof(IdxHeader));
             h.next_usn = nextUsn;
             idxFile.seekp(0);
-            idxFile.write(reinterpret_cast<const char*>(&h), sizeof(h));
+            idxFile.write(reinterpret_cast<const char*>(&h), sizeof(IdxHeader));
         }
         return true;
     }
 
-    // 1. 写入 .bin 文件 (只追加)
     std::ofstream binFile(binPath, std::ios::binary | std::ios::app | std::ios::ate);
     if (!binFile.is_open()) {
         binFile.open(binPath, std::ios::binary);
         if (!binFile.is_open()) return false;
-        BinHeader header = { BIN_MAGIC_VAL, STORAGE_VERSION, volumeSerial, 0 };
+        BinHeader header;
+        header.magic = BIN_MAGIC_VAL;
+        header.version = STORAGE_VERSION;
+        header.volume_serial = volumeSerial;
+        header.record_count = 0;
         binFile.write(reinterpret_cast<const char*>(&header), sizeof(BinHeader));
     }
 
@@ -73,12 +75,11 @@ bool ScchCache::appendBatch(const std::string& binPath, const std::string& idxPa
     newEntries.reserve(records.size());
 
     for (const auto& r : records) {
-        uint64_t currentPos = binFile.tellp();
+        uint64_t currentPos = static_cast<uint64_t>(binFile.tellp());
         newEntries.push_back({ r.frn, currentPos });
 
         uint16_t nameLen = static_cast<uint16_t>(r.name.size());
 
-        // 构造 buffer 计算一条记录的整体 CRC
         std::vector<uint8_t> buffer;
         buffer.reserve(8 + 8 + 2 + nameLen + 4 + 8);
         auto push = [&](const void* d, size_t l) { const uint8_t* b = (const uint8_t*)d; buffer.insert(buffer.end(), b, b + l); };
@@ -95,40 +96,57 @@ bool ScchCache::appendBatch(const std::string& binPath, const std::string& idxPa
     }
     binFile.flush();
 
-    // 更新 .bin Header 中的 record_count
     {
         std::fstream f(binPath, std::ios::binary | std::ios::in | std::ios::out);
-        BinHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(h));
-        h.record_count += records.size();
-        f.seekp(0); f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+        if (f) {
+            BinHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(BinHeader));
+            h.record_count += records.size();
+            f.seekp(0); f.write(reinterpret_cast<const char*>(&h), sizeof(BinHeader));
+        }
     }
     binFile.close();
 
-    // 2. 写入 .idx 文件 (更新 Delta Layer)
     std::fstream idxFile(idxPath, std::ios::binary | std::ios::in | std::ios::out);
     if (!idxFile.is_open()) {
         idxFile.open(idxPath, std::ios::binary | std::ios::out);
-        IdxHeader h = { IDX_MAGIC_VAL, STORAGE_VERSION, volumeSerial, nextUsn, 0, 0 };
-        idxFile.write(reinterpret_cast<const char*>(&h), sizeof(h));
+        IdxHeader h;
+        h.magic = IDX_MAGIC_VAL;
+        h.version = STORAGE_VERSION;
+        h.volume_serial = volumeSerial;
+        h.next_usn = nextUsn;
+        h.main_count = 0;
+        h.delta_count = 0;
+        idxFile.write(reinterpret_cast<const char*>(&h), sizeof(IdxHeader));
+        idxFile.close();
+        idxFile.open(idxPath, std::ios::binary | std::ios::in | std::ios::out);
     }
 
-    IdxHeader h;
-    idxFile.seekg(0);
-    idxFile.read(reinterpret_cast<char*>(&h), sizeof(h));
-    if (h.volume_serial != volumeSerial) return false;
-
-    idxFile.seekp(0, std::ios::end);
-    for (const auto& entry : newEntries) {
-        idxFile.write(reinterpret_cast<const char*>(&entry), sizeof(IndexEntry));
+    if (idxFile) {
+        IdxHeader h;
+        idxFile.seekg(0);
+        idxFile.read(reinterpret_cast<char*>(&h), sizeof(IdxHeader));
+        if (h.volume_serial == volumeSerial) {
+            idxFile.seekp(0, std::ios::end);
+            for (const auto& entry : newEntries) {
+                idxFile.write(reinterpret_cast<const char*>(&entry), sizeof(IndexEntry));
+            }
+            h.delta_count += records.size();
+            h.next_usn = nextUsn;
+            idxFile.seekp(0);
+            idxFile.write(reinterpret_cast<const char*>(&h), sizeof(IdxHeader));
+        }
+        idxFile.close();
     }
 
-    h.delta_count += records.size();
-    h.next_usn = nextUsn;
-    idxFile.seekp(0);
-    idxFile.write(reinterpret_cast<const char*>(&h), sizeof(h));
-    idxFile.close();
+    // 检查并重新读取以获取正确的 delta_count
+    {
+        std::ifstream f(idxPath, std::ios::binary);
+        if (f) {
+            IdxHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(IdxHeader));
+            if (h.delta_count > 5000) performCompaction(binPath, idxPath, volumeSerial, nextUsn);
+        }
+    }
 
-    if (h.delta_count > 5000) performCompaction(binPath, idxPath, volumeSerial, nextUsn);
     return true;
 }
 
@@ -136,11 +154,13 @@ bool ScchCache::loadIndex(const std::string& idxPath, uint64_t volumeSerial, uin
                          std::vector<IndexEntry>& mainIndex, std::vector<IndexEntry>& deltaLayer) {
     std::ifstream f(idxPath, std::ios::binary);
     if (!f) return false;
-    IdxHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(h));
+    IdxHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(IdxHeader));
     if (h.magic != IDX_MAGIC_VAL || h.volume_serial != volumeSerial) return false;
     nextUsn = h.next_usn;
-    mainIndex.resize(h.main_count); f.read(reinterpret_cast<char*>(mainIndex.data()), h.main_count * sizeof(IndexEntry));
-    deltaLayer.resize(h.delta_count); f.read(reinterpret_cast<char*>(deltaLayer.data()), h.delta_count * sizeof(IndexEntry));
+    mainIndex.resize(static_cast<size_t>(h.main_count));
+    f.read(reinterpret_cast<char*>(mainIndex.data()), h.main_count * sizeof(IndexEntry));
+    deltaLayer.resize(static_cast<size_t>(h.delta_count));
+    f.read(reinterpret_cast<char*>(deltaLayer.data()), h.delta_count * sizeof(IndexEntry));
     return true;
 }
 
@@ -157,7 +177,6 @@ bool ScchCache::readRecords(const std::string& binPath, const std::vector<IndexE
         r.name.resize(nl); f.read(&r.name[0], nl);
         f.read(reinterpret_cast<char*>(&r.attributes), 4);
         f.read(reinterpret_cast<char*>(&r.timestamp), 8);
-        // skip crc
         records.push_back(std::move(r));
     }
     return true;
@@ -167,11 +186,11 @@ bool ScchCache::rebuildIndexFromBin(const std::string& binPath, uint64_t volumeS
                                     std::vector<IndexEntry>& mainIndex) {
     std::ifstream f(binPath, std::ios::binary);
     if (!f) return false;
-    BinHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(h));
+    BinHeader h; f.read(reinterpret_cast<char*>(&h), sizeof(BinHeader));
     if (h.magic != BIN_MAGIC_VAL || h.volume_serial != volumeSerial) return false;
-    mainIndex.reserve(h.record_count);
+    mainIndex.reserve(static_cast<size_t>(h.record_count));
     for (uint64_t i = 0; i < h.record_count; ++i) {
-        uint64_t off = f.tellg();
+        uint64_t off = static_cast<uint64_t>(f.tellg());
         uint64_t frn; uint16_t nl;
         f.read(reinterpret_cast<char*>(&frn), 8);
         f.seekg(8, std::ios::cur); f.read(reinterpret_cast<char*>(&nl), 2);
@@ -192,14 +211,20 @@ bool ScchCache::performCompaction(const std::string& binPath, const std::string&
     for (const auto& e : main) m[e.frn] = e.offset;
     for (const auto& e : delta) m[e.frn] = e.offset;
     std::vector<IndexEntry> newMain; newMain.reserve(m.size());
-    for (const auto& [f, o] : m) newMain.push_back({ f, o });
+    for (const auto& pair : m) newMain.push_back({ pair.first, pair.second });
     std::sort(newMain.begin(), newMain.end(), [](const IndexEntry& a, const IndexEntry& b) { return a.frn < b.frn; });
 
     std::string tmpIdx = idxPath + ".tmp";
     {
         std::ofstream f(tmpIdx, std::ios::binary);
-        IdxHeader h = { IDX_MAGIC_VAL, STORAGE_VERSION, volumeSerial, nextUsn, newMain.size(), 0 };
-        f.write(reinterpret_cast<const char*>(&h), sizeof(h));
+        IdxHeader h;
+        h.magic = IDX_MAGIC_VAL;
+        h.version = STORAGE_VERSION;
+        h.volume_serial = volumeSerial;
+        h.next_usn = nextUsn;
+        h.main_count = newMain.size();
+        h.delta_count = 0;
+        f.write(reinterpret_cast<const char*>(&h), sizeof(IdxHeader));
         f.write(reinterpret_cast<const char*>(newMain.data()), newMain.size() * sizeof(IndexEntry));
     }
     DeleteFileA(idxPath.c_str()); std::rename(tmpIdx.c_str(), idxPath.c_str());

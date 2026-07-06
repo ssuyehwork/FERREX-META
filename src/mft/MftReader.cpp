@@ -11,6 +11,7 @@
 #include <mutex>
 #include <numeric>
 #include <filesystem>
+#include <fstream>
 #include <QDebug>
 #include <QRegularExpression>
 #include <QDir>
@@ -189,14 +190,17 @@ bool MftReader::loadFromCache() {
     for (auto const& entry : std::filesystem::directory_iterator{cacheDir}) {
         if (entry.path().extension() == ".bin") {
             std::string binPath = entry.path().string();
-            std::string idxPath = entry.path().replace_extension(".idx").string();
+            std::filesystem::path ip = entry.path();
+            ip.replace_extension(".idx");
+            std::string idxPath = ip.string();
 
             std::ifstream bf(binPath, std::ios::binary);
-            BinHeader bh; bf.read(reinterpret_cast<char*>(&bh), sizeof(bh));
+            if (!bf) continue;
+            BinHeader bh; bf.read(reinterpret_cast<char*>(&bh), sizeof(BinHeader));
             if (bh.magic != BIN_MAGIC_VAL) continue;
 
             uint64_t nextUsn = 0;
-            std::vector<ScchCache::IndexEntry> mainIndex, deltaLayer;
+            std::vector<IndexEntry> mainIndex, deltaLayer;
             if (!ScchCache::loadIndex(idxPath, bh.volume_serial, nextUsn, mainIndex, deltaLayer)) {
                 if (!ScchCache::rebuildIndexFromBin(binPath, bh.volume_serial, mainIndex)) continue;
             }
@@ -275,7 +279,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
                                        const QStringList& extensionList, bool includeHidden, bool includeSystem,
                                        bool includeDollar) {
     QReadLocker lock(&m_dataLock);
-    if (!m_isInitialized) return {};
+    if (!m_isInitialized) return std::vector<uint64_t>();
 
     bool hasQuery = !query.isEmpty();
     std::vector<uint64_t> results;
@@ -306,17 +310,11 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         return results;
     }
 
-    const size_t totalCount = m_frns.size();
+    const size_t totalC = m_frns.size();
     const size_t chunkSize = 4096;
-    std::mutex resMtx;
 
-    // 采用分块检索，提升并发性并降低大锁持有时间
-    for (size_t start = 0; start < totalCount; start += chunkSize) {
-        size_t end = (std::min)(start + chunkSize, totalCount);
-
-        // 此处虽然在循环内，但 SoA 访问非常快。
-        // 如果是极端追求“丝滑”，可以使用 QtConcurrent 异步分块，
-        // 但 search 本身通常就在非 UI 线程调用。
+    for (size_t start = 0; start < totalC; start += chunkSize) {
+        size_t end = (std::min)(start + chunkSize, totalC);
         for (size_t i = start; i < end; ++i) {
             if (m_frns[i] == 0) continue;
 
@@ -427,7 +425,13 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     }
     m_next_usns[volume] = record->Usn;
 
-    ScchCache::Record r = { record->FileReferenceNumber, record->ParentFileReferenceNumber, name.toStdString(), record->FileAttributes, filetimeToUnixMs(record->TimeStamp.QuadPart) };
+    ScchCache::Record r;
+    r.frn = record->FileReferenceNumber;
+    r.parentFrn = record->ParentFileReferenceNumber;
+    r.name = name.toStdString();
+    r.attributes = record->FileAttributes;
+    r.timestamp = filetimeToUnixMs(record->TimeStamp.QuadPart);
+
     {
         std::lock_guard<std::mutex> dLock(m_dirtyMutex);
         m_dirty_buffers[dIdx].push_back(r);
