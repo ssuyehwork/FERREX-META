@@ -227,6 +227,27 @@ public:
         return color;
     }
 
+    /**
+     * @brief 检查当前进程是否以管理员权限运行 (Windows 专属)
+     */
+    static bool isRunAsAdmin() {
+#ifdef Q_OS_WIN
+        bool isAdmin = false;
+        HANDLE hToken = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+            TOKEN_ELEVATION elevation;
+            DWORD size = sizeof(TOKEN_ELEVATION);
+            if (GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &size)) {
+                isAdmin = elevation.TokenIsElevated;
+            }
+            CloseHandle(hToken);
+        }
+        return isAdmin;
+#else
+        return true;
+#endif
+    }
+
 
     /**
      * @brief 从图像中提取调色盘 (工业级优化版)

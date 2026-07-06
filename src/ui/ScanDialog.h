@@ -79,6 +79,8 @@ public:
     bool canFetchMore(const QModelIndex& parent) const override;
     void fetchMore(const QModelIndex& parent) override;
 
+    void setVisibleRange(int top, int bottom);
+
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults();
     void clearThumbCache() { 
@@ -114,6 +116,10 @@ private:
 
     QSet<int> m_pendingRows;  
     QTimer* m_throttleTimer = nullptr;
+
+    QTimer* m_metadataTimer = nullptr;
+    int m_visibleTop = -1;
+    int m_visibleBottom = -1;
 };
 
 class ScanDialog : public FramelessDialog {

@@ -166,6 +166,23 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
+
+    m_metadataTimer = new QTimer(this);
+    m_metadataTimer->setInterval(150); // 150ms 视口防抖
+    m_metadataTimer->setSingleShot(true);
+    connect(m_metadataTimer, &QTimer::timeout, this, [this]() {
+        if (m_visibleTop < 0 || m_visibleBottom < 0) return;
+        auto& reader = MftReader::instance();
+        for (int i = m_visibleTop; i <= m_visibleBottom; ++i) {
+            if (i >= (int)m_currentResultSet->keys.size()) break;
+            uint64_t key = m_currentResultSet->keys[i];
+            int idx = reader.getIndexByKey(key);
+            if (idx != -1 && !reader.isMetadataFetched(idx)) {
+                const_cast<MftReader&>(reader).requestMetadata(idx);
+            }
+        }
+    });
+
     m_thumbTimer = new QTimer(this);
     m_thumbTimer->setInterval(20); // 20ms 任务归并窗口
     m_thumbTimer->setSingleShot(true);
@@ -221,7 +238,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 if (reader.isDirectory(actualIndex)) return "-";
                 int64_t size = reader.getSize(actualIndex);
                 if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    const_cast<MftReader&>(reader).requestMetadata(actualIndex);
                     return "...";
                 }
                 if (size < 1024) return QString("%1 B").arg(size);
@@ -232,7 +248,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             case 3: {
                 int64_t ts = reader.getModifyTime(actualIndex);
                 if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    const_cast<MftReader&>(reader).requestMetadata(actualIndex);
                     return "-";
                 }
                 if (ts == 0) return "-";
@@ -414,6 +429,12 @@ void ScanTableModel::fetchMore(const QModelIndex& parent) {
     endInsertRows();
 }
 
+void ScanTableModel::setVisibleRange(int top, int bottom) {
+    m_visibleTop = top;
+    m_visibleBottom = bottom;
+    m_metadataTimer->start();
+}
+
 void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
     auto currentTasks = std::move(m_thumbTaskQueue);
@@ -513,6 +534,12 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
 {
+    if (!UiHelper::isRunAsAdmin()) {
+        QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
+        QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+        return;
+    }
+
     m_config.load();
     resize(1000, 700);
     setMinimumSize(800, 500);
@@ -1025,6 +1052,14 @@ void ScanDialog::setupUi() {
     m_resultView->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
 
     m_resultView->verticalHeader()->setVisible(false);
+
+    connect(m_resultView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        int topRow = m_resultView->rowAt(0);
+        int bottomRow = m_resultView->rowAt(m_resultView->viewport()->height());
+        if (bottomRow == -1) bottomRow = m_tableModel->rowCount() - 1;
+        m_tableModel->setVisibleRange(topRow, bottomRow);
+    });
+
     m_resultView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultView->setSelectionMode(QAbstractItemView::ExtendedSelection); // 显式启用多选
     m_resultView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1181,6 +1216,17 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
+            // 2026-06-xx 工业级初始化防御：首次启动若忽略列表为空，默认排除系统盘 (C:)
+            if (weakThis->m_config.ignoredDrives.isEmpty()) {
+                for (const auto& info : drives) {
+                    if (info.letter == "C:") {
+                        weakThis->m_config.ignoredDrives.insert("C:");
+                        weakThis->m_config.save();
+                        break;
+                    }
+                }
+            }
+
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
                 if (item->widget()) item->widget()->deleteLater();
