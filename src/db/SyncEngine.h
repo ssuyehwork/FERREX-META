@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <QObject>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 /**
  * @brief 同步引擎
@@ -54,4 +54,4 @@ private:
     void scanDirectory(const std::filesystem::path& root, std::vector<std::wstring>& metaFiles);
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

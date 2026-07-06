@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 /**
  * @brief 文件夹元数据持久层
@@ -28,4 +28,4 @@ public:
     static bool remove(const std::wstring& volume, const std::wstring& path);
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

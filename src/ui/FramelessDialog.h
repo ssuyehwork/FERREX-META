@@ -12,11 +12,11 @@
 #include <QMouseEvent>
 #include <QKeyEvent>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 /**
  * @brief 无边框对话框基类，自带标题栏、关闭按钮（扁平化设计）
- * 适配 FERREX-META 风格，参考旧版 RapidNotes 基因实现
+ * 适配 ArcMeta 风格，参考旧版 RapidNotes 基因实现
  */
 class FramelessDialog : public QDialog {
     Q_OBJECT
@@ -66,6 +66,6 @@ private:
     QLineEdit* m_edit;
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta
 
 #endif // FRAMELESSDIALOG_H

@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <unordered_map>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 struct ScanFilterState {
     QStringList extensionList; 
@@ -65,15 +65,12 @@ signals:
     
     // 2026-06-xx 响应式信号 (携带原子快照，确保 Model 同步绝对安全)
     void resultsSwapped(std::shared_ptr<ResultSet> newSet);
-    void entryAdded(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
-    void entryRemoved(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
-    void entryUpdated(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
 
 private slots:
-    void processPendingIncrementalUpdates();
     void onMftEntryAdded(uint32_t index);
     void onMftEntryRemoved(uint64_t key);
     void onMftEntryUpdated(uint32_t index);
+    void processBatchUpdates();
 
 private:
     void performSearch();
@@ -88,18 +85,18 @@ private:
     mutable std::mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;
-    QTimer* m_incrementalTimer = nullptr;
+    QTimer* m_batchTimer = nullptr;
     
-    struct PendingUpdate {
-        enum Type { Added, Removed, Updated } type;
+    struct PendingEvent {
+        enum Type { Add, Remove, Update } type;
         uint64_t key;
-        uint32_t mftIndex;
+        uint32_t index; // Only for Add/Update
     };
-    std::vector<PendingUpdate> m_pendingUpdates;
+    std::vector<PendingEvent> m_pendingEvents;
     std::mutex m_pendingMutex;
 
     QFutureWatcher<std::vector<uint64_t>> m_watcher;
     QFutureWatcher<std::vector<uint64_t>> m_sortWatcher;
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

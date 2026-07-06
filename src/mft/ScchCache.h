@@ -1,79 +1,87 @@
 #pragma once
 #include <cstdint>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
-// Plan-137: 双文件格式规范
-constexpr uint32_t BIN_MAGIC_VAL = 0x4E49422E; // ".BIN"
-constexpr uint32_t IDX_MAGIC_VAL = 0x5844492E; // ".IDX"
-constexpr uint16_t STORAGE_VERSION = 1;
+// 当前格式版本
+constexpr uint16_t SCCH_VERSION_MAJOR = 1;
+constexpr uint16_t SCCH_VERSION_MINOR = 0;
+constexpr char     SCCH_MAGIC[4]      = {'S','C','C','H'};
+constexpr char     SCCH_DEFAULT_PATH[] = "ArcMeta/cache/index.scch";
 
 #pragma pack(push, 1)
-struct BinHeader {
-    uint32_t magic;
-    uint16_t version;
-    uint64_t volume_serial;
+struct ScchHeader {
+    char     magic[4];           // "SCCH"
+    uint16_t version_major;
+    uint16_t version_minor;
+    int64_t  created_at;         // Unix 毫秒
     uint64_t record_count;
-};
-
-struct IdxHeader {
-    uint32_t magic;
-    uint16_t version;
-    uint64_t volume_serial;
-    uint64_t next_usn;
-    uint64_t main_count;
-    uint64_t delta_count;
-};
-
-struct IndexEntry {
-    uint64_t frn;
-    uint64_t offset;
+    uint64_t pool_size;
+    uint64_t usn_map_count;
+    uint64_t sorted_indices_count; // 2026-05-14 新增：持久化排序索引
+    uint32_t crc32;              // 头部之后所有字节的 CRC32
+    uint32_t flags;              // 保留，写 0
+    // 总计 56 字节，对齐友好
 };
 #pragma pack(pop)
 
+static_assert(sizeof(ScchHeader) == 56, "ScchHeader size mismatch");
+
+struct ScchUsnEntry {
+    char     drive[4];           // e.g. "C:\0"
+    uint64_t next_usn;
+};
+
+// 读写结果
+enum class ScchResult {
+    Ok,
+    FileNotFound,
+    BadMagic,
+    VersionMismatch,
+    CrcMismatch,
+    Truncated,
+    IoError,
+};
+
+const char* scchResultString(ScchResult r);
+
 class ScchCache {
 public:
-    struct Record {
-        uint64_t frn;
-        uint64_t parentFrn;
-        std::string name;
-        uint32_t attributes;
-        int64_t timestamp;
-    };
+    // 写入
+    static bool save(
+        const char*                                  path,
+        const std::vector<uint64_t>&                 frns,
+        const std::vector<uint64_t>&                 parent_frns,
+        const std::vector<int64_t>&                  sizes,
+        const std::vector<int64_t>&                  timestamps,
+        const std::vector<uint32_t>&                 name_offsets,
+        const std::vector<uint32_t>&                 attributes,
+        const std::vector<uint8_t>&                  metadata_fetched,
+        const std::vector<uint8_t>&                  string_pool,
+        const std::vector<uint32_t>&                 sorted_indices,
+        const std::unordered_map<std::string, uint64_t>& usn_map
+    );
 
-    /**
-     * @brief 追加一批记录到 .bin，并更新 .idx 的 delta layer
-     */
-    static bool appendBatch(const std::string& binPath, const std::string& idxPath, 
-                            uint64_t volumeSerial, uint64_t nextUsn, const std::vector<Record>& records);
+    // 读取 (增量加载模式)
+    static ScchResult load(
+        const char*                                  path,
+        std::vector<uint64_t>&                       frns,
+        std::vector<uint64_t>&                       parent_frns,
+        std::vector<int64_t>&                        sizes,
+        std::vector<int64_t>&                        timestamps,
+        std::vector<uint32_t>&                       name_offsets,
+        std::vector<uint32_t>&                       attributes,
+        std::vector<uint8_t>&                        metadata_fetched,
+        std::vector<uint8_t>&                        string_pool,
+        std::vector<uint32_t>&                       sorted_indices,
+        std::unordered_map<std::string, uint64_t>&   usn_map
+    );
 
-    /**
-     * @brief 从 .idx 加载索引项
-     */
-    static bool loadIndex(const std::string& idxPath, uint64_t volumeSerial, uint64_t& nextUsn,
-                         std::vector<IndexEntry>& mainIndex, std::vector<IndexEntry>& deltaLayer);
-
-    /**
-     * @brief 批量从 .bin 读取记录 (优化性能)
-     */
-    static bool readRecords(const std::string& binPath, const std::vector<IndexEntry>& entries, std::vector<Record>& records);
-
-    /**
-     * @brief 如果 .idx 缺失或损坏，从 .bin 全量重建
-     */
-    static bool rebuildIndexFromBin(const std::string& binPath, uint64_t volumeSerial,
-                                    std::vector<IndexEntry>& mainIndex);
-
-    /**
-     * @brief 执行合并：读取 bin，应用 delta，写出全新的 bin+idx
-     */
-    static bool performCompaction(const std::string& binPath, const std::string& idxPath, 
-                                  uint64_t volumeSerial, uint64_t nextUsn);
-
+private:
     static uint32_t computeCrc32(const uint8_t* data, size_t len);
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

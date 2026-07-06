@@ -4,7 +4,7 @@
 #include <QDateTime>
 #include <filesystem>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 BatchRenameEngine& BatchRenameEngine::instance() {
     static BatchRenameEngine inst;
@@ -40,7 +40,7 @@ QString BatchRenameEngine::processOne(const std::wstring& path, int index, const
                 newName += info.baseName();
                 break;
             case RenameComponentType::Metadata:
-                newName += "[FERREX-META]"; 
+                newName += "[ArcMeta]"; 
                 break;
         }
     }
@@ -66,4 +66,4 @@ bool BatchRenameEngine::execute(const std::vector<std::wstring>& originalPaths, 
     return true;
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

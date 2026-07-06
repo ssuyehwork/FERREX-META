@@ -6,7 +6,7 @@
 #include <QStandardPaths>
 #include <QThread>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 struct Database::Impl {
     QSqlDatabase db;
@@ -198,4 +198,4 @@ void Database::upsertFolderCache(const std::wstring& path, qint64 mtime) {
     }
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

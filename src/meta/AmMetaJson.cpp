@@ -11,7 +11,7 @@
 #include "AmMetaJson.h"
 #include <windows.h>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 AmMetaJson::AmMetaJson(const std::wstring& folderPath)
     : m_folderPath(folderPath) {
@@ -212,4 +212,4 @@ ItemMeta AmMetaJson::entryToItem(const QJsonObject& obj) {
     return meta;
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

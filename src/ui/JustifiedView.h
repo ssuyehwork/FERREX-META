@@ -4,7 +4,7 @@
 #include <QList>
 #include <vector>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 class JustifiedView : public QAbstractItemView {
     Q_OBJECT
@@ -54,4 +54,4 @@ private:
     int m_anchorRow = -1; // 2026-06-16 物理锚点：锁定 Shift 多选起始行
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

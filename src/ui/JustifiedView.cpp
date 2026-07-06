@@ -10,7 +10,7 @@
 #include <QTimer>
 #include <algorithm>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
     horizontalScrollBar()->setRange(0, 0);
@@ -389,4 +389,4 @@ void JustifiedView::doLayout() {
     viewport()->update();
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

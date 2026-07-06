@@ -3,7 +3,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QElapsedTimer>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 ScanController::ScanController(QObject* parent) : QObject(parent) {
     m_resultSet = std::make_shared<ResultSet>();
@@ -11,18 +11,17 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
     m_debounceTimer->setSingleShot(true);
     m_debounceTimer->setInterval(300); // 300ms 黄金防抖时间
 
-    m_incrementalTimer = new QTimer(this);
-    m_incrementalTimer->setInterval(150); // 150ms 聚合更新增量，解决大规模写入时的假死
-
     connect(m_debounceTimer, &QTimer::timeout, this, [this]() {
         performSearch();
     });
-    connect(m_incrementalTimer, &QTimer::timeout, this, &ScanController::processPendingIncrementalUpdates);
+
+    m_batchTimer = new QTimer(this);
+    m_batchTimer->setSingleShot(true);
+    m_batchTimer->setInterval(200); // 200ms 批量处理间隔
+    connect(m_batchTimer, &QTimer::timeout, this, &ScanController::processBatchUpdates);
 
     auto& reader = MftReader::instance();
-    connect(&reader, &MftReader::entryAdded, this, &ScanController::onMftEntryAdded);
-    connect(&reader, &MftReader::entryRemoved, this, &ScanController::onMftEntryRemoved);
-    connect(&reader, &MftReader::entryUpdated, this, &ScanController::onMftEntryUpdated);
+    connect(&reader, &MftReader::entriesChangedBatch, this, &ScanController::processBatchUpdates);
 
     connect(&m_sortWatcher, &QFutureWatcher<std::vector<uint64_t>>::finished, this, [this]() {
         if (m_sortWatcher.isCanceled()) return;
@@ -157,95 +156,79 @@ void ScanController::updateKeyToPosMapping(ResultSet& rs) {
     }
 }
 
-void ScanController::onMftEntryAdded(uint32_t index) {
-    uint64_t key = MftReader::instance().getKeyByIndex(index);
-    std::lock_guard<std::mutex> lock(m_pendingMutex);
-    m_pendingUpdates.push_back({ PendingUpdate::Added, key, index });
-    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
-}
+void ScanController::onMftEntryAdded(uint32_t) {}
+void ScanController::onMftEntryRemoved(uint64_t) {}
+void ScanController::onMftEntryUpdated(uint32_t) {}
 
-void ScanController::onMftEntryRemoved(uint64_t key) {
-    std::lock_guard<std::mutex> lock(m_pendingMutex);
-    m_pendingUpdates.push_back({ PendingUpdate::Removed, key, 0 });
-    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
-}
+void ScanController::processBatchUpdates() {
+    auto events = MftReader::instance().pullChangeJournal();
+    if (events.empty()) return;
 
-void ScanController::onMftEntryUpdated(uint32_t index) {
-    uint64_t key = MftReader::instance().getKeyByIndex(index);
-    std::lock_guard<std::mutex> lock(m_pendingMutex);
-    m_pendingUpdates.push_back({ PendingUpdate::Updated, key, index });
-    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
-}
-
-void ScanController::processPendingIncrementalUpdates() {
-    std::vector<PendingUpdate> updates;
-    {
-        std::lock_guard<std::mutex> lock(m_pendingMutex);
-        updates = std::move(m_pendingUpdates);
-        m_pendingUpdates.clear();
-        m_incrementalTimer->stop();
+    // 如果积压事件过多（例如超过 1000 个），直接触发全量重搜，避免频繁执行低效的 O(N) 增量更新
+    if (events.size() > 1000) {
+        qDebug() << "[ScanController] 积压事件过多 (" << events.size() << ")，触发全量搜索优化";
+        triggerSearch(true);
+        return;
     }
-
-    if (updates.empty()) return;
 
     std::lock_guard<std::mutex> lock(m_resultsMutex);
     auto newSet = std::make_shared<ResultSet>(*m_resultSet);
     bool changed = false;
 
-    for (const auto& up : updates) {
-        if (up.type == PendingUpdate::Removed) {
-            auto itPos = newSet->keyToPos.find(up.key);
-            if (itPos != newSet->keyToPos.end()) {
-                int row = itPos->second;
-                newSet->keys.erase(newSet->keys.begin() + row);
-                updateKeyToPosMapping(*newSet);
-                changed = true;
-                emit entryRemoved(newSet, up.key, row);
+    for (const auto& ev : events) {
+        auto itPos = newSet->keyToPos.find(ev.key);
+        
+        // 匹配逻辑（复用）
+        auto checkMatch = [&](uint32_t idx) {
+            if (idx == (uint32_t)-1) return false;
+            bool m = MftReader::instance().matchEntry((int)idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
+                                                     m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
+                                                     m_filterState.includeDollar);
+            if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) {
+                m = m_filterState.autoDisplay && m;
             }
-        } else {
-            bool matches = MftReader::instance().matchEntry((int)up.mftIndex, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
-                                                            m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
-                                                            m_filterState.includeDollar);
-            if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) matches = m_filterState.autoDisplay && matches;
+            return m;
+        };
 
-            auto itPos = newSet->keyToPos.find(up.key);
-            if (itPos != newSet->keyToPos.end()) {
-                int row = itPos->second;
-                if (matches) {
-                    auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
-                        return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-                    });
-                    int newRow = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
-                    if (newRow == row) emit entryUpdated(newSet, up.key, row);
-                    else {
-                        newSet->keys.erase(newSet->keys.begin() + row);
-                        newSet->keys.insert(std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
-                            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-                        }), up.key);
-                        updateKeyToPosMapping(*newSet);
-                        changed = true;
-                        emit entryRemoved(newSet, up.key, row);
-                        emit entryAdded(newSet, up.key, newRow);
-                    }
-                } else {
-                    newSet->keys.erase(newSet->keys.begin() + row);
-                    updateKeyToPosMapping(*newSet);
-                    changed = true;
-                    emit entryRemoved(newSet, up.key, row);
-                }
-            } else if (matches) {
-                auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
-                    return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-                });
-                int row = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
-                newSet->keys.insert(itInsert, up.key);
-                updateKeyToPosMapping(*newSet);
+        if (ev.type == MftReader::ChangeEvent::Added) {
+            if (itPos != newSet->keyToPos.end()) continue;
+            if (checkMatch(ev.index)) {
+                newSet->keys.push_back(ev.key);
                 changed = true;
-                emit entryAdded(newSet, up.key, row);
+            }
+        } else if (ev.type == MftReader::ChangeEvent::Removed) {
+            if (itPos != newSet->keyToPos.end()) {
+                newSet->keys[itPos->second] = 0; // 标记删除
+                changed = true;
+            }
+        } else if (ev.type == MftReader::ChangeEvent::Updated) {
+            bool matches = checkMatch(ev.index);
+            if (itPos != newSet->keyToPos.end()) {
+                if (!matches) {
+                    newSet->keys[itPos->second] = 0; // 标记删除
+                    changed = true;
+                }
+                // 命中且匹配的情况，由于复合 Key 不变，SoA 数据由 MftReader 负责，此处无需操作
+            } else if (matches) {
+                newSet->keys.push_back(ev.key);
+                changed = true;
             }
         }
     }
-    if (changed) m_resultSet = newSet;
+
+    if (changed) {
+        // 物理清理标记删除的项
+        newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
+        
+        // 重新排序
+        std::sort(newSet->keys.begin(), newSet->keys.end(), [this](uint64_t a, uint64_t b) {
+            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+        });
+
+        updateKeyToPosMapping(*newSet);
+        m_resultSet = newSet;
+        emit resultsSwapped(newSet);
+    }
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

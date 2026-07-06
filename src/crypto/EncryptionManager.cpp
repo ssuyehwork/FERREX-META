@@ -11,7 +11,7 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 EncryptionManager& EncryptionManager::instance() {
     static EncryptionManager inst;
@@ -149,4 +149,4 @@ std::shared_ptr<DecryptedFileHandle> EncryptionManager::decryptToTemp(const std:
     return std::make_shared<DecryptedFileHandle>(hFile, outPath);
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

@@ -10,7 +10,7 @@
 #include <algorithm>
 #include "../meta/MetadataManager.h"
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 bool CategoryRepo::m_isJsonMode = false;
 void CategoryRepo::setJsonMode(bool enabled) { m_isJsonMode = enabled; }
@@ -19,7 +19,7 @@ bool CategoryRepo::isJsonMode() { return m_isJsonMode; }
 namespace JsonCategoryEngine {
 
 static QJsonObject loadCategoriesJson() {
-    QFile file("FERREX-META_categories.json");
+    QFile file("arcmeta_categories.json");
     if (file.exists() && file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
         file.close();
@@ -32,7 +32,7 @@ static QJsonObject loadCategoriesJson() {
 }
 
 static bool saveCategoriesJson(const QJsonObject& root) {
-    QFile file("FERREX-META_categories.json");
+    QFile file("arcmeta_categories.json");
     if (file.open(QIODevice::WriteOnly)) {
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
         file.close();
@@ -168,7 +168,7 @@ static bool remove(int id) {
     root["category_items"] = remainingItems;
 
     if (!fileIds.empty()) {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         QSqlQuery qMark(db);
         QStringList fids;
         for (const auto& fid : fileIds) fids << QString::fromStdString(fid);
@@ -330,7 +330,7 @@ std::vector<Category> CategoryRepo::getRecentlyUsed(int limit) {
         return JsonCategoryEngine::getAll();
     }
     std::vector<Category> results;
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     // 按添加时间倒序提取最近的分类
     q.prepare("SELECT c.id, c.parent_id, c.name, c.color, c.preset_tags, c.sort_order, c.pinned, c.encrypted, c.encrypt_hint "
@@ -365,7 +365,7 @@ bool CategoryRepo::add(Category& cat) {
     bool jsonOk = JsonCategoryEngine::add(cat);
 
     // 2. 写入 SQLite (使用相同的自增 ID)
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("INSERT OR REPLACE INTO categories (id, parent_id, name, color, preset_tags, sort_order, pinned, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(cat.id);
@@ -389,7 +389,7 @@ bool CategoryRepo::add(Category& cat) {
 bool CategoryRepo::reorderAll(bool ascending) {
     bool jsonOk = JsonCategoryEngine::reorderAll(ascending);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("SELECT id FROM categories ORDER BY name " + QString(ascending ? "ASC" : "DESC"));
     
@@ -413,7 +413,7 @@ bool CategoryRepo::reorderAll(bool ascending) {
 bool CategoryRepo::update(const Category& cat) {
     bool jsonOk = JsonCategoryEngine::update(cat);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("UPDATE categories SET parent_id = ?, name = ?, color = ?, sort_order = ?, pinned = ?, encrypted = ?, encrypt_hint = ? WHERE id = ?");
     q.addBindValue(cat.parentId);
@@ -432,7 +432,7 @@ bool CategoryRepo::update(const Category& cat) {
 bool CategoryRepo::addItemToCategory(int categoryId, const std::string& fileId128) {
     bool jsonOk = JsonCategoryEngine::addItemToCategory(categoryId, fileId128);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("INSERT OR IGNORE INTO category_items (category_id, file_id_128, added_at) VALUES (?, ?, ?)");
     q.addBindValue(categoryId);
@@ -448,7 +448,7 @@ std::vector<Category> CategoryRepo::getAll() {
         return JsonCategoryEngine::getAll();
     }
     std::vector<Category> results;
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     // 2026-06-xx 按照用户要求：彻底解耦置顶干扰，移除 pinned DESC，回归纯粹的 sort_order 排序
     // 理由：确保“我的分类”实体区域层级稳定。置顶状态仅由模型层实现“移动”到快速访问区。
     QSqlQuery q("SELECT id, parent_id, name, color, preset_tags, sort_order, pinned, encrypted, encrypt_hint FROM categories ORDER BY sort_order ASC", db);
@@ -476,7 +476,7 @@ std::vector<Category> CategoryRepo::getAll() {
 bool CategoryRepo::removeItemFromCategory(int categoryId, const std::string& fileId128) {
     bool jsonOk = JsonCategoryEngine::removeItemFromCategory(categoryId, fileId128);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("DELETE FROM category_items WHERE category_id = ? AND file_id_128 = ?");
     q.addBindValue(categoryId);
@@ -491,7 +491,7 @@ std::vector<std::string> CategoryRepo::getFileIdsInCategory(int categoryId) {
         return JsonCategoryEngine::getFileIdsInCategory(categoryId);
     }
     std::vector<std::string> results;
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("SELECT file_id_128 FROM category_items WHERE category_id = ? ORDER BY added_at DESC");
     q.addBindValue(categoryId);
@@ -508,7 +508,7 @@ std::vector<std::pair<int, int>> CategoryRepo::getCounts() {
         return JsonCategoryEngine::getCounts();
     }
     std::vector<std::pair<int, int>> counts;
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
 
     // 2026-05-28 逻辑降级：针对 DB 模式且 items 表由于数据库被物理删除而导致为空的情况，
     // 增加容错逻辑，允许从 category_items 直接提取基础计数，防止 UI 显示全为 (0)。
@@ -537,7 +537,7 @@ std::vector<std::pair<int, int>> CategoryRepo::getCounts() {
 }
 
 int CategoryRepo::getUniqueItemCount() {
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q("SELECT COUNT(DISTINCT item_path) FROM category_items", db);
     if (q.next()) return q.value(0).toInt();
     return 0;
@@ -545,7 +545,7 @@ int CategoryRepo::getUniqueItemCount() {
 
 int CategoryRepo::getUncategorizedItemCount() {
     if (m_isJsonMode) {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         QJsonObject root = JsonCategoryEngine::loadCategoriesJson();
         QJsonArray items = root["category_items"].toArray();
         QStringList registeredFids;
@@ -560,7 +560,7 @@ int CategoryRepo::getUncategorizedItemCount() {
         if (q.exec() && q.next()) return q.value(0).toInt();
         return 0;
     }
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     // 2026-06-xx 物理修复：基于非空 Fallback ID 机制回归。
     QSqlQuery q("SELECT COUNT(DISTINCT i.file_id_128) FROM items i "
                 "WHERE i.deleted = 0 AND i.type = 'file' "
@@ -575,7 +575,7 @@ int CategoryRepo::getUncategorizedItemCount() {
 QMap<QString, int> CategoryRepo::getSystemCounts() {
     if (m_isJsonMode) {
         QMap<QString, int> counts;
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         double now = (double)QDateTime::currentMSecsSinceEpoch();
         double startOfToday = (double)QDateTime(QDate::currentDate(), QTime(0, 0)).toMSecsSinceEpoch();
         double startOfYesterday = (double)QDateTime(QDate::currentDate().addDays(-1), QTime(0, 0)).toMSecsSinceEpoch();
@@ -623,7 +623,7 @@ QMap<QString, int> CategoryRepo::getSystemCounts() {
         return counts;
     }
     QMap<QString, int> counts;
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     double now = (double)QDateTime::currentMSecsSinceEpoch();
     double startOfToday = (double)QDateTime(QDate::currentDate(), QTime(0, 0)).toMSecsSinceEpoch();
     double startOfYesterday = (double)QDateTime(QDate::currentDate().addDays(-1), QTime(0, 0)).toMSecsSinceEpoch();
@@ -678,7 +678,7 @@ QMap<QString, int> CategoryRepo::getSystemCounts() {
 bool CategoryRepo::remove(int id) {
     bool jsonOk = JsonCategoryEngine::remove(id);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     if (!db.transaction()) return false;
 
     // 2026-06-xx 物理同步：实现“删除分类时同步删除绑定数据”的核心要求。
@@ -724,7 +724,7 @@ bool CategoryRepo::remove(int id) {
 bool CategoryRepo::reorder(int parentId, bool ascending) {
     bool jsonOk = JsonCategoryEngine::reorder(parentId, ascending);
 
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     // 逻辑：获取该父级下的所有分类，按名称排序，然后重新赋予 sort_order
     QSqlQuery q(db);
     q.prepare("SELECT id FROM categories WHERE parent_id = ? ORDER BY name " + QString(ascending ? "ASC" : "DESC"));
@@ -753,7 +753,7 @@ std::vector<std::string> CategoryRepo::getFileIdsRecursive(int categoryId) {
     }
     std::vector<std::string> results = getFileIdsInCategory(categoryId);
     
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     q.prepare("SELECT id FROM categories WHERE parent_id = ?");
     q.addBindValue(categoryId);
@@ -775,7 +775,7 @@ void CategoryRepo::syncDatabaseAndJson() {
     // 1. 获取 SQLite 数据库中的所有分类
     std::vector<Category> dbCats;
     {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         QSqlQuery q("SELECT id, parent_id, name, color, preset_tags, sort_order, pinned, encrypted, encrypt_hint FROM categories", db);
         while (q.next()) {
             Category cat;
@@ -795,7 +795,7 @@ void CategoryRepo::syncDatabaseAndJson() {
         }
     }
 
-    // 2. 获取 FERREX-META_categories.json 中的所有分类
+    // 2. 获取 arcmeta_categories.json 中的所有分类
     QJsonObject root = JsonCategoryEngine::loadCategoriesJson();
     QJsonArray jsonCats = root["categories"].toArray();
     std::vector<Category> jsCats;
@@ -821,7 +821,7 @@ void CategoryRepo::syncDatabaseAndJson() {
     
     // B. JSON 中的分类合并/更新到 数据库
     {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         for (const auto& jsCat : jsCats) {
             bool found = false;
             for (const auto& dbCat : dbCats) {
@@ -859,14 +859,14 @@ void CategoryRepo::syncDatabaseAndJson() {
     };
     std::vector<ItemMap> dbItems;
     {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         QSqlQuery q("SELECT category_id, file_id_128, added_at FROM category_items", db);
         while (q.next()) {
             dbItems.push_back({q.value(0).toInt(), q.value(1).toString().toStdString(), q.value(2).toDouble()});
         }
     }
 
-    // 5. 获取 FERREX-META_categories.json 中的所有关联条目
+    // 5. 获取 arcmeta_categories.json 中的所有关联条目
     QJsonArray jsonItems = root["category_items"].toArray();
     std::vector<ItemMap> jsItems;
     for (const auto& val : jsonItems) {
@@ -896,7 +896,7 @@ void CategoryRepo::syncDatabaseAndJson() {
 
     // B. JSON 关联合并到 数据库
     {
-        QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+        QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
         for (const auto& jsItem : jsItems) {
             bool found = false;
             for (const auto& dbItem : dbItems) {
@@ -922,7 +922,7 @@ void CategoryRepo::syncDatabaseAndJson() {
     JsonCategoryEngine::saveCategoriesJson(root);
 
     // 2026-05-28 新增：对账后如果数据库被重置（items表为空），引导元数据恢复
-    QSqlDatabase db = FERREX-META::Database::instance().getThreadDatabase();
+    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery qCheck("SELECT COUNT(*) FROM items", db);
     if (qCheck.next() && qCheck.value(0).toInt() == 0) {
         qDebug() << "[Sync] 对账检测到数据库为空，正在引导 MetadataManager 恢复物理索引...";
@@ -933,4 +933,4 @@ void CategoryRepo::syncDatabaseAndJson() {
 }
 
 
-} // namespace FERREX-META
+} // namespace ArcMeta

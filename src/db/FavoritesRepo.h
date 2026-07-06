@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 struct Favorite {
     std::wstring path;
@@ -23,4 +23,4 @@ public:
     static std::vector<Favorite> getAll();
 };
 
-} // namespace FERREX-META
+} // namespace ArcMeta

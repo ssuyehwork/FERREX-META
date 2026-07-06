@@ -9,7 +9,7 @@
 #include <QThreadPool>
 #include <QDebug>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 CoreController& CoreController::instance() {
     static CoreController inst;
@@ -95,4 +95,4 @@ void CoreController::setStatus(const QString& text, bool indexing) {
     }
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta

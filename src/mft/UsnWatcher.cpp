@@ -3,7 +3,7 @@
 #include <QDebug>
 #include <winioctl.h>
 
-namespace FERREX-META {
+namespace ArcMeta {
 
 UsnWatcher::UsnWatcher(const std::wstring& volume, uint64_t startUsn, QObject* parent)
     : QThread(parent), m_volume(volume), m_lastUsn(startUsn), m_stopRequested(false) {
@@ -143,4 +143,4 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
     }
 }
 
-} // namespace FERREX-META
+} // namespace ArcMeta
