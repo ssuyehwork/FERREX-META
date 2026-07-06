@@ -112,7 +112,6 @@ public:
     // 检查是否需要合并
     static bool needsCompaction(const std::string& path_base, uint32_t delta_threshold = 5000, float tombstone_ratio = 0.3f);
 
-private:
     static uint32_t computeCrc32(const uint8_t* data, size_t len);
 };
 

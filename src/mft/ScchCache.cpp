@@ -226,7 +226,7 @@ bool ScchCache::appendEntries(const std::string& path_base, const std::vector<Sc
 
             // 2026-06-xx 性能优化：采用“方案 A”，废除增量追加时的全量索引读回重算 CRC。
             // 理由：单条记录已有 CRC 保护，全局 CRC 在增量追加场景下开销为 O(n)，严重拖慢实时更新。
-            head.crc32 = 0xDEADDATA; // 使用魔数标记该版本索引不再受全局 CRC 保护
+            head.crc32 = 0xDEADC0DE; // 使用魔数标记该版本索引不再受全局 CRC 保护
 
             SetFilePointer(hIdxHead, 0, NULL, FILE_BEGIN);
             WriteFile(hIdxHead, &head, sizeof(head), &written, NULL);
@@ -257,7 +257,7 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
                     std::vector<ScchIndexEntry> raw_entries(total_count);
                     if (fread(raw_entries.data(), sizeof(ScchIndexEntry), total_count, f_idx) == total_count) {
                         // 2026-06-xx 增强：兼容全局 CRC 和 增量魔数标记
-                        bool crc_pass = (head.crc32 == 0xDEADDATA) ||
+                    bool crc_pass = (head.crc32 == 0xDEADC0DE) ||
                                        (computeCrc32(reinterpret_cast<uint8_t*>(raw_entries.data()), total_count * sizeof(ScchIndexEntry)) == head.crc32);
 
                         if (crc_pass) {
