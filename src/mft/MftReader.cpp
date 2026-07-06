@@ -112,6 +112,13 @@ void MftReader::clearInternal() {
 }
 
 void MftReader::clear() {
+    // 2026-06-xx 生命周期强化：立即设置停止位，解除所有长循环阻塞
+    m_isStopping.store(true);
+
+    if (m_metadataPool) {
+        m_metadataPool->waitForDone();
+    }
+
     std::vector<UsnWatcher*> toStop;
     {
         QWriteLocker lock(&m_dataLock);
@@ -119,8 +126,18 @@ void MftReader::clear() {
         m_watchers.clear();
     }
     for (auto* w : toStop) { if (w) { w->stop(); delete w; } }
+
     QWriteLocker lock(&m_dataLock);
     clearInternal();
+
+    // 清理任务队列
+    {
+        std::lock_guard<std::mutex> journalLock(m_journalMutex);
+        m_changeJournal.clear();
+    }
+    if (m_notifyTimer) m_notifyTimer->stop();
+
+    m_isStopping.store(false); // 重置状态，准备下一次初始化
 }
 
 void MftReader::updateActiveDrives(const QStringList& activeDrives) {
@@ -189,9 +206,12 @@ void MftReader::buildIndex(const QStringList& drives) {
     std::vector<int> scanIndices((int)toScan.size());
     std::iota(scanIndices.begin(), scanIndices.end(), 0);
     std::for_each((std::execution::par), scanIndices.begin(), scanIndices.end(), [&](int i) {
+        if (m_isStopping.load()) return;
         scannedResults[i].volume = toScan[i];
         scannedResults[i].success = loadMftDirect(toScan[i], scannedResults[i].res);
     });
+
+    if (m_isStopping.load()) return;
 
     QWriteLocker lock(&m_dataLock);
     std::vector<UsnWatcher*> newWatchers;
@@ -203,7 +223,8 @@ void MftReader::buildIndex(const QStringList& drives) {
         if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
         m_next_usns[sr.volume] = sr.res.nextUsn;
         mergeDriveResult(sr.volume, sr.res, dIdx);
-        saveDriveToCacheInternal(dIdx);
+        // 2026-06-xx 物理修复：在持有写锁时调用 Unlocked 版本，解除递归锁自杀式死锁
+        saveDriveToCacheUnlocked(dIdx);
         
         auto* w = new UsnWatcher(sr.volume, sr.res.nextUsn, nullptr);
         m_watchers.push_back(w);
@@ -266,7 +287,7 @@ bool MftReader::loadFromCache() {
                         m_timestamps.push_back(pkg.timestamp);
                         m_attributes.push_back(pkg.attributes);
                         m_metadata_fetched.push_back(pkg.metadata_fetched);
-                        
+
                         m_name_offsets.push_back((uint32_t)m_string_pool.size());
                         m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
                         m_string_pool.push_back('\0');
@@ -319,12 +340,12 @@ bool MftReader::saveDriveToCache(size_t driveIdx) {
 }
 
 bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
+    // 2026-06-xx 极致架构优化：通过延迟 I/O 彻底剥离锁内磁盘操作
     std::vector<ScchDataPackage> dirtyData;
     uint64_t lastUsn = 0;
     bool isFullSave = false;
     std::wstring volume;
 
-    // [LOCK RELEASE POINT] - 仅在持有锁期间执行内存拷贝 (O(delta))
     {
         QReadLocker lock(&m_dataLock);
         if (driveIdx >= m_drive_list.size()) return false;
@@ -334,8 +355,8 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
         std::lock_guard<std::mutex> dLock(m_dirtyLock);
         isFullSave = m_dirty_indices.empty();
 
+        // 执行内存拷贝 (O(delta))
         if (isFullSave) {
-            // 全量保存路径（通常用于初始化或手动保存）
             for (size_t i = 0; i < m_frns.size(); ++i) {
                 if (m_frns[i] != 0 && (m_parent_frns[i] >> 48) == driveIdx) {
                     ScchDataPackage pkg;
@@ -351,13 +372,11 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                 }
             }
         } else {
-            // 增量保存路径
             auto it = m_dirty_indices.begin();
             while (it != m_dirty_indices.end()) {
                 uint32_t idx = *it;
                 if (idx < m_frns.size() && (m_parent_frns[idx] >> 48) == driveIdx) {
                     ScchDataPackage pkg;
-
                     if (m_frns[idx] == 0) {
                         pkg.frn = m_dead_frns[idx];
                         pkg.tombstone = 1;
@@ -372,7 +391,6 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                     pkg.attributes = m_attributes[idx];
                     pkg.metadata_fetched = m_metadata_fetched[idx];
                     pkg.name = pkg.tombstone ? "" : reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[idx]);
-
                     dirtyData.push_back(std::move(pkg));
                     it = m_dirty_indices.erase(it);
                 } else {
@@ -380,36 +398,22 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                 }
             }
         }
-    }
-    // [I/O START POINT] - 释放锁后执行磁盘操作，杜绝假死
+    } // [LOCK RELEASE POINT] - 锁已释放
 
+    // [I/O START POINT] - 执行磁盘操作，杜绝假死
     std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
-
     if (isFullSave) {
         return ScchCache::saveAll(path_base, dirtyData, lastUsn);
     } else {
-        // 2026-06-xx 物理并发保护：如果该盘正在合并，则将新事件存入缓冲区
-        {
-            QWriteLocker lock(&m_dataLock);
-            if (m_is_compacting[driveIdx]) {
-                m_compaction_buffer[driveIdx].insert(m_compaction_buffer[driveIdx].end(), dirtyData.begin(), dirtyData.end());
-                return true;
-            }
-        }
-
+        // 增量模式下的 Compaction 触发逻辑
         bool ok = ScchCache::appendEntries(path_base, dirtyData, lastUsn);
-
-        // 检查是否需要合并
         if (ScchCache::needsCompaction(path_base)) {
             {
                 QWriteLocker lock(&m_dataLock);
                 m_is_compacting[driveIdx] = true;
             }
-
             QThreadPool::globalInstance()->start([this, path_base, driveIdx]() {
                 ScchCache::compact(path_base);
-
-                // 合并完成后，应用缓冲区中的新事件
                 std::vector<ScchDataPackage> buffered;
                 uint64_t finalUsn = 0;
                 {
@@ -418,14 +422,22 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                     m_is_compacting[driveIdx] = false;
                     finalUsn = m_next_usns[m_drive_list[driveIdx]];
                 }
-
-                if (!buffered.empty()) {
-                    ScchCache::appendEntries(path_base, buffered, finalUsn);
-                }
+                if (!buffered.empty()) ScchCache::appendEntries(path_base, buffered, finalUsn);
             });
         }
         return ok;
     }
+}
+
+bool MftReader::saveDriveToCacheUnlocked(size_t driveIdx) {
+    // 2026-06-xx 物理修复：在持有写锁时执行的“无锁版”落盘辅助。
+    // 为了符合“锁外 I/O”规范，我们将 I/O 逻辑异步化。
+    // 理由：buildIndex 内部持有 QWriteLocker，此时若执行同步 I/O 会导致所有 UI 读线程挂起。
+    QThreadPool::globalInstance()->start([this, driveIdx]() {
+        saveDriveToCacheInternal(driveIdx);
+    });
+    return true;
+}
 }
 
 QString MftReader::getName(int index) const {
@@ -1023,6 +1035,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
     MFT_ENUM_DATA_V0 ed = {0}; ed.HighUsn = j.NextUsn;
     std::vector<uint8_t> buf(1024 * 1024);
     while (DeviceIoControl(h, FSCTL_ENUM_USN_DATA, &ed, sizeof(ed), buf.data(), (DWORD)buf.size(), &cb, NULL)) {
+        if (m_isStopping.load()) break;
         if (cb < 8) break;
         uint8_t* p = buf.data() + 8; uint8_t* end = buf.data() + cb;
         while (p < end) {
