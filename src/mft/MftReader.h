@@ -124,6 +124,7 @@ private:
     };
 
     bool saveDriveToCacheInternal(size_t driveIdx); 
+    bool saveDriveToCacheUnlocked(size_t driveIdx); // 2026-06-xx 新增：不带锁的落盘辅助函数，用于 buildIndex
     void clearInternal(); 
     void rebuildFrnToIndexMap();
     void compact();
@@ -161,6 +162,7 @@ private:
     QHash<QString, QIcon>  m_icon_cache;
 
     bool m_isInitialized = false;
+    std::atomic<bool> m_isStopping{false}; // 2026-06-xx 新增：全局退出/中断令牌
     uint32_t m_dirty_count = 0;
     std::unordered_set<uint32_t> m_dirty_indices; // 2026-06-xx 新增：记录变动的 SoA 下标
     std::unordered_map<uint32_t, uint64_t> m_dead_frns; // 2026-06-xx 新增：记录已删除项的原始 FRN 用于落盘

@@ -13,6 +13,11 @@
 namespace FERREX {
 
 JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
+    m_layoutTimer = new QTimer(this);
+    m_layoutTimer->setSingleShot(true);
+    m_layoutTimer->setInterval(50); // 50ms 黄金布局节流窗口
+    connect(m_layoutTimer, &QTimer::timeout, this, &JustifiedView::onLayoutTimerTimeout);
+
     horizontalScrollBar()->setRange(0, 0);
     verticalScrollBar()->setSingleStep(20);
     
@@ -31,24 +36,24 @@ JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
 void JustifiedView::setTargetRowHeight(int h) {
     if (m_targetRowHeight != h) {
         m_targetRowHeight = h;
-        doLayout();
+        scheduleLayout();
     }
 }
 
 void JustifiedView::setAspectRatioRole(int role) {
     if (m_aspectRatioRole != role) {
         m_aspectRatioRole = role;
-        doLayout();
+        scheduleLayout();
     }
 }
 
 void JustifiedView::reset() {
     QAbstractItemView::reset();
-    doLayout();
+    scheduleLayout();
 }
 
 void JustifiedView::doItemsLayout() {
-    doLayout();
+    scheduleLayout();
 }
 
 void JustifiedView::setModel(QAbstractItemModel* model) {
@@ -58,7 +63,7 @@ void JustifiedView::setModel(QAbstractItemModel* model) {
     QAbstractItemView::setModel(model);
     if (model) {
         connect(model, &QAbstractItemModel::rowsRemoved, this, [this]() {
-            QTimer::singleShot(0, this, [this]() { doLayout(); });
+            scheduleLayout();
         });
     }
 }
@@ -95,13 +100,13 @@ QModelIndex JustifiedView::indexAt(const QPoint& point) const {
 
 void JustifiedView::dataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight, const QList<int>& roles) {
     if (roles.isEmpty() || roles.contains(m_aspectRatioRole)) {
-        doLayout();
+        scheduleLayout();
     }
     QAbstractItemView::dataChanged(topLeft, bottomRight, roles);
 }
 
 void JustifiedView::rowsInserted(const QModelIndex& parent, int start, int end) {
-    doLayout();
+    scheduleLayout();
     QAbstractItemView::rowsInserted(parent, start, end);
 }
 
@@ -276,7 +281,7 @@ void JustifiedView::paintEvent(QPaintEvent*) {
 }
 
 void JustifiedView::resizeEvent(QResizeEvent* event) {
-    doLayout();
+    scheduleLayout();
     QAbstractItemView::resizeEvent(event);
 }
 
@@ -286,7 +291,21 @@ void JustifiedView::updateGeometries() {
     QAbstractItemView::updateGeometries();
 }
 
+void JustifiedView::scheduleLayout() {
+    m_layoutDirty = true;
+    if (!m_layoutTimer->isActive()) {
+        m_layoutTimer->start();
+    }
+}
+
+void JustifiedView::onLayoutTimerTimeout() {
+    if (m_layoutDirty) {
+        doLayout();
+    }
+}
+
 void JustifiedView::doLayout() {
+    m_layoutDirty = false;
     if (!model()) return;
     int count = model()->rowCount();
     
