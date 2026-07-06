@@ -23,16 +23,12 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
     auto& reader = MftReader::instance();
     connect(&reader, &MftReader::entriesChangedBatch, this, &ScanController::processBatchUpdates);
 
-    connect(&m_sortWatcher, &QFutureWatcher<std::vector<uint64_t>>::finished, this, [this]() {
+    connect(&m_sortWatcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, [this]() {
         if (m_sortWatcher.isCanceled()) return;
         
-        std::vector<uint64_t> resultKeys = m_sortWatcher.result();
-        if (resultKeys.empty()) return;
+        std::shared_ptr<ResultSet> newSet = m_sortWatcher.result();
+        if (!newSet || newSet->keys.empty()) return;
 
-        auto newSet = std::make_shared<ResultSet>();
-        newSet->keys = std::move(resultKeys);
-        updateKeyToPosMapping(*newSet);
-        
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
             // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
@@ -92,25 +88,31 @@ void ScanController::performSearch() {
     QElapsedTimer timer;
     timer.start();
 
-    auto future = QtConcurrent::run([text = m_searchText, state = m_filterState]() {
+    auto future = QtConcurrent::run([this, text = m_searchText, state = m_filterState]() {
+        std::vector<uint64_t> keys;
         // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
-            return MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+            keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
         }
         // 否则，如果不是自动显示且查询为空，返回空结果
-        if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
-            return std::vector<uint64_t>();
+        else if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
+            keys = std::vector<uint64_t>();
         }
-        return MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+        else {
+            keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+        }
+
+        auto rs = std::make_shared<ResultSet>();
+        rs->keys = std::move(keys);
+        updateKeyToPosMapping(*rs);
+        return rs;
     });
 
-    disconnect(&m_watcher, &QFutureWatcher<std::vector<uint64_t>>::finished, this, nullptr);
-    connect(&m_watcher, &QFutureWatcher<std::vector<uint64_t>>::finished, this, [this, timer]() {
+    disconnect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, nullptr);
+    connect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, [this, timer]() {
         if (m_watcher.isCanceled()) return;
         
-        auto newSet = std::make_shared<ResultSet>();
-        newSet->keys = m_watcher.result();
-        updateKeyToPosMapping(*newSet);
+        std::shared_ptr<ResultSet> newSet = m_watcher.result();
 
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
@@ -158,19 +160,20 @@ void ScanController::sort(int column, int order) {
     
     // 2026-06-xx 极致架构优化：去锁化投影排序。
     // 理由：通过物理拷贝文件名/数值至投影结构，彻底杜绝排序过程中的锁竞争与野指针风险。
-    auto future = QtConcurrent::run([snap, column, order]() {
-        std::vector<uint64_t> keys = snap->keys;
-        if (keys.empty()) return keys;
+    auto future = QtConcurrent::run([this, snap, column, order]() {
+        auto newSet = std::make_shared<ResultSet>();
+        newSet->keys = snap->keys;
+        if (newSet->keys.empty()) return newSet;
 
         auto& reader = MftReader::instance();
         std::vector<SortProxy> proxies;
-        proxies.reserve(keys.size());
+        proxies.reserve(newSet->keys.size());
 
         // 1. 投影阶段：申请单次大范围读锁，直接从 SoA 池物理拷贝数据
         // 理由：彻底消除 O(N) 次的锁申请/释放开销，并绕过 QString 中转，极致压榨 CPU 性能。
         {
             QReadLocker lock(&reader.m_dataLock);
-            for (uint64_t k : keys) {
+            for (uint64_t k : newSet->keys) {
                 auto it = reader.m_frn_to_idx.find(k);
                 SortProxy p; p.key = k;
                 if (it != reader.m_frn_to_idx.end()) {
@@ -198,9 +201,10 @@ void ScanController::sort(int column, int order) {
             return (order == 0) ? less : !less;
         });
 
-        // 3. 写回结果
-        for (size_t i = 0; i < keys.size(); ++i) keys[i] = proxies[i].key;
-        return keys;
+        // 3. 写回结果并构建映射
+        for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
+        updateKeyToPosMapping(*newSet);
+        return newSet;
     });
 
     m_sortBaseSnap = snap;
@@ -238,12 +242,16 @@ void ScanController::processBatchUpdates() {
     std::shared_ptr<ResultSet> snap = snapshot();
     auto future = QtConcurrent::run([this, snap, events, text = m_searchText, state = m_filterState, 
                                      column = m_currentSortColumn, order = m_currentSortOrder]() {
-        auto newSet = std::make_shared<ResultSet>(*snap);
+        // 2026-06-xx 极致性能优化：延迟拷贝。
+        // 理由：直接对 snap 进行 * 解引用拷贝会克隆整个 unordered_map (200万项)，
+        // 这在 UI 线程频繁触发时会导致严重的亚秒级停顿（假死）。
+        std::shared_ptr<ResultSet> newSet;
         bool changed = false;
 
         auto& reader = MftReader::instance();
         for (const auto& ev : events) {
-            auto itPos = newSet->keyToPos.find(ev.key);
+            // 在未确定变动前，使用旧 snap 的映射进行 O(1) 预判
+            auto itPos = snap->keyToPos.find(ev.key);
             
             auto checkMatch = [&](uint32_t idx) {
                 if (idx == (uint32_t)-1) return false;
@@ -255,30 +263,34 @@ void ScanController::processBatchUpdates() {
             };
 
             if (ev.type == MftReader::ChangeEvent::Added) {
-                if (itPos == newSet->keyToPos.end() && checkMatch(ev.index)) {
+                if (itPos == snap->keyToPos.end() && checkMatch(ev.index)) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys.push_back(ev.key);
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Removed) {
-                if (itPos != newSet->keyToPos.end()) {
+                if (itPos != snap->keyToPos.end()) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys[itPos->second] = 0;
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Updated) {
                 bool matches = checkMatch(ev.index);
-                if (itPos != newSet->keyToPos.end()) {
+                if (itPos != snap->keyToPos.end()) {
                     if (!matches) {
+                        if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                         newSet->keys[itPos->second] = 0;
                         changed = true;
                     }
                 } else if (matches) {
+                    if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
                     newSet->keys.push_back(ev.key);
                     changed = true;
                 }
             }
         }
 
-        if (changed) {
+        if (changed && newSet) {
             newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
             
             // 执行后台安全重排序 (复用投影排序逻辑)
@@ -307,10 +319,12 @@ void ScanController::processBatchUpdates() {
 
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
+            return newSet;
         }
-        // 2026-06-xx 物理修复：无论 changed 是否为 true，必须返回 keys 副本。
-        // 理由：sortWatcher 的结果会直接替换 m_resultSet，若返回空则会导致 UI 清空。
-        return newSet->keys;
+        
+        // 2026-06-xx 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
+        // 理由：sortWatcher 的结果会直接替换 m_resultSet，防止 UI 突然清空
+        return std::make_shared<ResultSet>(*snap);
     });
 
     // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果

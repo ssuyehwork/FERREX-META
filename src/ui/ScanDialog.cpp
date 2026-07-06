@@ -166,6 +166,33 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
+
+    m_metadataTimer = new QTimer(this);
+    m_metadataTimer->setInterval(150); // 150ms 视口防抖
+    m_metadataTimer->setSingleShot(true);
+    connect(m_metadataTimer, &QTimer::timeout, this, [this]() {
+        if (m_visibleTop < 0 || m_visibleBottom < 0) return;
+        
+        // 2026-06-xx 物理修复：视口扫描异步化。
+        // 理由：虽然 requestMetadata 是异步的，但其内部会触发 MftReader 的读写锁申请。
+        // 在 220万数据下，如果 UI 线程密集触发 lock 申请，会造成明显的微卡顿甚至假死。
+        auto snap = m_currentResultSet;
+        int top = m_visibleTop;
+        int bottom = m_visibleBottom;
+
+        (void)QtConcurrent::run([snap, top, bottom]() {
+            auto& reader = MftReader::instance();
+            for (int i = top; i <= bottom; ++i) {
+                if (i >= (int)snap->keys.size()) break;
+                uint64_t key = snap->keys[i];
+                int idx = reader.getIndexByKey(key);
+                if (idx != -1 && !reader.isMetadataFetched(idx)) {
+                    const_cast<MftReader&>(reader).requestMetadata(idx);
+                }
+            }
+        });
+    });
+
     m_thumbTimer = new QTimer(this);
     m_thumbTimer->setInterval(20); // 20ms 任务归并窗口
     m_thumbTimer->setSingleShot(true);
@@ -190,8 +217,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
 
     // 2026-06-xx 架构重构：切换至 Controller 驱动的原子快照更新 (使用信号携带的快照，绝对安全)
     connect(m_controller, &ScanController::resultsSwapped, this, [this](std::shared_ptr<ResultSet> newSet) {
-        m_currentResultSet = newSet;
-        updateResults();
+        updateResults(newSet);
     });
 }
 ScanTableModel::~ScanTableModel() {}
@@ -221,7 +247,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 if (reader.isDirectory(actualIndex)) return "-";
                 int64_t size = reader.getSize(actualIndex);
                 if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    const_cast<MftReader&>(reader).requestMetadata(actualIndex);
                     return "...";
                 }
                 if (size < 1024) return QString("%1 B").arg(size);
@@ -232,7 +257,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             case 3: {
                 int64_t ts = reader.getModifyTime(actualIndex);
                 if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    const_cast<MftReader&>(reader).requestMetadata(actualIndex);
                     return "-";
                 }
                 if (ts == 0) return "-";
@@ -362,40 +386,38 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
     return QVariant();
 }
 
-void ScanTableModel::updateResults() {
-    auto newSet = m_controller->snapshot();
-    size_t oldSize = m_currentResultSet->keys.size();
-    size_t newSize = newSet->keys.size();
+void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
+    auto newSet = nextSet ? nextSet : m_controller->snapshot();
+    int oldSize = (int)m_currentResultSet->keys.size();
+    int newSize = (int)newSet->keys.size();
 
     // 2026-06-xx 极致性能重构：Diffing 局部刷新。
-    // 理由：beginResetModel 会销毁所有视图控件，导致 UI 闪烁并丢失滚动位置。
-    // 采用局部增减信号可实现 60FPS 的丝滑更新体验。
+    // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
+    // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
     // 如果变动巨大或初始加载，回退到 Reset 模式
-    if (oldSize == 0 || std::abs((int)newSize - (int)oldSize) > 500) {
+    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
-        m_displayCount = (std::min<int>)(static_cast<int>(m_currentResultSet->keys.size()), 100); 
+        m_displayCount = (std::min<int>)(newSize, 100); 
         m_requestedThumbs.clear();
         endResetModel();
         return;
     }
 
-    // 简单 Diff：目前仅支持尾部增减及内容变化
-    // TODO: 实现更复杂的 Myers Diff 以支持中间插入的平滑动画
     if (newSize > oldSize) {
-        beginInsertRows(QModelIndex(), (int)oldSize, (int)newSize - 1);
+        beginInsertRows(QModelIndex(), oldSize, newSize - 1);
         m_currentResultSet = newSet;
-        m_displayCount = (int)newSize; // 同步 displayCount 以防 fetchMore 冲突
+        m_displayCount = newSize; 
         endInsertRows();
     } else if (newSize < oldSize) {
-        beginRemoveRows(QModelIndex(), (int)newSize, (int)oldSize - 1);
+        beginRemoveRows(QModelIndex(), newSize, oldSize - 1);
         m_currentResultSet = newSet;
-        m_displayCount = (int)newSize;
+        m_displayCount = newSize;
         endRemoveRows();
     } else {
         m_currentResultSet = newSet;
-        emit dataChanged(index(0, 0), index((int)newSize - 1, 3));
+        emit dataChanged(index(0, 0), index(newSize - 1, 3));
     }
 }
 
@@ -412,6 +434,12 @@ void ScanTableModel::fetchMore(const QModelIndex& parent) {
     beginInsertRows(QModelIndex(), m_displayCount, m_displayCount + itemsToFetch - 1);
     m_displayCount += itemsToFetch;
     endInsertRows();
+}
+
+void ScanTableModel::setVisibleRange(int top, int bottom) {
+    m_visibleTop = top;
+    m_visibleBottom = bottom;
+    m_metadataTimer->start();
 }
 
 void ScanTableModel::processThumbQueue() {
@@ -513,6 +541,12 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
 {
+    if (!UiHelper::isRunAsAdmin()) {
+        QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
+        QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+        return;
+    }
+
     m_config.load();
     resize(1000, 700);
     setMinimumSize(800, 500);
@@ -1025,6 +1059,14 @@ void ScanDialog::setupUi() {
     m_resultView->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
 
     m_resultView->verticalHeader()->setVisible(false);
+
+    connect(m_resultView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        int topRow = m_resultView->rowAt(0);
+        int bottomRow = m_resultView->rowAt(m_resultView->viewport()->height());
+        if (bottomRow == -1) bottomRow = m_tableModel->rowCount() - 1;
+        m_tableModel->setVisibleRange(topRow, bottomRow);
+    });
+
     m_resultView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultView->setSelectionMode(QAbstractItemView::ExtendedSelection); // 显式启用多选
     m_resultView->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1066,6 +1108,17 @@ void ScanDialog::setupUi() {
     m_iconView->setStyleSheet(
         "background-color: #1E1E1E; border: 1px solid #333; color: #D4D4D4; outline: none;"
     );
+
+    connect(m_iconView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        if (m_viewStack->currentIndex() != 1) return;
+        // 图标模式下使用 indexAt 探测视口首尾
+        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
+        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
+        
+        int top = topIdx.isValid() ? topIdx.row() : 0;
+        int bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
+        m_tableModel->setVisibleRange(top, bottom);
+    });
     
     connect(m_iconView, &QListView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
     connect(m_iconView, &QListView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
@@ -1181,6 +1234,34 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
+            // 2026-06-xx 物理修复：确保 C 盘显示且可扫描。
+            // 1. 强制撤销任何对 C 盘的忽略
+            if (weakThis->m_config.ignoredDrives.contains("C:")) {
+                weakThis->m_config.ignoredDrives.remove("C:");
+            }
+
+            // 2. 策略调整：确保 C 盘始终被激活（除非被显式忽略）。
+            // 对于其它盘符，如果是首次运行（activeDrives为空）则全部激活。
+            if (weakThis->m_config.activeDrives.isEmpty()) {
+                for (const auto& info : drives) {
+                    if (info.hasMedia && info.isNtfs) {
+                        weakThis->m_config.activeDrives.insert(info.letter);
+                    }
+                }
+            } else {
+                // 核心修复：如果 C 盘被探测到且未被忽略，也未在激活列表，则强制激活。
+                // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
+                if (!weakThis->m_config.ignoredDrives.contains("C:") && !weakThis->m_config.activeDrives.contains("C:")) {
+                    for (const auto& info : drives) {
+                        if (info.letter == "C:" && info.isNtfs) {
+                            weakThis->m_config.activeDrives.insert("C:");
+                            break;
+                        }
+                    }
+                }
+            }
+            weakThis->m_config.save();
+
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
                 if (item->widget()) item->widget()->deleteLater();
@@ -1188,13 +1269,28 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveButtonMap.clear();
 
+            // 核心修复：检查是否有已激活但尚未建立索引的盘符，若有则自动触发补课扫描。
+            bool missingIndex = false;
+            for (const auto& d : weakThis->m_config.activeDrives) {
+                if (!MftReader::instance().isDriveIndexed(d)) {
+                    missingIndex = true;
+                    break;
+                }
+            }
+
+            if (missingIndex) {
+                weakThis->onStartScan();
+            }
+
             // 2026-05-14 用户要求彻底移除 "DRIVES" 标签
             // QLabel* driveLabel = new QLabel("DRIVES");
             // driveLabel->setStyleSheet("color: #3D5060; font-weight: bold; font-size: 10px;");
             // weakThis->m_driveLayout->addWidget(driveLabel);
 
             for (const auto& info : drives) {
-                if (!info.hasMedia || !info.isNtfs) continue;
+                if (!info.hasMedia) continue; 
+                // C 盘必须显示，无论是否标记为 NTFS (防止某些环境下 GetVolumeInformation 失败)
+                if (!info.isNtfs && info.letter != "C:") continue;
                 if (weakThis->m_config.ignoredDrives.contains(info.letter)) continue;
 
                 QString label = info.label.isEmpty() ? "本地磁盘" : info.label;

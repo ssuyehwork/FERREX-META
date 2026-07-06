@@ -96,8 +96,8 @@ private:
     std::vector<PendingEvent> m_pendingEvents;
     std::mutex m_pendingMutex;
 
-    QFutureWatcher<std::vector<uint64_t>> m_watcher;
-    QFutureWatcher<std::vector<uint64_t>> m_sortWatcher;
+    QFutureWatcher<std::shared_ptr<ResultSet>> m_watcher;
+    QFutureWatcher<std::shared_ptr<ResultSet>> m_sortWatcher;
 };
 
 } // namespace FERREX
