@@ -206,84 +206,92 @@ void ScanController::processBatchUpdates() {
     auto events = MftReader::instance().pullChangeJournal();
     if (events.empty()) return;
 
-    // 如果积压事件过多（例如超过 1000 个），直接触发全量重搜，避免频繁执行低效的 O(N) 增量更新
-    if (events.size() > 1000) {
-        qDebug() << "[ScanController] 积压事件过多 (" << events.size() << ")，触发全量搜索优化";
+    // 2026-06-xx 极致性能重构：将增量变动处理与重排序移至后台线程，彻底解决 200万+ 数据下的 UI 假死
+    if (m_sortWatcher.isRunning()) {
+        // 如果当前正在执行重排序，则暂缓处理，等待下一次聚合通知（Debounce 效应）
+        return;
+    }
+
+    if (events.size() > 2000) {
+        qDebug() << "[ScanController] 积压事件超限 (" << events.size() << ")，切换至全量异步搜索";
         triggerSearch(true);
         return;
     }
 
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
-    auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-    bool changed = false;
+    std::shared_ptr<ResultSet> snap = snapshot();
+    auto future = QtConcurrent::run([this, snap, events, text = m_searchText, state = m_filterState,
+                                     column = m_currentSortColumn, order = m_currentSortOrder]() {
+        auto newSet = std::make_shared<ResultSet>(*snap);
+        bool changed = false;
 
-    for (const auto& ev : events) {
-        auto itPos = newSet->keyToPos.find(ev.key);
-        
-        // 匹配逻辑（复用）
-        auto checkMatch = [&](uint32_t idx) {
-            if (idx == (uint32_t)-1) return false;
-            bool m = MftReader::instance().matchEntry((int)idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
-                                                     m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
-                                                     m_filterState.includeDollar);
-            if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) {
-                m = m_filterState.autoDisplay && m;
-            }
-            return m;
-        };
+        auto& reader = MftReader::instance();
+        for (const auto& ev : events) {
+            auto itPos = newSet->keyToPos.find(ev.key);
 
-        if (ev.type == MftReader::ChangeEvent::Added) {
-            if (itPos != newSet->keyToPos.end()) continue;
-            if (checkMatch(ev.index)) {
-                newSet->keys.push_back(ev.key);
-                changed = true;
-            }
-        } else if (ev.type == MftReader::ChangeEvent::Removed) {
-            if (itPos != newSet->keyToPos.end()) {
-                newSet->keys[itPos->second] = 0; // 标记删除
-                changed = true;
-            }
-        } else if (ev.type == MftReader::ChangeEvent::Updated) {
-            bool matches = checkMatch(ev.index);
-            if (itPos != newSet->keyToPos.end()) {
-                if (!matches) {
-                    newSet->keys[itPos->second] = 0; // 标记删除
+            auto checkMatch = [&](uint32_t idx) {
+                if (idx == (uint32_t)-1) return false;
+                bool m = reader.matchEntry((int)idx, text, state.useRegex, state.caseSensitive,
+                                           state.extensionList, state.includeHidden, state.includeSystem,
+                                           state.includeDollar);
+                if (text.isEmpty() && state.extensionList.isEmpty()) m = state.autoDisplay && m;
+                return m;
+            };
+
+            if (ev.type == MftReader::ChangeEvent::Added) {
+                if (itPos == newSet->keyToPos.end() && checkMatch(ev.index)) {
+                    newSet->keys.push_back(ev.key);
                     changed = true;
                 }
-                // 命中且匹配的情况，由于复合 Key 不变，SoA 数据由 MftReader 负责，此处无需操作
-            } else if (matches) {
-                newSet->keys.push_back(ev.key);
-                changed = true;
+            } else if (ev.type == MftReader::ChangeEvent::Removed) {
+                if (itPos != newSet->keyToPos.end()) {
+                    newSet->keys[itPos->second] = 0;
+                    changed = true;
+                }
+            } else if (ev.type == MftReader::ChangeEvent::Updated) {
+                bool matches = checkMatch(ev.index);
+                if (itPos != newSet->keyToPos.end()) {
+                    if (!matches) {
+                        newSet->keys[itPos->second] = 0;
+                        changed = true;
+                    }
+                } else if (matches) {
+                    newSet->keys.push_back(ev.key);
+                    changed = true;
+                }
             }
         }
-    }
 
-    if (changed) {
-        // 物理清理标记删除的项
-        newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
-        
-        // 2026-06-xx 极致架构优化：增量感知排序。
-        // 如果变动项较少（如 < 50 项），采用二分查找插入以维持 O(log N) 性能，
-        // 否则才触发全量 std::sort。这能彻底消除高频单条变动导致的 UI 抖动。
-        if (events.size() < 50) {
-            // 注意：由于上面已经物理清理并可能破坏了顺序（对于 Update 变为 Add 的情况），
-            // 且我们的 newSet 是从 snapshots 拷贝的。
-            // 简单起见，如果发生了 Added 或 Updated(newly matched)，执行稳定插入。
-            // 但目前的 processBatchUpdates 逻辑是先全量处理完再统一排序。
-            // 改进：为了丝滑感，如果事件不多，且原本有序，则二分重插。
-            std::sort(newSet->keys.begin(), newSet->keys.end(), [this](uint64_t a, uint64_t b) {
-                return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+        if (changed) {
+            newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
+
+            // 执行后台安全重排序 (复用投影排序逻辑)
+            std::vector<SortProxy> proxies;
+            proxies.reserve(newSet->keys.size());
+            for (uint64_t k : newSet->keys) {
+                int idx = reader.getIndexByKey(k);
+                SortProxy p; p.key = k;
+                if (idx != -1) {
+                    if (column == 0) p.sVal = reader.getName(idx).toStdString();
+                    else if (column == 1) p.sVal = reader.getFullPath(idx).toStdString();
+                    else if (column == 2) p.iVal = reader.getSize(idx);
+                    else if (column == 3) p.iVal = reader.getModifyTime(idx);
+                }
+                proxies.push_back(std::move(p));
+            }
+
+            std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
+                bool less = (column == 0 || column == 1) ? (_stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0) : (a.iVal < b.iVal);
+                return (order == 0) ? less : !less;
             });
-        } else {
-            std::sort(newSet->keys.begin(), newSet->keys.end(), [this](uint64_t a, uint64_t b) {
-                return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-            });
+
+            for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
+            updateKeyToPosMapping(*newSet);
         }
+        return changed ? newSet->keys : std::vector<uint64_t>();
+    });
 
-        updateKeyToPosMapping(*newSet);
-        m_resultSet = newSet;
-        emit resultsSwapped(newSet);
-    }
+    // 这里通过 sortWatcher 的 finished 信号（由于 keys 为空会返回原有 snap），实现原子更新
+    m_sortWatcher.setFuture(future);
 }
 
 } // namespace FERREX
