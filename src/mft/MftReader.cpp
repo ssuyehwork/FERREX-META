@@ -438,7 +438,6 @@ bool MftReader::saveDriveToCacheUnlocked(size_t driveIdx) {
     });
     return true;
 }
-}
 
 QString MftReader::getName(int index) const {
     QReadLocker lock(&m_dataLock);
