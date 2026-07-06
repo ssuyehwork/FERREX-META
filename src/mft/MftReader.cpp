@@ -71,6 +71,8 @@ MftReader& MftReader::instance() {
 
 MftReader::MftReader() {
     clearInternal();
+    m_metadataPool = new QThreadPool(this);
+    m_metadataPool->setMaxThreadCount(2); // 限制补全线程数，避免对磁盘造成地毯式寻址冲击
     m_notifyTimer = new QTimer(this);
     m_notifyTimer->setInterval(150); // 150ms 聚合通知
     connect(m_notifyTimer, &QTimer::timeout, this, [this]() {
@@ -85,6 +87,7 @@ MftReader::~MftReader() {
 void MftReader::clearInternal() {
     m_frns.clear();
     m_parent_frns.clear();
+    m_parent_indices.clear();
     m_sizes.clear();
     m_timestamps.clear();
     m_name_offsets.clear();
@@ -258,6 +261,7 @@ bool MftReader::loadFromCache() {
                         
                         m_frns.push_back(pkg.frn);
                         m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | (pkg.parent_frn & 0x0000FFFFFFFFFFFFull));
+                        m_parent_indices.push_back(0xFFFFFFFF);
                         m_sizes.push_back(pkg.size);
                         m_timestamps.push_back(pkg.timestamp);
                         m_attributes.push_back(pkg.attributes);
@@ -276,7 +280,9 @@ bool MftReader::loadFromCache() {
 
     QWriteLocker lock(&m_dataLock);
     if (m_frns.empty()) return false;
-    // rebuildFrnToIndexMap(); // load 过程中已逐条重建
+    
+    // 2026-06-xx 物理补齐：缓存加载后必须执行重映射，以补全 m_parent_indices 链条
+    rebuildFrnToIndexMap(); 
 
     buildSortedIndices();
 
@@ -553,21 +559,26 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
     }
 
     std::vector<std::wstring> segments;
-    uint64_t cur = frn;
-    std::unordered_set<uint64_t> vis;
-    while (true) {
-        uint64_t curKey = (static_cast<uint64_t>(driveIdx) << 48) | (cur & 0x0000FFFFFFFFFFFFull);
-        auto idxIt = m_frn_to_idx.find(curKey);
-        if (idxIt == m_frn_to_idx.end() || vis.count(cur)) break;
-        vis.insert(cur);
+    
+    // 2026-06-xx 极致架构优化：采用 SoA 直连下标进行路径回溯。
+    // 理由：getPathFast 常在 UI 渲染的热点路径被调用，消除 Map 查找是实现百万级数据“瞬间回溯”的关键。
+    auto idxIt = m_frn_to_idx.find(compositeKey);
+    if (idxIt == m_frn_to_idx.end()) return L"";
 
-        uint32_t idx = idxIt->second;
-        const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[idx]);
+    uint32_t curIdx = idxIt->second;
+    std::unordered_set<uint32_t> vis;
+
+    while (curIdx != 0xFFFFFFFF) {
+        if (vis.count(curIdx)) break;
+        vis.insert(curIdx);
+
+        const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[curIdx]);
         segments.push_back(QString::fromUtf8(p).toStdWString());
 
-        uint64_t parent = m_parent_frns[idx] & 0x0000FFFFFFFFFFFFull;
-        if (parent == 5 || parent == cur || parent == 0) break;
-        cur = parent;
+        uint64_t parentFrn = m_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
+        if (parentFrn == 5 || parentFrn == 0) break;
+
+        curIdx = m_parent_indices[curIdx];
     }
 
     if (segments.empty()) return L"";
@@ -620,26 +631,20 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<uint64_t> finalRes;
     finalRes.reserve(m_frns.size() / 16);
 
-    const size_t grainSize = 4096;
+    const size_t grainSize = 100000; // 2026-06-xx 性能优化：调高分块大小以减少锁竞争损耗
 
-    // 2026-06-xx 极致算法重构：分块加锁搜索
-    // 不再持有全局读锁，而是在并行的分块任务内部按需加锁，允许 USN 写入线程在分块间隙插队
+    // 2026-06-xx 极致算法重构：去锁化/大跨度锁搜索
     if (hasQuery && !useRegex && !caseSensitive && !hasExt) {
-        std::vector<uint32_t> sortedIndicesSnapshot;
-        {
-            QReadLocker lock(&m_dataLock);
-            sortedIndicesSnapshot = m_sorted_indices;
-        }
-
-        auto it_start = std::lower_bound(sortedIndicesSnapshot.begin(), sortedIndicesSnapshot.end(), queryUtf8.constData(), 
+        // 1. 前缀搜索分支：采用单次大跨度读锁保护，彻底消除二分查找中的锁震荡
+        QReadLocker lock(&m_dataLock);
+        
+        auto it_start = std::lower_bound(m_sorted_indices.begin(), m_sorted_indices.end(), queryUtf8.constData(), 
             [this](uint32_t idx, const char* q) {
-                QReadLocker lock(&m_dataLock);
                 const char* name = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[idx]);
                 return _strnicmp(name, q, strlen(q)) < 0;
             });
         
-        for (auto it = it_start; it != sortedIndicesSnapshot.end(); ++it) {
-            QReadLocker lock(&m_dataLock);
+        for (auto it = it_start; it != m_sorted_indices.end(); ++it) {
             uint32_t i = *it;
             if (i >= m_frns.size() || m_frns[i] == 0) continue;
             
@@ -659,6 +664,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
             if (finalRes.size() > 200000) break; 
         }
     } else {
+        // 2. 全量/复杂搜索分支：维持分块并行，但大幅降低加锁频率
         size_t currentTotal = 0;
         { QReadLocker lock(&m_dataLock); currentTotal = m_frns.size(); }
 
@@ -751,35 +757,11 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         fileNameOffset = v3->FileNameOffset;
     } else return;
 
-    uint64_t fileSize = 0;
+    // 2026-06-xx 极致架构优化：彻底剥离 USN 处理路径中的同步磁盘 I/O。
+    // 理由：OpenFileById 在高频 USN 冲击下会导致监听线程严重阻塞，引发 Journal 溢出风险。
+    uint64_t fileSize = 0; // 物理大小暂时设为 0，由 requestMetadata 异步补全
     int64_t finalModifyTime = filetimeToUnixMs(timestamp.QuadPart);
     uint32_t finalAttr = attr;
-    bool fetchedSuccess = false;
-
-    if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-        std::wstring rootPath = volume + L"\\";
-        // 2026-05-14 修正：hHint 需要 FILE_READ_ATTRIBUTES 权限来辅助 OpenFileById
-        HANDLE hHint = CreateFileW(rootPath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-        if (hHint != INVALID_HANDLE_VALUE) {
-            FILE_ID_DESCRIPTOR id = {0};
-            id.dwSize = sizeof(FILE_ID_DESCRIPTOR);
-            id.Type = FileIdType;
-            id.FileId.QuadPart = frn;
-            // 2026-05-14 核心修正：OpenFileById 的 DesiredAccess 不能为 0，必须至少为 FILE_READ_ATTRIBUTES 才能获取文件大小
-            HANDLE hFile = OpenFileById(hHint, &id, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, FILE_FLAG_BACKUP_SEMANTICS);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                BY_HANDLE_FILE_INFORMATION bhfi;
-                if (GetFileInformationByHandle(hFile, &bhfi)) {
-                    fileSize = (static_cast<uint64_t>(bhfi.nFileSizeHigh) << 32) | bhfi.nFileSizeLow;
-                    finalAttr = bhfi.dwFileAttributes;
-                    finalModifyTime = filetimeToUnixMs((static_cast<int64_t>(bhfi.ftLastWriteTime.dwHighDateTime) << 32) | bhfi.ftLastWriteTime.dwLowDateTime);
-                    fetchedSuccess = true;
-                }
-                CloseHandle(hFile);
-            }
-            CloseHandle(hHint);
-        }
-    }
 
     QWriteLocker lock(&m_dataLock);
     QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
@@ -806,12 +788,16 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     if (it != m_frn_to_idx.end()) {
         finalIdx = it->second;
         m_parent_frns[finalIdx] = encodedPf;
-        m_attributes[finalIdx] = finalAttr;
-        m_metadata_fetched[finalIdx] = fetchedSuccess ? 2 : 0;
         
-        // 2026-05-14 逻辑加固：优先使用 API 获取的属性，若失败则回退至 USN 提供的时间戳
+        // 2026-06-xx 物理补齐：在更新路径同步维护父节点下标，确保路径回溯不漂移
+        auto itParent = m_frn_to_idx.find(encodedPf);
+        m_parent_indices[finalIdx] = (itParent != m_frn_to_idx.end()) ? itParent->second : 0xFFFFFFFF;
+
+        m_attributes[finalIdx] = finalAttr;
+        m_metadata_fetched[finalIdx] = 0; // 标记为未补全
+        
         m_sizes[finalIdx] = fileSize;
-        m_timestamps[finalIdx] = (finalModifyTime > 0) ? finalModifyTime : filetimeToUnixMs(timestamp.QuadPart);
+        m_timestamps[finalIdx] = finalModifyTime;
 
         QByteArray utf8 = name.toUtf8();
         uint32_t oldOff = m_name_offsets[finalIdx];
@@ -832,10 +818,15 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         isNew = true;
         m_frns.push_back(frn);
         m_parent_frns.push_back(encodedPf);
+        
+        // 2026-06-xx 物理补齐：实时更新父节点索引，确保路径回溯流水线不中断
+        auto itParent = m_frn_to_idx.find(encodedPf);
+        m_parent_indices.push_back(itParent != m_frn_to_idx.end() ? itParent->second : 0xFFFFFFFF);
+
         m_sizes.push_back(fileSize);
         m_timestamps.push_back(finalModifyTime);
         m_attributes.push_back(finalAttr);
-        m_metadata_fetched.push_back(fetchedSuccess ? 2 : 0);
+        m_metadata_fetched.push_back(0); // 标记为未补全
         QByteArray utf8 = name.toUtf8();
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
         m_string_pool.insert(m_string_pool.end(), utf8.begin(), utf8.end());
@@ -872,6 +863,9 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
             saveDriveToCache(dIdx);
         });
     }
+
+    // [流水线补齐点]：在完成内存登记后，立即触发异步物理属性获取
+    requestMetadata(finalIdx);
 
     {
         std::lock_guard<std::mutex> journalLock(m_journalMutex);
@@ -996,6 +990,7 @@ void MftReader::compact() {
 
     m_frns = std::move(new_frns);
     m_parent_frns = std::move(new_parent_frns);
+    // m_parent_indices 在 rebuildFrnToIndexMap 中重建，此处无需处理
     m_sizes = std::move(new_sizes);
     m_timestamps = std::move(new_timestamps);
     m_name_offsets = std::move(new_name_offsets);
@@ -1095,6 +1090,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
     for (const auto& e : result.entries) {
         m_frns.push_back(e.frn);
         m_parent_frns.push_back((static_cast<uint64_t>(driveIdx) << 48) | (e.parentFrn & 0x0000FFFFFFFFFFFFull));
+        m_parent_indices.push_back(0xFFFFFFFF); // 初始为无效下标，待 rebuild 补齐
         m_sizes.push_back(e.size); // 2026-05-14 修正：将扫描到的大小压入 SoA
         m_timestamps.push_back(e.modifyTime); m_attributes.push_back(e.attributes);
         m_metadata_fetched.push_back(0);
@@ -1111,6 +1107,17 @@ void MftReader::rebuildFrnToIndexMap() {
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
             uint64_t key = makeKey(dIdx, m_frns[i]);
             m_frn_to_idx[key] = (uint32_t)i;
+        }
+    }
+
+    // 2026-06-xx 物理优化：预先计算父节点下标，彻底消除路径回溯时的 Map 查找开销
+    m_parent_indices.assign(m_frns.size(), 0xFFFFFFFF);
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if (m_frns[i] == 0) continue;
+        uint64_t encodedPf = m_parent_frns[i];
+        auto it = m_frn_to_idx.find(encodedPf);
+        if (it != m_frn_to_idx.end()) {
+            m_parent_indices[i] = it->second;
         }
     }
 }
@@ -1144,7 +1151,7 @@ void MftReader::requestMetadata(int index) {
     std::wstring volume = m_drive_list[dIdx];
     writeLock.unlock();
 
-    (void)QtConcurrent::run([this, index, frn, volume]() {
+    (void)QtConcurrent::run(m_metadataPool, [this, index, frn, volume]() {
         // 2026-05-14 极致性能重构：对标 Rust 原版，采用 API 分级拉取策略
         // 1. 优先使用 GetFileAttributesExW (不涉及文件句柄，非侵入式，性能极高)
         QString fullPath = getFullPath(index);
