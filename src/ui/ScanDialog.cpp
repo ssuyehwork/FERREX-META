@@ -166,6 +166,11 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
+    m_thumbTimer = new QTimer(this);
+    m_thumbTimer->setInterval(20); // 20ms 任务归并窗口
+    m_thumbTimer->setSingleShot(true);
+    connect(m_thumbTimer, &QTimer::timeout, this, &ScanTableModel::processThumbQueue);
+
     connect(m_throttleTimer, &QTimer::timeout, this, [this]() {
         if (m_pendingRows.isEmpty()) return;
         QList<int> rows = m_pendingRows.values();
@@ -240,8 +245,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            // 2026-06-xx 极致性能优化：废除 DecorationRole 中的 getFullPath()
-            // 使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
+            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
             int64_t size = reader.getSize(actualIndex);
             int64_t mtime = reader.getModifyTime(actualIndex);
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
@@ -251,45 +255,12 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
 
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
-                ScanTableModel* mutableThis = const_cast<ScanTableModel*>(this);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
 
-                // 2026-06-xx 异步架构：在子线程中获取物理路径，彻底解耦 UI 线程与 I/O
-                (void)QtConcurrent::run([mutableThis, key, actualIndex, cacheKey, thumbSize, ext]() {
-                    QString fullPath = MftReader::instance().getFullPath(actualIndex);
-                    if (fullPath.isEmpty()) return;
-
-                    QImage img;
-                    if (ext == "svg") {
-                        QSvgRenderer renderer(fullPath);
-                        if (renderer.isValid()) {
-                            img = QImage(thumbSize, thumbSize, QImage::Format_ARGB32);
-                            img.fill(Qt::transparent);
-                            QPainter painter(&img);
-                            renderer.render(&painter);
-                            painter.end();
-                        }
-                    } else {
-                        img = UiHelper::getShellThumbnail(fullPath, thumbSize);
-                    }
-                    if (!img.isNull()) {
-                        double ar = (double)img.width() / img.height();
-                        QMetaObject::invokeMethod(mutableThis, [mutableThis, key, cacheKey, img, ar]() {
-                            QPixmap pix = QPixmap::fromImage(img);
-                            if (!pix.isNull()) {
-                                mutableThis->m_thumbCache.insert(cacheKey, new QPixmap(pix));
-                            }
-                            mutableThis->m_aspectRatios[key] = ar;
-                            
-                            auto snapshot = mutableThis->m_controller->snapshot();
-                            auto itPos = snapshot->keyToPos.find(key);
-                            if (itPos != snapshot->keyToPos.end() && itPos->second < mutableThis->m_displayCount) {
-                                emit mutableThis->dataChanged(mutableThis->index(itPos->second, 0), mutableThis->index(itPos->second, 0), {Qt::DecorationRole, Qt::UserRole + 1, Qt::UserRole + 2});
-                            }
-                        });
-                    }
-                });
+                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
+                m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
+                if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
@@ -441,6 +412,71 @@ void ScanTableModel::fetchMore(const QModelIndex& parent) {
     beginInsertRows(QModelIndex(), m_displayCount, m_displayCount + itemsToFetch - 1);
     m_displayCount += itemsToFetch;
     endInsertRows();
+}
+
+void ScanTableModel::processThumbQueue() {
+    if (m_thumbTaskQueue.isEmpty()) return;
+    auto tasks = std::move(m_thumbTaskQueue);
+    ScanTableModel* mutableThis = this;
+
+    // 2026-06-xx 极致性能流水线：后台并行生成 + 批量结果归并
+    (void)QtConcurrent::run([mutableThis, tasks]() {
+        struct Result { uint64_t key; QString cacheKey; QImage img; double ar; };
+        QVector<Result> results(tasks.size());
+
+        // 使用 QtConcurrent::blockingMap 充分利用多核 CPU 处理图片生成/IO
+        QVector<int> taskIndices(tasks.size()); std::iota(taskIndices.begin(), taskIndices.end(), 0);
+        QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [&](int i) {
+            const auto& t = tasks[i];
+            auto& reader = MftReader::instance();
+
+            // 物理加固：后台寻址。由于 MFT 可能是动态的，必须基于 Key 重新定位
+            int actualIdx = reader.getIndexByKey(t.key);
+            if (actualIdx == -1) return;
+
+            QString fullPath = reader.getFullPath(actualIdx);
+            if (fullPath.isEmpty()) return;
+
+            QImage img;
+            if (t.ext == "svg") {
+                QSvgRenderer renderer(fullPath);
+                if (renderer.isValid()) {
+                    img = QImage(t.size, t.size, QImage::Format_ARGB32);
+                    img.fill(Qt::transparent);
+                    QPainter painter(&img);
+                    renderer.render(&painter);
+                    painter.end();
+                }
+            } else {
+                img = UiHelper::getShellThumbnail(fullPath, t.size);
+            }
+
+            if (!img.isNull()) {
+                results[i] = { t.key, t.cacheKey, img, (double)img.width() / img.height() };
+            }
+        });
+
+        // 批量切回主线程登记结果
+        QMetaObject::invokeMethod(mutableThis, [mutableThis, results]() {
+            auto snapshot = mutableThis->m_controller->snapshot();
+            for (const auto& r : results) {
+                if (r.img.isNull()) continue;
+
+                QPixmap pix = QPixmap::fromImage(r.img);
+                if (!pix.isNull()) {
+                    mutableThis->m_thumbCache.insert(r.cacheKey, new QPixmap(pix));
+                }
+                mutableThis->m_aspectRatios[r.key] = r.ar;
+
+                auto itPos = snapshot->keyToPos.find(r.key);
+                if (itPos != snapshot->keyToPos.end() && itPos->second < mutableThis->m_displayCount) {
+                    // 2026-06-xx 批量 UI 同步：加入 pending 队列，由 throttleTimer 统一发射信号
+                    mutableThis->m_pendingRows.insert(itPos->second);
+                }
+            }
+            if (!mutableThis->m_throttleTimer->isActive()) mutableThis->m_throttleTimer->start();
+        });
+    });
 }
 
 void ScanTableModel::sort(int column, Qt::SortOrder order) {
