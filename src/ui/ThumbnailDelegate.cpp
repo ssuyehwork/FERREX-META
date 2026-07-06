@@ -160,7 +160,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         painter->setPen(Qt::NoPen);
         painter->setBrush(badgeColor);
         painter->drawRoundedRect(extRect, 2, 2);
-        painter->setPen(hasThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+        painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
         QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
         painter->setFont(extFont);
         painter->drawText(extRect, Qt::AlignCenter, ext);
