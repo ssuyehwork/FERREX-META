@@ -76,7 +76,14 @@ void ScanConfig::load() {
     QFile file("arcmeta_scan_config.json");
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-        QJsonObject obj = doc.object();
+        QJsonObject root = doc.object();
+
+        // Plan-136: 使用全新的配置根路径 ScanDialog/ 实现物理隔离
+        QJsonObject obj = root["ScanDialog"].toObject();
+        if (obj.isEmpty()) {
+            // 兼容性回退：如果新命名空间为空，尝试从根节点迁移（仅限初次运行）
+            obj = root;
+        }
         
         auto loadSet = [&](const QString& key, QSet<QString>& set) {
             set.clear();
@@ -93,7 +100,6 @@ void ScanConfig::load() {
         QJsonArray eArr = obj["extHistory"].toArray();
         for (const auto& v : eArr) extHistory.append(v.toString());
         
-        // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
         if (obj.contains("sortColumn")) sortColumn = obj["sortColumn"].toInt();
@@ -109,38 +115,48 @@ void ScanConfig::load() {
 }
 
 void ScanConfig::save() {
+    // 首先尝试读取现有文件，保留其他可能的顶层配置
+    QJsonObject root;
+    QFile readFile("arcmeta_scan_config.json");
+    if (readFile.open(QIODevice::ReadOnly)) {
+        root = QJsonDocument::fromJson(readFile.readAll()).object();
+        readFile.close();
+    }
+
+    QJsonObject obj;
+    auto saveSet = [&](const QString& key, const QSet<QString>& set) {
+        QJsonArray arr;
+        for (const auto& v : set) arr.append(v);
+        obj[key] = arr;
+    };
+
+    saveSet("activeDrives", activeDrives);
+    saveSet("defaultDrives", defaultDrives);
+    saveSet("ignoredDrives", ignoredDrives);
+
+    QJsonArray qArr; for (const auto& v : queryHistory) qArr.append(v);
+    obj["queryHistory"] = qArr;
+    QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
+    obj["extHistory"] = eArr;
+
+    obj["viewMode"] = viewMode;
+    obj["iconSize"] = iconSize;
+    obj["sortColumn"] = sortColumn;
+    obj["sortOrder"] = sortOrder;
+
+    obj["useRegex"] = useRegex;
+    obj["caseSensitive"] = caseSensitive;
+    obj["includeHidden"] = includeHidden;
+    obj["includeSystem"] = includeSystem;
+    obj["includeDollar"] = includeDollar;
+    obj["autoDisplay"] = autoDisplay;
+
+    // 将当前配置存入隔离的命名空间
+    root["ScanDialog"] = obj;
+
     QFile file("arcmeta_scan_config.json");
     if (file.open(QIODevice::WriteOnly)) {
-        QJsonObject obj;
-        auto saveSet = [&](const QString& key, const QSet<QString>& set) {
-            QJsonArray arr;
-            for (const auto& v : set) arr.append(v);
-            obj[key] = arr;
-        };
-        
-        saveSet("activeDrives", activeDrives);
-        saveSet("defaultDrives", defaultDrives);
-        saveSet("ignoredDrives", ignoredDrives);
-        
-        QJsonArray qArr; for (const auto& v : queryHistory) qArr.append(v);
-        obj["queryHistory"] = qArr;
-        QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
-        obj["extHistory"] = eArr;
-        
-        // 2026-05-16 持久化存盘
-        obj["viewMode"] = viewMode;
-        obj["iconSize"] = iconSize;
-        obj["sortColumn"] = sortColumn;
-        obj["sortOrder"] = sortOrder;
-
-        obj["useRegex"] = useRegex;
-        obj["caseSensitive"] = caseSensitive;
-        obj["includeHidden"] = includeHidden;
-        obj["includeSystem"] = includeSystem;
-        obj["includeDollar"] = includeDollar;
-        obj["autoDisplay"] = autoDisplay;
-        
-        file.write(QJsonDocument(obj).toJson());
+        file.write(QJsonDocument(root).toJson());
     }
 }
 
@@ -175,7 +191,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         m_currentResultSet = newSet;
         updateResults();
     });
-    
+
     connect(m_controller, &ScanController::entryAdded, this, [this](std::shared_ptr<ResultSet> newSet, uint64_t key, int row) {
         Q_UNUSED(key);
         m_currentResultSet = newSet;
@@ -1691,6 +1707,13 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
     }
     handleMetadataShortcut(event);
     FramelessDialog::keyPressEvent(event);
+}
+
+void ScanDialog::closeEvent(QCloseEvent* event) {
+    // 2026-06-xx 物理拦截：实现单界面托盘驻留模式。
+    // 点击关闭按钮时，仅隐藏窗口，不退出进程。
+    hide();
+    event->ignore();
 }
 
 // 2026-05-16 快捷键核心处理逻辑：支持评分、置顶、标签等深度管理快捷键

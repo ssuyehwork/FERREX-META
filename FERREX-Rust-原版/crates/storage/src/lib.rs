@@ -20,7 +20,7 @@ pub struct IndexStore {
     pub string_pool: Vec<u8>,
     pub usn_watermark: u64,
     pub volume_serial: u64,
-    
+
     // Lookup structures (Rebuilt on load, not persisted)
     pub frn_to_idx: HashMap<u64, u32>,
     pub sorted_idx: Vec<u32>,
@@ -159,7 +159,7 @@ pub fn resolve_path(
         let current_frn = frns[current as usize];
         let parent_frn = parent_frns[current as usize];
         let name_offset = name_offsets[current as usize] as usize;
-        
+
         parts.push(pool_get_name(pool, name_offset));
 
         // Root FRN on NTFS is typically 5
@@ -198,10 +198,10 @@ pub fn save_index(
 ) -> std::io::Result<()> {
     let record_count = store.frns.len();
     let string_pool_size = store.string_pool.len();
-    
+
     let total_size = HEADER_SIZE + (record_count * RECORD_SIZE) + string_pool_size;
     let mut buffer = Vec::with_capacity(total_size);
-    
+
     buffer.extend_from_slice(MAGIC);
     buffer.extend_from_slice(&VERSION.to_le_bytes());
     buffer.extend_from_slice(&(record_count as u64).to_le_bytes());
@@ -210,7 +210,7 @@ pub fn save_index(
     buffer.extend_from_slice(&store.volume_serial.to_le_bytes());
     buffer.extend_from_slice(&0u32.to_le_bytes());
     buffer.extend_from_slice(&0u32.to_le_bytes());
-    
+
     for i in 0..record_count {
         buffer.extend_from_slice(&store.frns[i].to_le_bytes());
         buffer.extend_from_slice(&store.parent_frns[i].to_le_bytes());
@@ -219,14 +219,14 @@ pub fn save_index(
         buffer.extend_from_slice(&store.name_offsets[i].to_le_bytes());
         buffer.extend_from_slice(&store.flags[i].to_le_bytes());
     }
-    
+
     buffer.extend_from_slice(&store.string_pool);
-    
+
     let mut hasher = Hasher::new();
     hasher.update(&buffer);
     let checksum = hasher.finalize();
     buffer[0x28..0x2C].copy_from_slice(&checksum.to_le_bytes());
-    
+
     let mut file = File::create(path)?;
     file.write_all(&buffer)?;
     file.sync_all()?;
@@ -245,30 +245,30 @@ impl MappedIndex {
     pub fn load(path: &str) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
-        
+
         if mmap.len() < HEADER_SIZE {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "File too small"));
         }
-        
+
         if &mmap[0..4] != MAGIC {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid magic"));
         }
-        
+
         let stored_crc = u32::from_le_bytes(mmap[0x28..0x2C].try_into().unwrap());
         let mut hasher = Hasher::new();
         hasher.update(&mmap[0..0x28]);
         hasher.update(&[0u8; 4]);
         hasher.update(&mmap[0x2C..]);
         let calculated_crc = hasher.finalize();
-        
+
         if stored_crc != calculated_crc {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "CRC mismatch"));
         }
-        
+
         let record_count = u64::from_le_bytes(mmap[8..16].try_into().unwrap()) as usize;
         let usn_watermark = u64::from_le_bytes(mmap[0x18..0x20].try_into().unwrap());
         let volume_serial = u64::from_le_bytes(mmap[0x20..0x28].try_into().unwrap());
-        
+
         Ok(Self {
             mmap,
             record_count,

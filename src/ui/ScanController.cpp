@@ -11,9 +11,13 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
     m_debounceTimer->setSingleShot(true);
     m_debounceTimer->setInterval(300); // 300ms 黄金防抖时间
 
+    m_incrementalTimer = new QTimer(this);
+    m_incrementalTimer->setInterval(150); // 150ms 聚合更新增量，解决大规模写入时的假死
+
     connect(m_debounceTimer, &QTimer::timeout, this, [this]() {
         performSearch();
     });
+    connect(m_incrementalTimer, &QTimer::timeout, this, &ScanController::processPendingIncrementalUpdates);
 
     auto& reader = MftReader::instance();
     connect(&reader, &MftReader::entryAdded, this, &ScanController::onMftEntryAdded);
@@ -155,110 +159,93 @@ void ScanController::updateKeyToPosMapping(ResultSet& rs) {
 
 void ScanController::onMftEntryAdded(uint32_t index) {
     uint64_t key = MftReader::instance().getKeyByIndex(index);
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
-    if (m_resultSet->keyToPos.count(key)) return;
-
-    int idx = (int)index;
-
-    bool matches = MftReader::instance().matchEntry(idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
-                                                   m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
-                                                   m_filterState.includeDollar);
-    
-    // 如果查询为空，只有在开启自动显示的情况下才认为匹配
-    if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) {
-        matches = m_filterState.autoDisplay && matches;
-    }
-
-    if (matches) {
-        
-        // 2026-06-xx 物理加固：采用 Copy-On-Write 机制确保 ResultSet 快照的不可变性，杜绝 UI 线程数据竞争
-        auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-        auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), key, [this](uint64_t a, uint64_t b) {
-            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-        });
-
-        int row = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
-        newSet->keys.insert(itInsert, key);
-        updateKeyToPosMapping(*newSet); 
-        m_resultSet = newSet;
-
-        emit entryAdded(newSet, key, row);
-    }
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    m_pendingUpdates.push_back({ PendingUpdate::Added, key, index });
+    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
 }
 
 void ScanController::onMftEntryRemoved(uint64_t key) {
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
-    auto itPos = m_resultSet->keyToPos.find(key);
-    if (itPos != m_resultSet->keyToPos.end()) {
-        int row = itPos->second;
-        
-        auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-        newSet->keys.erase(newSet->keys.begin() + row);
-        updateKeyToPosMapping(*newSet);
-        m_resultSet = newSet;
-
-        emit entryRemoved(newSet, key, row);
-    }
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    m_pendingUpdates.push_back({ PendingUpdate::Removed, key, 0 });
+    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
 }
 
 void ScanController::onMftEntryUpdated(uint32_t index) {
     uint64_t key = MftReader::instance().getKeyByIndex(index);
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
-    auto itPos = m_resultSet->keyToPos.find(key);
-    int idx = (int)index;
-    
-    bool matches = (idx != -1) && MftReader::instance().matchEntry(idx, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive, 
-                                                                  m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
-                                                                  m_filterState.includeDollar);
-    
-    // 如果查询为空，只有在开启自动显示的情况下才认为匹配
-    if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) {
-        matches = m_filterState.autoDisplay && matches;
+    std::lock_guard<std::mutex> lock(m_pendingMutex);
+    m_pendingUpdates.push_back({ PendingUpdate::Updated, key, index });
+    if (!m_incrementalTimer->isActive()) m_incrementalTimer->start();
+}
+
+void ScanController::processPendingIncrementalUpdates() {
+    std::vector<PendingUpdate> updates;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        updates = std::move(m_pendingUpdates);
+        m_pendingUpdates.clear();
+        m_incrementalTimer->stop();
     }
 
-    if (itPos != m_resultSet->keyToPos.end()) {
-        int row = itPos->second;
-        if (matches) {
-            // 2026-06-xx 工业级增强：检测排序字段是否发生物理偏移
-            // 简单起见，如果匹配则重新执行一次一致性位置校验，若位置变动则执行“物理迁移”
-            auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-            newSet->keys.erase(newSet->keys.begin() + row);
-            
-            auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), key, [this](uint64_t a, uint64_t b) {
-                return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-            });
-            int newRow = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
-            
-            if (newRow == row) {
-                // 位置未变，仅发射更新信号
-                emit entryUpdated(m_resultSet, key, row);
-            } else {
-                // 位置变了，执行删除并插入的原子组合
-                newSet->keys.insert(itInsert, key);
+    if (updates.empty()) return;
+
+    std::lock_guard<std::mutex> lock(m_resultsMutex);
+    auto newSet = std::make_shared<ResultSet>(*m_resultSet);
+    bool changed = false;
+
+    for (const auto& up : updates) {
+        if (up.type == PendingUpdate::Removed) {
+            auto itPos = newSet->keyToPos.find(up.key);
+            if (itPos != newSet->keyToPos.end()) {
+                int row = itPos->second;
+                newSet->keys.erase(newSet->keys.begin() + row);
                 updateKeyToPosMapping(*newSet);
-                m_resultSet = newSet;
-                
-                emit entryRemoved(newSet, key, row);
-                emit entryAdded(newSet, key, newRow);
+                changed = true;
+                emit entryRemoved(newSet, up.key, row);
             }
         } else {
-            auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-            newSet->keys.erase(newSet->keys.begin() + row);
-            updateKeyToPosMapping(*newSet);
-            m_resultSet = newSet;
-            emit entryRemoved(newSet, key, row);
+            bool matches = MftReader::instance().matchEntry((int)up.mftIndex, m_searchText, m_filterState.useRegex, m_filterState.caseSensitive,
+                                                            m_filterState.extensionList, m_filterState.includeHidden, m_filterState.includeSystem,
+                                                            m_filterState.includeDollar);
+            if (m_searchText.isEmpty() && m_filterState.extensionList.isEmpty()) matches = m_filterState.autoDisplay && matches;
+
+            auto itPos = newSet->keyToPos.find(up.key);
+            if (itPos != newSet->keyToPos.end()) {
+                int row = itPos->second;
+                if (matches) {
+                    auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
+                        return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+                    });
+                    int newRow = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
+                    if (newRow == row) emit entryUpdated(newSet, up.key, row);
+                    else {
+                        newSet->keys.erase(newSet->keys.begin() + row);
+                        newSet->keys.insert(std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
+                            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+                        }), up.key);
+                        updateKeyToPosMapping(*newSet);
+                        changed = true;
+                        emit entryRemoved(newSet, up.key, row);
+                        emit entryAdded(newSet, up.key, newRow);
+                    }
+                } else {
+                    newSet->keys.erase(newSet->keys.begin() + row);
+                    updateKeyToPosMapping(*newSet);
+                    changed = true;
+                    emit entryRemoved(newSet, up.key, row);
+                }
+            } else if (matches) {
+                auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), up.key, [this](uint64_t a, uint64_t b) {
+                    return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
+                });
+                int row = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
+                newSet->keys.insert(itInsert, up.key);
+                updateKeyToPosMapping(*newSet);
+                changed = true;
+                emit entryAdded(newSet, up.key, row);
+            }
         }
-    } else if (matches) {
-        auto newSet = std::make_shared<ResultSet>(*m_resultSet);
-        auto itInsert = std::lower_bound(newSet->keys.begin(), newSet->keys.end(), key, [this](uint64_t a, uint64_t b) {
-            return compareKeys(a, b, m_currentSortColumn, m_currentSortOrder);
-        });
-        int row = static_cast<int>(std::distance(newSet->keys.begin(), itInsert));
-        newSet->keys.insert(itInsert, key);
-        updateKeyToPosMapping(*newSet);
-        m_resultSet = newSet;
-        emit entryAdded(newSet, key, row);
     }
+    if (changed) m_resultSet = newSet;
 }
 
 } // namespace ArcMeta
