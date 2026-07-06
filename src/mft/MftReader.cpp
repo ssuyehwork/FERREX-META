@@ -18,6 +18,7 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QtConcurrent>
 #include <QFuture>
+#include <QThreadPool>
 #include <QFileIconProvider>
 #include <QFileInfo>
 
@@ -32,7 +33,7 @@
 #endif
 
 
-namespace ArcMeta {
+namespace FERREX {
 
 static int64_t filetimeToUnixMs(int64_t filetime) {
     // 2026-05-14 物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
@@ -215,7 +216,7 @@ void MftReader::buildIndex(const QStringList& drives) {
 }
 
 bool MftReader::loadFromCache() {
-    std::filesystem::path cacheDir = "ArcMeta/cache";
+    std::filesystem::path cacheDir = "FERREX/cache";
     if (!std::filesystem::exists(cacheDir)) return false;
 
     // 2026-06-xx 物理修复：载入缓存前必须执行全量清理（含停止旧监听器），杜绝资源泄露与逻辑重叠
@@ -397,7 +398,7 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
 
     std::unordered_map<std::string, uint64_t> usnMap;
     usnMap[QString::fromStdWString(volume).toStdString()] = m_next_usns[volume];
-    QString path = QString("ArcMeta/cache/%1.scch").arg(QString::fromStdWString(volume).left(1));
+    QString path = QString("FERREX/cache/%1.scch").arg(QString::fromStdWString(volume).left(1));
     return ScchCache::save(path.toStdString().c_str(), f, pf, s, t, no, attr, mf, sp, ds, usnMap);
 }
 
@@ -599,11 +600,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<uint64_t> finalRes;
     finalRes.reserve(m_frns.size() / 16);
 
-    size_t total = m_frns.size();
     const size_t grainSize = 4096;
-    size_t numChunks = (total + grainSize - 1) / grainSize;
-    std::vector<size_t> chunkIndices(numChunks);
-    std::iota(chunkIndices.begin(), chunkIndices.end(), 0);
 
     // 2026-06-xx 极致算法重构：分块加锁搜索
     // 不再持有全局读锁，而是在并行的分块任务内部按需加锁，允许 USN 写入线程在分块间隙插队
@@ -847,7 +844,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
 
     if (shouldSave) {
         // 2026-06-xx 物理分离：将耗时 I/O 移出写锁范围，杜绝 UI 挂起
-        QtConcurrent::run([this, dIdx]() {
+        QThreadPool::globalInstance()->start([this, dIdx]() {
             saveDriveToCache(dIdx);
         });
     }
@@ -1189,4 +1186,4 @@ QIcon MftReader::getCachedIcon(const QString& ext, bool isDir) {
     return icon;
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

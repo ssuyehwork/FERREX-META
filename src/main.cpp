@@ -28,7 +28,7 @@
  */
 void customMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
     Q_UNUSED(context); 
-    QFile logFile("arcmeta_debug.log");
+    QFile logFile("FERREX_debug.log");
     if (logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         QTextStream textStream(&logFile);
         QString timeStr = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
 
     // 1. 安装自定义日志处理器：确保从程序启动的第一秒开始就能捕获所有调试信息
     qInstallMessageHandler(customMessageHandler);
-    qDebug() << "================ ArcMeta 启动加载 ================";
+    qDebug() << "================ FERREX 启动加载 ================";
 
     // 设置高 DPI 支持：Qt 6 默认行为，此处显式设置 PassThrough 以防旧设备缩放模糊
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
@@ -63,31 +63,31 @@ int main(int argc, char *argv[]) {
     // 杜绝相对路径幻觉，强制使用 Qt 资源系统 (:/) 加载 app_icon.ico，确保托盘显示不失效
     a.setWindowIcon(QIcon(":/app_icon.ico"));
 
-    a.setApplicationName("ArcMeta");
-    a.setOrganizationName("ArcMetaTeam");
+    a.setApplicationName("FERREX");
+    a.setOrganizationName("FERREXTeam");
 
     // 2026-05-27 物理修复：在主线程预热元数据管理器单例
     // 确保其内部的 QTimer 等对象归属于主线程，避免跨线程创建导致的行为不确定性
-    ArcMeta::MetadataManager::instance();
+    FERREX::MetadataManager::instance();
 
     // 2. 初始化数据库 (仅核心表结构，必须同步完成)
-    std::wstring dbPath = L"arcmeta.db";
-    if (!ArcMeta::Database::instance().init(dbPath)) {
+    std::wstring dbPath = L"FERREX.db";
+    if (!FERREX::Database::instance().init(dbPath)) {
         QMessageBox::critical(nullptr, "错误", "无法初始化数据库，程序即将退出。");
         return -1;
     }
 
     // 3. 简化启动：直接显示 ScanDialog (Plan-136)
     // 彻底移除 MainWindow，仅保留 ScanDialog 作为唯一主界面
-    ArcMeta::ScanDialog* w = new ArcMeta::ScanDialog();
+    FERREX::ScanDialog* w = new FERREX::ScanDialog();
     w->show();
 
     // 4. 集成托盘图标支持
-    ArcMeta::TrayController* tray = new ArcMeta::TrayController(w);
+    FERREX::TrayController* tray = new FERREX::TrayController(w);
     tray->show();
 
     // 5. 启动异步系统扫描（后台初始化，UI 可响应）
-    ArcMeta::CoreController::instance().startSystem();
+    FERREX::CoreController::instance().startSystem();
 
     int ret = a.exec();
 

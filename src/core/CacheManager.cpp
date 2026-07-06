@@ -18,7 +18,7 @@
 #include <winioctl.h>
 #endif
 
-namespace ArcMeta {
+namespace FERREX {
 
 // 静态成员初始化
 std::vector<uint32_t> CacheManager::s_crcTable;
@@ -457,4 +457,4 @@ uint32_t CacheManager::crc32(const void* data, size_t size) {
     return crc ^ 0xFFFFFFFF;
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

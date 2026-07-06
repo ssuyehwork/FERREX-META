@@ -4,13 +4,13 @@
 #include <unordered_map>
 #include <vector>
 
-namespace ArcMeta {
+namespace FERREX {
 
 // 当前格式版本
 constexpr uint16_t SCCH_VERSION_MAJOR = 1;
 constexpr uint16_t SCCH_VERSION_MINOR = 0;
 constexpr char     SCCH_MAGIC[4]      = {'S','C','C','H'};
-constexpr char     SCCH_DEFAULT_PATH[] = "ArcMeta/cache/index.scch";
+constexpr char     SCCH_DEFAULT_PATH[] = "FERREX/cache/index.scch";
 
 #pragma pack(push, 1)
 struct ScchHeader {
@@ -84,4 +84,4 @@ private:
     static uint32_t computeCrc32(const uint8_t* data, size_t len);
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

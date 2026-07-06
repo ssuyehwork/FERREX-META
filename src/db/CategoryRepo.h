@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace ArcMeta {
+namespace FERREX {
 
 struct Category {
     int id = 0;
@@ -50,4 +50,4 @@ public:
     static std::vector<std::string> getFileIdsRecursive(int categoryId);
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

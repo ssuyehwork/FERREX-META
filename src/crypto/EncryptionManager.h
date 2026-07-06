@@ -9,7 +9,7 @@
 #include <vector>
 #include <memory>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 临时解密文件句柄持有者 (RAII)
@@ -57,4 +57,4 @@ private:
     BCRYPT_ALG_HANDLE m_aesAlg = NULL;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

@@ -8,7 +8,7 @@
 #include <memory>
 #include <atomic>
 
-namespace ArcMeta {
+namespace FERREX {
 
 // 2026-05-09 按照用户要求：实现高效缓存机制，参考 FERREX 的 FIDX 格式
 struct CacheHeader {
@@ -145,4 +145,4 @@ private:
     static std::vector<uint32_t> s_crcTable;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

@@ -5,7 +5,7 @@
 #include <shared_mutex>
 #include <QDebug>
 
-namespace ArcMeta {
+namespace FERREX {
 
 static std::shared_mutex s_frnMutex;
 
@@ -64,4 +64,4 @@ QMap<QString, QString> AllFrnManager::getAllFrns() {
     return result;
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

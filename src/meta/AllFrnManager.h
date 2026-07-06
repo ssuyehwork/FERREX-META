@@ -4,7 +4,7 @@
 #include <QMap>
 #include <string>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 全局 FRN 与 am_meta.json 映射管理器
@@ -25,4 +25,4 @@ public:
     static QMap<QString, QString> getAllFrns();
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

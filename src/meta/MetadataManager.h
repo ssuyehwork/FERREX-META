@@ -1,5 +1,5 @@
-#ifndef ARCMETA_METADATA_MANAGER_H
-#define ARCMETA_METADATA_MANAGER_H
+#ifndef FERREX_METADATA_MANAGER_H
+#define FERREX_METADATA_MANAGER_H
 
 #include "MetadataDefs.h"
 #include <QObject>
@@ -11,7 +11,7 @@
 #include <shared_mutex>
 #include <string>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 内存元数据镜像结构
@@ -137,6 +137,6 @@ private:
     void saveSyncLog();
 };
 
-} // namespace ArcMeta
+} // namespace FERREX
 
-#endif // ARCMETA_METADATA_MANAGER_H
+#endif // FERREX_METADATA_MANAGER_H

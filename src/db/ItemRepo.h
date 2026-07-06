@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 文件条目持久层
@@ -80,4 +80,4 @@ public:
     static std::vector<ItemRecord> getRecordsInCategory(int categoryId);
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

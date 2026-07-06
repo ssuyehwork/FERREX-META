@@ -2,7 +2,7 @@
 
 #include <QStyledItemDelegate>
 
-namespace ArcMeta {
+namespace FERREX {
 
 class ThumbnailDelegate : public QStyledItemDelegate {
     Q_OBJECT
@@ -55,4 +55,4 @@ private:
     Metrics calculateMetrics(const QStyleOptionViewItem& option) const;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

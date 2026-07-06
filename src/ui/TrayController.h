@@ -5,7 +5,7 @@
 #include <QMenu>
 #include <QWidget>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 系统托盘控制器
@@ -32,4 +32,4 @@ private:
     QMenu* m_trayMenu;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

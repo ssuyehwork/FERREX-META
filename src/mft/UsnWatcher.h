@@ -12,7 +12,7 @@
 #include <QThread>
 #include <QList>
 
-namespace ArcMeta {
+namespace FERREX {
 
 // 变动记录结构
 struct UsnChange {
@@ -52,4 +52,4 @@ private:
     HANDLE m_hVolume = INVALID_HANDLE_VALUE;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

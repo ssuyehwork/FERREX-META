@@ -1,9 +1,0 @@
-[workspace]
-members = [
-    "ferrex_cli",
-    "ferrex_gui",
-    "crates/indexer",
-    "crates/storage",
-    "crates/search",
-]
-resolver = "2"

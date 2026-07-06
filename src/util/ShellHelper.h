@@ -11,7 +11,7 @@
 #include <shellapi.h>
 #endif
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 系统服务层工具类 (ShellHelper)
@@ -104,4 +104,4 @@ public:
     }
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

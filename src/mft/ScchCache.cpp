@@ -21,7 +21,7 @@
 #endif
 
 
-namespace ArcMeta {
+namespace FERREX {
 
 const char* scchResultString(ScchResult r) {
     switch (r) {
@@ -305,4 +305,4 @@ ScchResult ScchCache::load(
     }
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

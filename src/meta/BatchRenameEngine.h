@@ -4,7 +4,7 @@
 #include <vector>
 #include <QString>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 批量重命名规则组件类型
@@ -53,4 +53,4 @@ private:
     QString processOne(const std::wstring& path, int index, const std::vector<RenameRule>& rules);
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

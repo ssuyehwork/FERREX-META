@@ -1,5 +1,5 @@
-#ifndef ARCMETA_METADATA_DEFS_H
-#define ARCMETA_METADATA_DEFS_H
+#ifndef FERREX_METADATA_DEFS_H
+#define FERREX_METADATA_DEFS_H
 
 #include <string>
 #include <vector>
@@ -7,7 +7,7 @@
 
 #include <QColor>
 
-namespace ArcMeta {
+namespace FERREX {
 
 struct PaletteEntry {
     QColor color;
@@ -68,6 +68,6 @@ struct ItemMeta {
     }
 };
 
-} // namespace ArcMeta
+} // namespace FERREX
 
-#endif // ARCMETA_METADATA_DEFS_H
+#endif // FERREX_METADATA_DEFS_H

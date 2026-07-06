@@ -3,7 +3,7 @@
 #include <QSqlError>
 #include <QDateTime>
 
-namespace ArcMeta {
+namespace FERREX {
 
 bool FavoritesRepo::add(const Favorite& fav) {
     QSqlQuery q;
@@ -37,4 +37,4 @@ std::vector<Favorite> FavoritesRepo::getAll() {
     return results;
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

@@ -4,7 +4,7 @@
 #include <memory>
 #include <QSqlDatabase>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 数据库管理类 (原生 QtSql 实现，拒绝第三方 SQLiteCpp)
@@ -47,4 +47,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

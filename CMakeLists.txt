@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ArcMeta)
+project(FERREX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,10 +28,10 @@ if(CMAKE_BINARY_DIR MATCHES "/out/")
     message(WARNING "⚠️ 检测到非法构建路径 [out]！请在 VS 工具栏切换至 [x64-release] 预设以符合《源码纯净》规范。")
 endif()
 
-# 2026-03-xx 按照用户要求：将可执行文件直接输出到指定项目子目录 ArcMeta 下，解决 \out 文件夹查找不便的问题
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ArcMeta")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ArcMeta")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/ArcMeta")
+# 2026-03-xx 按照用户要求：将可执行文件直接输出到指定项目子目录 FERREX 下，解决 \out 文件夹查找不便的问题
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/FERREX")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/FERREX")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/FERREX")
 
 # 自动生成 MOC/UIC/RCC
 set(CMAKE_AUTOMOC ON)
@@ -90,18 +90,18 @@ set(SOURCES
     src/ui/ScanDialog.cpp
     src/ui/ScanDialog.h
     src/ui/UiHelper.h
-    ArcMeta.rc
+    FERREX.rc
     resources/resources.qrc
 )
 
 # 可执行文件 (添加 WIN32 属性以消除控制台黑框)
-# 修复：移除直接引用的 "ArcMeta.manifest"，改由 ArcMeta.rc 引入以杜绝 mt.exe 冲突
-add_executable(ArcMeta WIN32 ${SOURCES})
+# 修复：移除直接引用的 "FERREX.manifest"，改由 FERREX.rc 引入以杜绝 mt.exe 冲突
+add_executable(FERREX WIN32 ${SOURCES})
 
 # 链接库 (文档红线列表: ole32, bcrypt + QtSql)
 # 2026-04-14 按照用户要求：恢复 MFT 逻辑，重新引入 ntdll 依赖
 # 2026-05-10 修复：添加缺失的Qt6::Core和Qt6::Gui库
-target_link_libraries(ArcMeta PRIVATE
+target_link_libraries(FERREX PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
@@ -114,8 +114,8 @@ target_link_libraries(ArcMeta PRIVATE
 )
 
 # 2026-03-xx 按照用户要求及《记忆碎片》规范：
-# 为避免 mt.exe 清单合并冲突，通过 ArcMeta.rc 嵌入清单并禁用链接器的默认清单生成
+# 为避免 mt.exe 清单合并冲突，通过 FERREX.rc 嵌入清单并禁用链接器的默认清单生成
 if(MSVC)
-    target_link_options(ArcMeta PRIVATE "/MANIFEST:NO")
+    target_link_options(FERREX PRIVATE "/MANIFEST:NO")
 endif()
 # Force Refresh CMake: 2026-06-xx 11:30 (Removed AmMetaJson & SyncQueue, switched to DB-only)

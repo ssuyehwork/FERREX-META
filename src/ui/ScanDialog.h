@@ -32,7 +32,7 @@
 #include <atomic>
 
 #include "ScanController.h"
-namespace ArcMeta {
+namespace FERREX {
 
 class JustifiedView;
 class ThumbnailDelegate;
@@ -178,4 +178,4 @@ protected:
     void closeEvent(QCloseEvent* event) override;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

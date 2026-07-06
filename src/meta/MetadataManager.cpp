@@ -42,7 +42,7 @@
 #include <mutex>
 #include <shared_mutex>
 
-namespace ArcMeta {
+namespace FERREX {
 
 // --- 内部静态工具函数 (必须在类成员函数前定义或前向声明) ---
 
@@ -160,7 +160,7 @@ void MetadataManager::initFromDatabase() {
     }
 
     auto volMap = getVolumeToDriveMap();
-    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
+    QSqlDatabase db = FERREX::Database::instance().getThreadDatabase();
     if (!db.isOpen()) return;
 
     auto loadTable = [&](const char* sql) {
@@ -776,4 +776,4 @@ QStringList MetadataManager::searchInCache(const QString& keyword) {
     return results;
 }
 
-} // namespace ArcMeta
+} // namespace FERREX

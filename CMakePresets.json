@@ -6,8 +6,8 @@
             "description": "面向具有 Visual Studio 开发环境的 Windows。",
             "hidden": true,
             "generator": "Ninja",
-            "binaryDir": "${sourceDir}/../ArcMeta_Build/${presetName}",
-            "installDir": "${sourceDir}/../ArcMeta_Build/install/${presetName}",
+            "binaryDir": "${sourceDir}/../FERREX/${presetName}",
+            "installDir": "${sourceDir}/../FERREX/install/${presetName}",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "cl.exe",
                 "CMAKE_CXX_COMPILER": "cl.exe"

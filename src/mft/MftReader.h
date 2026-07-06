@@ -29,7 +29,7 @@
 #endif
 
 
-namespace ArcMeta {
+namespace FERREX {
 
 class UsnWatcher;
 
@@ -167,4 +167,4 @@ private:
     std::vector<uint32_t> m_sorted_indices;
 };
 
-} // namespace ArcMeta
+} // namespace FERREX

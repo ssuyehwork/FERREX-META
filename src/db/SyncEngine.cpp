@@ -30,7 +30,7 @@
 #include <sstream>
 #include <iomanip>
 
-namespace ArcMeta {
+namespace FERREX {
 
 /**
  * @brief 通过 FID 反查物理路径 (Windows API)
@@ -294,7 +294,7 @@ void SyncEngine::runFullScan(const std::vector<std::wstring>& drivesToScanInput,
 }
 
 void SyncEngine::rebuildTagStats() {
-    QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
+    QSqlDatabase db = FERREX::Database::instance().getThreadDatabase();
     if (!db.isOpen()) return;
     
     db.transaction();
@@ -329,4 +329,4 @@ void SyncEngine::scanDirectory(const std::filesystem::path& root, std::vector<st
     Q_UNUSED(metaFiles);
 }
 
-} // namespace ArcMeta
+} // namespace FERREX
