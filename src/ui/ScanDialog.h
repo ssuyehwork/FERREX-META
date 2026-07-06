@@ -82,7 +82,7 @@ public:
     void setVisibleRange(int top, int bottom);
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
-    void updateResults();
+    void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
     void clearThumbCache() { 
         m_thumbCache.clear(); 
         m_requestedThumbs.clear(); 

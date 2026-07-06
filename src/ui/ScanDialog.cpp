@@ -207,8 +207,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
 
     // 2026-06-xx 架构重构：切换至 Controller 驱动的原子快照更新 (使用信号携带的快照，绝对安全)
     connect(m_controller, &ScanController::resultsSwapped, this, [this](std::shared_ptr<ResultSet> newSet) {
-        m_currentResultSet = newSet;
-        updateResults();
+        updateResults(newSet);
     });
 }
 ScanTableModel::~ScanTableModel() {}
@@ -377,40 +376,38 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
     return QVariant();
 }
 
-void ScanTableModel::updateResults() {
-    auto newSet = m_controller->snapshot();
-    size_t oldSize = m_currentResultSet->keys.size();
-    size_t newSize = newSet->keys.size();
+void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
+    auto newSet = nextSet ? nextSet : m_controller->snapshot();
+    int oldSize = (int)m_currentResultSet->keys.size();
+    int newSize = (int)newSet->keys.size();
 
     // 2026-06-xx 极致性能重构：Diffing 局部刷新。
-    // 理由：beginResetModel 会销毁所有视图控件，导致 UI 闪烁并丢失滚动位置。
-    // 采用局部增减信号可实现 60FPS 的丝滑更新体验。
+    // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
+    // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
     // 如果变动巨大或初始加载，回退到 Reset 模式
-    if (oldSize == 0 || std::abs((int)newSize - (int)oldSize) > 500) {
+    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
-        m_displayCount = (std::min<int>)(static_cast<int>(m_currentResultSet->keys.size()), 100); 
+        m_displayCount = (std::min<int>)(newSize, 100);
         m_requestedThumbs.clear();
         endResetModel();
         return;
     }
 
-    // 简单 Diff：目前仅支持尾部增减及内容变化
-    // TODO: 实现更复杂的 Myers Diff 以支持中间插入的平滑动画
     if (newSize > oldSize) {
-        beginInsertRows(QModelIndex(), (int)oldSize, (int)newSize - 1);
+        beginInsertRows(QModelIndex(), oldSize, newSize - 1);
         m_currentResultSet = newSet;
-        m_displayCount = (int)newSize; // 同步 displayCount 以防 fetchMore 冲突
+        m_displayCount = newSize;
         endInsertRows();
     } else if (newSize < oldSize) {
-        beginRemoveRows(QModelIndex(), (int)newSize, (int)oldSize - 1);
+        beginRemoveRows(QModelIndex(), newSize, oldSize - 1);
         m_currentResultSet = newSet;
-        m_displayCount = (int)newSize;
+        m_displayCount = newSize;
         endRemoveRows();
     } else {
         m_currentResultSet = newSet;
-        emit dataChanged(index(0, 0), index((int)newSize - 1, 3));
+        emit dataChanged(index(0, 0), index(newSize - 1, 3));
     }
 }
 
@@ -1101,6 +1098,17 @@ void ScanDialog::setupUi() {
     m_iconView->setStyleSheet(
         "background-color: #1E1E1E; border: 1px solid #333; color: #D4D4D4; outline: none;"
     );
+
+    connect(m_iconView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        if (m_viewStack->currentIndex() != 1) return;
+        // 图标模式下使用 indexAt 探测视口首尾
+        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
+        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
+
+        int top = topIdx.isValid() ? topIdx.row() : 0;
+        int bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
+        m_tableModel->setVisibleRange(top, bottom);
+    });
     
     connect(m_iconView, &QListView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
     connect(m_iconView, &QListView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
@@ -1216,15 +1224,17 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
-            // 2026-06-xx 工业级初始化防御：首次启动若忽略列表为空，默认排除系统盘 (C:)
-            if (weakThis->m_config.ignoredDrives.isEmpty()) {
+            // 2026-06-xx 工业级初始化防御：首次启动若配置为空，智能选择默认盘符
+            // 策略：显示 C 盘但不默认激活，激活所有非系统盘作为初始扫描目标
+            if (weakThis->m_config.activeDrives.isEmpty() && weakThis->m_config.ignoredDrives.isEmpty()) {
                 for (const auto& info : drives) {
-                    if (info.letter == "C:") {
-                        weakThis->m_config.ignoredDrives.insert("C:");
-                        weakThis->m_config.save();
-                        break;
+                    if (info.hasMedia && info.isNtfs) {
+                        if (info.letter != "C:") {
+                            weakThis->m_config.activeDrives.insert(info.letter);
+                        }
                     }
                 }
+                weakThis->m_config.save();
             }
 
             QLayoutItem* item;
