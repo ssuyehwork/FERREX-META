@@ -1231,10 +1231,10 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 weakThis->m_config.save();
             }
 
-            // 首次启动时，如果没有选中任何盘符，则激活除 C 盘以外的所有 NTFS 盘符。
+            // 首次启动时，如果没有选中任何盘符，则激活所有可用的 NTFS 盘符（含系统盘 C:）。
             if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
-                    if (info.hasMedia && info.isNtfs && info.letter != "C:") {
+                    if (info.hasMedia && info.isNtfs) {
                         weakThis->m_config.activeDrives.insert(info.letter);
                     }
                 }
