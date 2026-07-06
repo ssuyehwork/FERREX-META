@@ -8,7 +8,7 @@ namespace FERREX {
 
 // 当前格式版本
 constexpr uint16_t SCCH_VERSION_MAJOR = 2; // 升级版本号以区分旧格式
-constexpr uint16_t SCCH_VERSION_MINOR = 0;
+constexpr uint16_t SCCH_VERSION_MINOR = 1;
 constexpr char     SCCH_MAGIC_BIN[4]  = {'S','C','B','N'};
 constexpr char     SCCH_MAGIC_IDX[4]  = {'S','C','I','X'};
 
@@ -47,6 +47,7 @@ struct ScchRecord {
     uint8_t  metadata_fetched;
     uint8_t  tombstone;          // 1 表示已删除
     uint32_t name_len;           // 文件名长度（字节）
+    uint32_t record_crc32;       // 记录完整性校验
     // 紧跟 UTF-8 文件名数据
 };
 
