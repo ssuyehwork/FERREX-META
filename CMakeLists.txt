@@ -77,70 +77,18 @@ set(SOURCES
     src/mft/MftReader.h
     src/mft/ScchCache.cpp
     src/mft/ScchCache.h
-    src/ui/BatchRenameDialog.cpp
-    src/ui/BatchRenameDialog.h
-    src/ui/BatchRenamePreviewDialog.cpp
-    src/ui/BatchRenamePreviewDialog.h
-    src/ui/BreadcrumbBar.cpp
-    src/ui/BreadcrumbBar.h
-    src/ui/CategoryDelegate.h
-    src/ui/CategoryLockDialog.cpp
-    src/ui/CategoryLockDialog.h
-    src/ui/CategoryModel.cpp
-    src/ui/CategoryModel.h
-    src/ui/CategoryPanel.cpp
-    src/ui/CategoryPanel.h
-    src/ui/CategorySetPasswordDialog.cpp
-    src/ui/CategorySetPasswordDialog.h
-    src/ui/ColorPicker.cpp
-    src/ui/ColorPicker.h
-    src/ui/ContentPanel.cpp
-    src/ui/ContentPanel.h
-    src/ui/DropJustifiedView.cpp
-    src/ui/DropJustifiedView.h
-    src/ui/DropListView.cpp
-    src/ui/DropListView.h
-    src/ui/DropTreeView.cpp
-    src/ui/DropTreeView.h
-    src/ui/FilterPanel.cpp
-    src/ui/FilterPanel.h
     src/ui/FramelessDialog.cpp
     src/ui/FramelessDialog.h
     src/ui/JustifiedView.cpp
     src/ui/JustifiedView.h
     src/ui/ThumbnailDelegate.cpp
     src/ui/ThumbnailDelegate.h
-    src/ui/LoadingWindow.cpp
-    src/ui/LoadingWindow.h
-    src/ui/Logger.h
-    src/ui/MainWindow.cpp
-    src/ui/MainWindow.h
     src/ui/TrayController.cpp
     src/ui/TrayController.h
-    src/ui/HoverEventFilter.cpp
-    src/ui/HoverEventFilter.h
-    src/ui/ResizeEventFilter.cpp
-    src/ui/ResizeEventFilter.h
-    src/ui/AddressBar.cpp
-    src/ui/AddressBar.h
-    src/ui/MetaPanel.cpp
-    src/ui/MetaPanel.h
-    src/ui/NavPanel.cpp
-    src/ui/NavPanel.h
-    src/ui/ProgressDialog.h
-    src/ui/QuickLookWindow.cpp
-    src/ui/QuickLookWindow.h
-    src/ui/RuleRow.cpp
-    src/ui/RuleRow.h
     src/ui/ScanController.cpp
     src/ui/ScanController.h
     src/ui/ScanDialog.cpp
     src/ui/ScanDialog.h
-    src/ui/SearchHistoryPanel.cpp
-    src/ui/SearchHistoryPanel.h
-    src/ui/ToolTipOverlay.cpp
-    src/ui/ToolTipOverlay.h
-    src/ui/TreeItemDelegate.h
     src/ui/UiHelper.h
     ArcMeta.rc
     resources/resources.qrc

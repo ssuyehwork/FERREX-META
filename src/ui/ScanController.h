@@ -70,6 +70,7 @@ signals:
     void entryUpdated(std::shared_ptr<ResultSet> newSet, uint64_t key, int row);
 
 private slots:
+    void processPendingIncrementalUpdates();
     void onMftEntryAdded(uint32_t index);
     void onMftEntryRemoved(uint64_t key);
     void onMftEntryUpdated(uint32_t index);
@@ -87,6 +88,16 @@ private:
     mutable std::mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;
+    QTimer* m_incrementalTimer = nullptr;
+    
+    struct PendingUpdate {
+        enum Type { Added, Removed, Updated } type;
+        uint64_t key;
+        uint32_t mftIndex;
+    };
+    std::vector<PendingUpdate> m_pendingUpdates;
+    std::mutex m_pendingMutex;
+
     QFutureWatcher<std::vector<uint64_t>> m_watcher;
     QFutureWatcher<std::vector<uint64_t>> m_sortWatcher;
 };
