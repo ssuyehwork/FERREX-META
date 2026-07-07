@@ -41,6 +41,7 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QPointer>
+#include <QThreadStorage>
 #include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrent>
 #include <QDir>
@@ -941,9 +942,8 @@ ScanDialog::ScanDialog(QWidget* parent)
 
             QMetaObject::invokeMethod(weakThis.data(), [weakThis, anyLoaded]() {
                 if (!weakThis) return;
-                weakThis->updateStatus("就绪");
                 weakThis->m_controller->setSearchText("");
-                weakThis->refreshDriveList(true); // 后台探测硬件
+                weakThis->refreshDriveList(true); // 后台探测硬件并同步掩码
                 if (weakThis->m_config.autoDisplay) weakThis->onFilterOptionChanged();
                 
                 // 2026-07-07 物理修复：调用封装后的预热函数 (Analysis_Modification_Plan-154.md)
@@ -1322,6 +1322,11 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_config.save();
 
+            // 物理补齐：在硬件列表探测和选择完毕后，立刻将激活盘符同步到 MftReader 的掩码中，杜绝冷启动 0 计数的异常
+            QStringList activeList;
+            for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
+            MftReader::instance().updateActiveDrives(activeList);
+
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
                 if (item->widget()) item->widget()->deleteLater();
@@ -1362,11 +1367,20 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
                     MftReader::instance().updateActiveDrives(activeList);
 
+                    // 极致瞬时反馈体感：在点击触发异步检索的同时，立即更新标题栏的文件总量计数
+                    weakThis->updateStatus("就绪");
+
                     // 2026-07-07 核心修正：左键仅筛选，严禁加载数据库 (Analysis_Modification_Plan-154.md)
                     if (isSelected && !MftReader::instance().isDriveIndexed(letter)) {
                         weakThis->updateStatus("请先通过右键菜单‘加载数据’");
                         weakThis->m_config.activeDrives.remove(letter);
                         weakThis->updateDriveButtonStyles();
+                        
+                        // 修正：复原状态下的掩码二次同步与标题刷新
+                        QStringList reSyncList;
+                        for (const QString& d : weakThis->m_config.activeDrives) reSyncList << d;
+                        MftReader::instance().updateActiveDrives(reSyncList);
+                        weakThis->updateStatus("就绪");
                     } else {
                         weakThis->onTriggerSearch();
                     }
@@ -1381,6 +1395,9 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveLayout->addStretch();
             weakThis->updateDriveButtonStyles();
+
+            // 物理补齐：全部加载完毕后，在 UI 线程显式刷新标题计数为精确的激活盘符条目总数
+            weakThis->updateStatus("就绪");
         });
     });
 }
@@ -1440,6 +1457,11 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
             } else {
                 QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
                     if (weakThis) {
+                        // 物理补齐：加载新盘完成后，立即同步最新激活盘符掩码
+                        QStringList activeList;
+                        for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
+                        MftReader::instance().updateActiveDrives(activeList);
+
                         weakThis->updateStatus("就绪");
                         weakThis->updateDriveButtonStyles();
                         weakThis->onTriggerSearch();
@@ -1663,6 +1685,11 @@ void ScanDialog::onStartScan(const QString& drive) {
         MftReader::instance().buildIndex(selectedDrives);
         QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
             if (!weakThis) return;
+            // 物理补齐：扫描入库完成后，立即同步盘符掩码，避免后续获取为 0
+            QStringList activeList;
+            for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
+            MftReader::instance().updateActiveDrives(activeList);
+
             weakThis->updateStatus("就绪");
             weakThis->updateDriveButtonStyles();
             weakThis->onTriggerSearch();
@@ -1779,7 +1806,6 @@ void ScanDialog::updateStatusBar() {
     double memoryMb = (dbTotal * 184.0) / 1024.0 / 1024.0;
     // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
-
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
@@ -1895,29 +1921,48 @@ void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
 }
 
 void ScanDialog::triggerWarmup() {
-    // 2026-07-07 极致体感：流水线异步预热 (Analysis_Modification_Plan-154.md)
+    // 极致体感：流水线异步预热 
     QPointer<ScanDialog> weakThis(this);
-    (void)QtConcurrent::run([weakThis]() {
-        if (!weakThis) return;
-        // 1. 预热缩略图专用线程池
-        if (weakThis->m_tableModel && weakThis->m_tableModel->m_thumbPool) {
-            weakThis->m_tableModel->m_thumbPool->start([](){});
-        }
-        // 2. 预热 COM 环境与 Shell 引擎
-        int total = MftReader::instance().totalCount();
-        if (total > 0) {
-            // 寻找前 5000 个文件中的首个合法图形文件进行冷启动预热
-            for (int i = 0; i < std::min(total, 5000); ++i) {
-                if (!MftReader::instance().isDirectory(i)) {
-                    QString ext = MftReader::instance().getExtQString(i);
-                    if (UiHelper::isGraphicsFile(ext)) {
-                        UiHelper::getShellThumbnail(MftReader::instance().getFullPath(i), 64);
-                        break;
-                    }
-                }
-            }
-        }
-    });
+     
+    // 我们不使用全局 QtConcurrent，而是直接针对 m_thumbPool 进行定向精准预热 
+    if (!weakThis || !weakThis->m_tableModel || !weakThis->m_tableModel->m_thumbPool) { 
+        return; 
+    } 
+ 
+    auto* pool = weakThis->m_tableModel->m_thumbPool; 
+    int maxThreads = pool->maxThreadCount(); // 获取当前线程池的最大并发线程数（SSD 模式下可能为 2~4，HDD 模式下为 1） 
+ 
+    // 物理预热：让线程池里的每一个工作线程都至少执行一次初始化 
+    for (int t = 0; t < maxThreads; ++t) { 
+        pool->start([weakThis]() { 
+            if (!weakThis) return; 
+ 
+            // 1. 确保每个线程的 COM 环境基础（ScopedComInit）在这里完成首次物理初始化 
+            static QThreadStorage<ScopedComInit> comStorage; 
+            if (!comStorage.hasLocalData()) { 
+                comStorage.setLocalData(ScopedComInit()); 
+            } 
+ 
+            // 2. 提前让该线程触发一次 Shell 引擎调用 
+            int total = MftReader::instance().totalCount(); 
+            if (total > 0) { 
+                for (int i = 0; i < std::min(total, 5000); ++i) { 
+                    if (!MftReader::instance().isDirectory(i)) { 
+                        QString ext = MftReader::instance().getExtQString(i); 
+                        // 仅寻找一个图片类型文件执行首次 getShellThumbnail 模拟调用 
+                        if (UiHelper::isGraphicsFile(ext)) { 
+                            QString dummyPath = MftReader::instance().getFullPath(i); 
+                            if (!dummyPath.isEmpty()) { 
+                                // 此时 Shell32、WIC、套间等一次性初始化成本在此工作线程内瞬间被消化掉 
+                                UiHelper::getShellThumbnail(dummyPath, 64); 
+                            } 
+                            break;  
+                        } 
+                    } 
+                } 
+            } 
+        }); 
+    } 
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
