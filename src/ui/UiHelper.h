@@ -49,6 +49,15 @@
 namespace FERREX {
 
 /**
+ * @brief COM 环境 RAII 守卫
+ * 2026-06-xx 任务一：解决跨线程调用 Shell 接口时的 COM 环境缺失问题，杜绝静默串行化。
+ */
+struct ScopedComInit {
+    ScopedComInit() { CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); }
+    ~ScopedComInit() { CoUninitialize(); }
+};
+
+/**
  * @brief UI 辅助类 (全量热加载版 - 杜绝懒加载)
  */
 class UiHelper {

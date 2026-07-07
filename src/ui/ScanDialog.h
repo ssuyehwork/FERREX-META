@@ -100,6 +100,8 @@ private:
     std::shared_ptr<ResultSet> m_currentResultSet;
     int m_displayCount = 0;
 
+    QThreadPool* m_thumbPool = nullptr; // 2026-06-xx 任务二：缩略图生成专用隔离线程池
+
     mutable QCache<QString, QPixmap> m_thumbCache;
     mutable QSet<uint64_t> m_requestedThumbs;
     mutable QMap<uint64_t, double> m_aspectRatios; // 存储宽高比
