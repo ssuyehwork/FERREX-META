@@ -30,6 +30,7 @@
 #include <QFileIconProvider>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 // Windows Shell 缩略图引擎依赖
 #ifdef Q_OS_WIN
@@ -52,32 +53,33 @@ namespace FERREX {
 /**
  * @brief COM 环境 RAII 守卫
  * 2026-06-xx 任务一：解决跨线程调用 Shell 接口时的 COM 环境缺失问题，杜绝静默串行化。
- * 2026-06-xx 极致性能加固：配合 QThreadStorage 实现线程级的 COM 预初始化。
+ * 2026-06-xx 极致性能加固：基于引用计数实现可拷贝语义，配合 QThreadStorage 实现线程级的 COM 预初始化。
  */
 struct ScopedComInit {
-    ScopedComInit() { 
-        HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); 
-        m_needUninit = SUCCEEDED(hr) || (hr == RPC_E_CHANGED_MODE);
-    }
-    ~ScopedComInit() { if (m_needUninit) CoUninitialize(); }
+    ScopedComInit() : m_data(std::make_shared<ComData>()) {}
     
-    // 2026-06-xx 物理安全性：禁止拷贝，防止重复 CoUninitialize 导致 Shell 接口崩溃
-    ScopedComInit(const ScopedComInit&) = delete;
-    ScopedComInit& operator=(const ScopedComInit&) = delete;
-    ScopedComInit(ScopedComInit&& other) noexcept : m_needUninit(other.m_needUninit) {
-        other.m_needUninit = false;
-    }
-    ScopedComInit& operator=(ScopedComInit&& other) noexcept {
-        if (this != &other) {
-            if (m_needUninit) CoUninitialize();
-            m_needUninit = other.m_needUninit;
-            other.m_needUninit = false;
-        }
-        return *this;
-    }
+    // 默认拷贝与移动语义：依靠 shared_ptr 保证 COM 反初始化仅在最后一个副本销毁时执行一次
+    ScopedComInit(const ScopedComInit&) = default;
+    ScopedComInit& operator=(const ScopedComInit&) = default;
+    ScopedComInit(ScopedComInit&&) noexcept = default;
+    ScopedComInit& operator=(ScopedComInit&&) noexcept = default;
 
 private:
-    bool m_needUninit = false;
+    struct ComData {
+        bool needUninit = false;
+        ComData() {
+            #ifdef Q_OS_WIN
+            HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+            needUninit = SUCCEEDED(hr) || (hr == RPC_E_CHANGED_MODE);
+            #endif
+        }
+        ~ComData() {
+            #ifdef Q_OS_WIN
+            if (needUninit) CoUninitialize();
+            #endif
+        }
+    };
+    std::shared_ptr<ComData> m_data;
 };
 
 /**
@@ -173,6 +175,11 @@ public:
     }
 
     static QIcon getFileIcon(const QString& filePath, int size = 18, const QColor& overrideColor = QColor()) {
+        #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+        #endif
+
         Q_UNUSED(overrideColor);
         Q_UNUSED(size);
         
@@ -390,6 +397,11 @@ public:
 
 public:
     static QImage getShellThumbnail(const QString& path, int size) {
+        #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+        #endif
+
         // 2026-06-xx 物理重构：引入磁盘缓存机制，消除“失忆症”
         QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         QString cacheDir = QDir(appData).filePath("thumbs/");

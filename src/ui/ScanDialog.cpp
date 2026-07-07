@@ -188,8 +188,8 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     }
 
     if (allSSD) {
-        // SSD 模式：开启并行流水线 (4-8 线程)
-        m_thumbPool->setMaxThreadCount(std::clamp((int)QThread::idealThreadCount(), 4, 8));
+        // SSD 模式：开启并行流水线，限制为理想线程数的一半以平衡后台任务性能
+        m_thumbPool->setMaxThreadCount(std::max<int>(1, QThread::idealThreadCount() / 2));
     } else {
         // HDD 模式：强制串行 I/O，防止磁头雪崩
         m_thumbPool->setMaxThreadCount(1);
@@ -501,10 +501,10 @@ void ScanTableModel::processThumbQueue() {
         m_thumbPool->start([this, t]() {
             // 2026-06-xx 极致性能：线程局部 COM 预热。
             // 理由：每个工作线程仅初始化一次 COM 环境，杜绝每张图重复初始化的开销。
-            // 2026-06-xx 物理安全性：使用指针避免 QThreadStorage 内部拷贝导致的 COM 重复反初始化。
-            static QThreadStorage<ScopedComInit*> comStorage;
+            // 2026-06-xx 物理修复：改为存储对象而非指针，确保线程退出时正确释放
+            static QThreadStorage<ScopedComInit> comStorage;
             if (!comStorage.hasLocalData()) {
-                comStorage.setLocalData(new ScopedComInit());
+                comStorage.setLocalData(ScopedComInit());
             }
 
             auto& reader = MftReader::instance();
