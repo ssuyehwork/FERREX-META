@@ -9,6 +9,8 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include <QStandardPaths>
+#include <QDir>
 #include <QSvgRenderer>
 #include <QPainter>
 #include <windows.h>
@@ -34,7 +36,15 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
     Q_UNUSED(context); 
     QMutexLocker locker(&g_logMutex);
 
-    const QString logFileName = "FERREX_debug.log";
+    // 2026-07-07 根本修复：将日志移出监控盘符，放入 AppData 目录以杜绝 USN 监控无限循环
+    static QString logPath;
+    if (logPath.isEmpty()) {
+        QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        QDir().mkpath(appData);
+        logPath = QDir(appData).filePath("FERREX_debug.log");
+    }
+
+    const QString logFileName = logPath;
     const qint64 maxLogSize = 10 * 1024 * 1024; // 10MB 轮转阈值
     const int maxHistoryFiles = 3;           // 保留 3 个历史备份
 

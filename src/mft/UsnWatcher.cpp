@@ -126,6 +126,11 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
         fileName = std::wstring(reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(v3) + v3->FileNameOffset), v3->FileNameLength / 2);
     } else return;
 
+    // 2026-07-07 物理防御：忽略 FERREX 日志文件本身的变更，防止 USN 写入触发无限循环
+    if (fileName.find(L"FERREX_debug.log") != std::wstring::npos) {
+        return;
+    }
+
     if (reason & (USN_REASON_FILE_CREATE | USN_REASON_CLOSE | USN_REASON_RENAME_NEW_NAME)) {
         qDebug() << "[UsnWatcher] " << QString::fromStdWString(m_volume) << "记录:" << QString::fromStdWString(fileName) << "原因:" << QString::number(reason, 16);
     }
