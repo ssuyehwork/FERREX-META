@@ -1303,7 +1303,14 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
         QMetaObject::invokeMethod(weakThis.data(), [weakThis, drives]() {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
-            
+
+            // 2026-07-07 物理修复：在 UI 线程逻辑开始前强制同步掩码 (Analysis_Modification_Plan-154.md)
+            auto syncMask = [&]() {
+                QStringList activeList;
+                for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
+                MftReader::instance().updateActiveDrives(activeList);
+            };
+
             if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
                     if (info.hasMedia && info.isNtfs) {
@@ -1320,6 +1327,7 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     }
                 }
             }
+            syncMask();
             weakThis->m_config.save();
 
             QLayoutItem* item;
@@ -1734,8 +1742,8 @@ void ScanDialog::onFilterOptionChanged() {
 void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalCount) {
     Q_UNUSED(text);
     if (m_titleStatusLabel) {
-        // 2026-07-07 物理修正：标题栏仅展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
-        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().activeCount();
+        // 2026-07-07 物理修正：标题栏展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
+        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().totalCount();
         m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(total)));
         m_titleStatusLabel->setStyleSheet(scanning ? "color: #FF8C00; font-size: 10px; font-weight: bold;" : "color: #46B478; font-size: 10px; font-weight: bold;");
     }
@@ -1775,7 +1783,7 @@ void ScanDialog::updateStatusBar() {
         m_csvBtn->hide();
     }
     
-    int64_t dbTotal = MftReader::instance().totalCount();
+    int64_t dbTotal = MftReader::instance().loadedCount();
     double memoryMb = (dbTotal * 184.0) / 1024.0 / 1024.0;
     // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
