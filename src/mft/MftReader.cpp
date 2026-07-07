@@ -285,11 +285,15 @@ void MftReader::unloadDrive(const QString& drive) {
     });
     m_watchers.erase(itW, m_watchers.end());
 
-    // 3. 标记所有属于该驱动器的条目为死亡 (FRN = 0)
+    // 3. 标记所有属于该驱动器的条目为死亡 (FRN = 0) 并从哈希表中移除
+    // 2026-06-xx 任务二强化：物理清理哈希表项，防止内存虚高
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if ((m_parent_frns[i] >> 48) == static_cast<size_t>(dIdx)) {
-            m_frns[i] = 0;
-            m_dead_count++;
+            if (m_frns[i] != 0) {
+                m_frn_to_idx.erase(makeKey(dIdx, m_frns[i]));
+                m_frns[i] = 0;
+                m_dead_count++;
+            }
         }
     }
 
@@ -306,10 +310,13 @@ void MftReader::unloadDrive(const QString& drive) {
         }
     }
 
-    // 5. 更新驱动器激活掩码
+    // 5. 驱动器列表与掩码同步
+    // 将该盘符从列表中抹除（置为空字符串），保证 dIdx 的物理位置不偏移但逻辑失效
+    m_drive_list[dIdx] = L"";
     m_drive_active_mask.fetch_and(~(1 << dIdx));
 
     // 6. 执行物理回收与碎片整理
+    // compact() 会物理删除 m_frns 为 0 的项，并重新压紧字符串池
     compact();
     rebuildFrnToIndexMap();
     buildSortedIndices();
