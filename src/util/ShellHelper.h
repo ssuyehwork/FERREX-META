@@ -9,6 +9,8 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <shellapi.h>
+#include <winioctl.h>
+#include <ntddstor.h>
 #endif
 
 namespace FERREX {
@@ -90,6 +92,44 @@ public:
         QStringList args;
         args << "/select," << QDir::toNativeSeparators(path);
         QProcess::startDetached("explorer", args);
+#endif
+    }
+
+    /**
+     * @brief 探测是否为固态硬盘 (SSD)
+     * 2026-06-xx 任务 4.1：物理寻道特征探测。
+     * 理由：HDD 对多线程随机 I/O 极其敏感，磁头剧烈寻道会导致性能雪崩；SSD 则可维持较高并发。
+     */
+    static bool isSolidStateDrive(const QString& drivePath) {
+#ifdef Q_OS_WIN
+        QString path = drivePath;
+        if (!path.endsWith("\\")) path += "\\";
+        QString volumePath = "\\\\.\\" + path.left(2); // 格式如 \\.\C:
+
+        HANDLE hDevice = CreateFileW(reinterpret_cast<const wchar_t*>(volumePath.utf16()),
+                                     0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                     NULL, OPEN_EXISTING, 0, NULL);
+        if (hDevice == INVALID_HANDLE_VALUE) return false;
+
+        STORAGE_PROPERTY_QUERY query;
+        query.PropertyId = StorageDeviceSeekPenaltyProperty;
+        query.QueryType = PropertyStandardQuery;
+
+        DEVICE_SEEK_PENALTY_DESCRIPTOR descriptor = { 0 };
+        DWORD bytesReturned;
+        bool isSSD = false;
+
+        if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
+                            &query, sizeof(query),
+                            &descriptor, sizeof(descriptor),
+                            &bytesReturned, NULL)) {
+            isSSD = !descriptor.IncursSeekPenalty;
+        }
+
+        CloseHandle(hDevice);
+        return isSSD;
+#else
+        return true; // 非 Windows 环境默认视为高速介质
 #endif
     }
 

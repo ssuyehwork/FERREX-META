@@ -20,6 +20,7 @@
 #include <QDebug>
 #include <QSet>
 #include <QCoreApplication>
+#include <QThreadStorage>
 #include <QWidget>
 #include <QBuffer>
 #include <QProcess>
@@ -51,10 +52,32 @@ namespace FERREX {
 /**
  * @brief COM 环境 RAII 守卫
  * 2026-06-xx 任务一：解决跨线程调用 Shell 接口时的 COM 环境缺失问题，杜绝静默串行化。
+ * 2026-06-xx 极致性能加固：配合 QThreadStorage 实现线程级的 COM 预初始化。
  */
 struct ScopedComInit {
-    ScopedComInit() { CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); }
-    ~ScopedComInit() { CoUninitialize(); }
+    ScopedComInit() {
+        HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        m_needUninit = SUCCEEDED(hr) || (hr == RPC_E_CHANGED_MODE);
+    }
+    ~ScopedComInit() { if (m_needUninit) CoUninitialize(); }
+
+    // 2026-06-xx 物理安全性：禁止拷贝，防止重复 CoUninitialize 导致 Shell 接口崩溃
+    ScopedComInit(const ScopedComInit&) = delete;
+    ScopedComInit& operator=(const ScopedComInit&) = delete;
+    ScopedComInit(ScopedComInit&& other) noexcept : m_needUninit(other.m_needUninit) {
+        other.m_needUninit = false;
+    }
+    ScopedComInit& operator=(ScopedComInit&& other) noexcept {
+        if (this != &other) {
+            if (m_needUninit) CoUninitialize();
+            m_needUninit = other.m_needUninit;
+            other.m_needUninit = false;
+        }
+        return *this;
+    }
+
+private:
+    bool m_needUninit = false;
 };
 
 /**

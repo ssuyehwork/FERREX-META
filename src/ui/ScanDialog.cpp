@@ -8,6 +8,7 @@
 #include <QIcon>
 #include "../mft/MftReader.h"
 #include "UiHelper.h"
+#include "../util/ShellHelper.h"
 #include "../meta/MetadataManager.h"
 #include <QFileInfo>
 #include <QCheckBox>
@@ -159,45 +160,6 @@ void ScanConfig::save() {
     }
 }
 
-/**
- * @brief 探测是否为固态硬盘 (SSD)
- * 2026-06-xx 任务三：物理寻道特征探测。
- * 理由：HDD 对多线程随机 I/O 极其敏感，磁头剧烈寻道会导致性能雪崩；SSD 则可维持较高并发。
- */
-static bool isSolidStateDrive(const QString& drivePath) {
-    QString path = drivePath;
-    if (!path.endsWith("\\")) path += "\\";
-    QString volumePath = "\\\\.\\" + path.left(2); // 格式如 \\.\C:
-
-    HANDLE hDevice = CreateFileW(reinterpret_cast<const wchar_t*>(volumePath.utf16()),
-                                 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 NULL, OPEN_EXISTING, 0, NULL);
-    if (hDevice == INVALID_HANDLE_VALUE) return false;
-
-    // 方案 1: 查询存储设备寻道罚分属性 (Seek Penalty)
-    STORAGE_PROPERTY_QUERY query;
-    query.PropertyId = StorageDeviceSeekPenaltyProperty;
-    query.QueryType = PropertyStandardQuery;
-
-    DEVICE_SEEK_PENALTY_DESCRIPTOR descriptor;
-    DWORD bytesReturned;
-    bool isSSD = false;
-
-    if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
-                        &query, sizeof(query),
-                        &descriptor, sizeof(descriptor),
-                        &bytesReturned, NULL)) {
-        isSSD = !descriptor.IncursSeekPenalty;
-    } else {
-        // 方案 2: 若方案 1 失败，此处作为退化逻辑，默认对于无法探测的路径保守处理
-        // 2026-06-xx 物理修正：移除未定义的 StorageDeviceDeviceProperty
-        isSSD = false;
-    }
-
-    CloseHandle(hDevice);
-    return isSSD;
-}
-
 // --- ScanTableModel Implementation ---
 
 ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent) 
@@ -214,8 +176,9 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     bool allSSD = true;
     ScanDialog* dlg = qobject_cast<ScanDialog*>(parent);
     if (dlg) {
+        // 2026-06-xx 物理修复：使用 ShellHelper::isSolidStateDrive 统一探测
         for (const QString& d : dlg->m_config.activeDrives) {
-            if (!isSolidStateDrive(d)) {
+            if (!ShellHelper::isSolidStateDrive(d)) {
                 allSSD = false;
                 break;
             }
@@ -226,7 +189,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
 
     if (allSSD) {
         // SSD 模式：开启并行流水线 (4-8 线程)
-        m_thumbPool->setMaxThreadCount(std::clamp((int)std::thread::hardware_concurrency(), 4, 8));
+        m_thumbPool->setMaxThreadCount(std::clamp((int)QThread::idealThreadCount(), 4, 8));
     } else {
         // HDD 模式：强制串行 I/O，防止磁头雪崩
         m_thumbPool->setMaxThreadCount(1);
@@ -526,25 +489,25 @@ void ScanTableModel::setVisibleRange(int top, int bottom) {
 
 void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
+
+    // 2026-06-xx 任务 4.3：LIFO 优先级调度。
+    // 理由：用户通常关注滚动停止后的可视区域，后加入队列的请求往往更具时效性。
     auto currentTasks = std::move(m_thumbTaskQueue);
+    std::reverse(currentTasks.begin(), currentTasks.end());
 
-    // 2026-06-xx 任务二：重定向至隔离线程池，杜绝 UI 饥饿
-    // 2026-06-xx 极致性能流水线：后台并行生成 + 批量结果归并
-    (void)QtConcurrent::run(m_thumbPool, [this, currentTasks]() {
-        struct ThumbResult { uint64_t key; QString cacheKey; QImage img; double ar; };
-        QVector<ThumbResult> results(currentTasks.size());
+    // 2026-06-xx 极致性能流水线：彻底弃用 blockingMap，实现全隔离调度。
+    // 理由：blockingMap 强制使用全局池，会导致 UI 线程发起的其它任务积压。
+    for (const auto& t : currentTasks) {
+        m_thumbPool->start([this, t]() {
+            // 2026-06-xx 极致性能：线程局部 COM 预热。
+            // 理由：每个工作线程仅初始化一次 COM 环境，杜绝每张图重复初始化的开销。
+            // 2026-06-xx 物理安全性：使用指针避免 QThreadStorage 内部拷贝导致的 COM 重复反初始化。
+            static QThreadStorage<ScopedComInit*> comStorage;
+            if (!comStorage.hasLocalData()) {
+                comStorage.setLocalData(new ScopedComInit());
+            }
 
-        // 使用 QtConcurrent::blockingMap 充分利用多核 CPU 处理图片生成/IO
-        QVector<int> taskIndices((int)currentTasks.size()); 
-        std::iota(taskIndices.begin(), taskIndices.end(), 0);
-
-        QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [this, &currentTasks, &results](int i) {
-            // 2026-06-xx 任务一：在工作线程内显式管理 COM 生命周期，解决编组延迟
-            ScopedComInit comGuard;
-            const auto& t = currentTasks[i];
             auto& reader = MftReader::instance();
-            
-            // 物理加固：后台寻址。由于 MFT 可能是动态的，必须基于 Key 重新定位
             int actualIdx = reader.getIndexByKey(t.key);
             if (actualIdx == -1) return;
 
@@ -566,31 +529,25 @@ void ScanTableModel::processThumbQueue() {
             }
 
             if (!img.isNull()) {
-                results[i] = { t.key, t.cacheKey, img, (double)img.width() / (double)img.height() };
+                double ar = (double)img.width() / (double)img.height();
+                // 切回主线程登记单条结果
+                QMetaObject::invokeMethod(this, [this, key = t.key, cacheKey = t.cacheKey, img, ar]() {
+                    QPixmap pix = QPixmap::fromImage(img);
+                    if (!pix.isNull()) {
+                        m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                    }
+                    m_aspectRatios[key] = ar;
+
+                    auto snapshot = m_controller->snapshot();
+                    auto itPos = snapshot->keyToPos.find(key);
+                    if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
+                        m_pendingRows.insert(itPos->second);
+                        if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+                    }
+                }, Qt::QueuedConnection);
             }
         });
-
-        // 批量切回主线程登记结果
-        QMetaObject::invokeMethod(this, [this, results]() {
-            auto snapshot = m_controller->snapshot();
-            for (const auto& r : results) {
-                if (r.img.isNull()) continue;
-                
-                QPixmap pix = QPixmap::fromImage(r.img);
-                if (!pix.isNull()) {
-                    m_thumbCache.insert(r.cacheKey, new QPixmap(pix));
-                }
-                m_aspectRatios[r.key] = r.ar;
-
-                auto itPos = snapshot->keyToPos.find(r.key);
-                if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
-                    // 2026-06-xx 批量 UI 同步：加入 pending 队列，由 throttleTimer 统一发射信号
-                    m_pendingRows.insert(itPos->second);
-                }
-            }
-            if (!m_throttleTimer->isActive()) m_throttleTimer->start();
-        });
-    });
+    }
 }
 
 void ScanTableModel::sort(int column, Qt::SortOrder order) {
