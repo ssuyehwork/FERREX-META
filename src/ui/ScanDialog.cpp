@@ -1284,32 +1284,14 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
-            // 2026-06-xx 物理修复：确保 C 盘显示且可扫描。
-            // 1. 强制撤销任何对 C 盘的忽略
-            if (weakThis->m_config.ignoredDrives.contains("C:")) {
-                weakThis->m_config.ignoredDrives.remove("C:");
+            // 2026-06-xx 任务重构：按需加载策略
+            // 规则：启动主程序时，仅加载标记为“★ (设为默认选项)”的部分，而非全量加载。
+            // 理由：移除原本臃肿的 ignoredDrives 逻辑，通过 default/active 状态实现精确管理。
+            if (weakThis->m_config.activeDrives.isEmpty()) {
+                // 初次启动：仅激活默认盘符
+                weakThis->m_config.activeDrives = weakThis->m_config.defaultDrives;
             }
 
-            // 2. 策略调整：确保 C 盘始终被激活。
-            // 2026-06-xx 物理加固：撤销对 C 盘 active 状态的任何前提条件（只要探测到就激活）。
-            if (weakThis->m_config.activeDrives.isEmpty()) {
-                for (const auto& info : drives) {
-                    if (info.hasMedia && info.isNtfs) {
-                        weakThis->m_config.activeDrives.insert(info.letter);
-                    }
-                }
-            } else {
-                // 核心修复：如果 C 盘被探测到，且未在激活列表，则强制激活。
-                // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
-                if (!weakThis->m_config.activeDrives.contains("C:")) {
-                    for (const auto& info : drives) {
-                        if (info.letter == "C:") {
-                            weakThis->m_config.activeDrives.insert("C:");
-                            break;
-                        }
-                    }
-                }
-            }
             weakThis->m_config.save();
 
             QLayoutItem* item;
@@ -1319,16 +1301,17 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveButtonMap.clear();
 
-            // 核心修复：检查是否有已激活但尚未建立索引的盘符，若有则自动触发补课扫描。
-            bool missingIndex = false;
+            // 2026-06-xx 物理同步：仅对已激活（在内存中）的默认盘符执行初始扫描
+            // 只有当程序初始化时，或者用户显式通过“加载数据”加入 activeDrives 时，才触发 buildIndex
+            bool needsInitialScan = false;
             for (const auto& d : weakThis->m_config.activeDrives) {
                 if (!MftReader::instance().isDriveIndexed(d)) {
-                    missingIndex = true;
+                    needsInitialScan = true;
                     break;
                 }
             }
 
-            if (missingIndex) {
+            if (needsInitialScan) {
                 weakThis->onStartScan();
             }
 
@@ -1341,7 +1324,6 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 if (!info.hasMedia) continue; 
                 // C 盘必须显示，无论是否标记为 NTFS (防止某些环境下 GetVolumeInformation 失败)
                 if (!info.isNtfs && info.letter != "C:") continue;
-                if (weakThis->m_config.ignoredDrives.contains(info.letter)) continue;
 
                 QString label = info.label.isEmpty() ? "本地磁盘" : info.label;
                 QString btnText = QString("%1 (%2)").arg(info.letter).arg(label);
@@ -1396,11 +1378,15 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
 
 void ScanDialog::updateDriveButtonStyles() {
     for (auto it = m_driveButtonMap.begin(); it != m_driveButtonMap.end(); ++it) {
-        bool isActive = m_config.activeDrives.contains(it.key());
+        // 2026-06-xx 任务三：物理对标。
+        // isLoaded: 真实内存中是否存在该盘数据。
+        // isActive: UI 上该盘符是否处于选中/待命状态。
+        bool isLoaded = MftReader::instance().isDriveIndexed(it.key());
         bool isDefault = m_config.defaultDrives.contains(it.key());
         
         QPushButton* btn = it.value();
-        btn->setProperty("isActive", isActive);
+        // 只有数据已加载到内存，按钮才呈现激活高亮色 (蓝色)
+        btn->setProperty("isActive", isLoaded);
         btn->setProperty("isDefault", isDefault);
         
         // 触发 QSS 刷新
@@ -1409,6 +1395,7 @@ void ScanDialog::updateDriveButtonStyles() {
         
         QString label = "";
         for (const auto& info : m_cachedDriveInfos) { if (info.letter == it.key()) { label = info.label; break; } }
+        // 2026-06-xx 视觉加固：标记为“★”的部分代表设为默认，启动时自动加载
         btn->setText(QString("%1%2 (%3)").arg(isDefault ? "★ " : "").arg(it.key()).arg(label.isEmpty() ? "本地磁盘" : label));
     }
 }
@@ -1638,6 +1625,7 @@ void ScanDialog::onStartScan() {
         QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
             if (!weakThis) return;
             weakThis->updateStatus("就绪");
+            weakThis->updateDriveButtonStyles();
             weakThis->onTriggerSearch();
         });
     });
