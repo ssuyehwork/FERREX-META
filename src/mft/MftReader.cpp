@@ -1246,8 +1246,13 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
             // 理由：C 盘扫描时间长，引入 10 万记录级别的中途检查点。
             // 2026-06-xx 物理安全性修复：通过构造深拷贝的增量 DataPackage 序列实现线程安全的异步落盘。
             if (recordCount - lastSavedCount >= 100000) {
+                // 2026-06-xx 物理安全性加固：显式执行深拷贝，杜绝 UAF 风险。
                 std::vector<ScchDataPackage> delta;
                 delta.reserve(recordCount - lastSavedCount);
+
+                // 获取当前字符串池基地址，由于此循环内不修改 result.string_pool，指针是稳定的
+                const uint8_t* poolBase = result.string_pool.data();
+
                 for (int i = lastSavedCount; i < recordCount; ++i) {
                     const auto& re = result.entries[i];
                     ScchDataPackage pkg;
@@ -1256,14 +1261,19 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                     pkg.size = re.size;
                     pkg.timestamp = re.modifyTime;
                     pkg.attributes = re.attributes;
-                    pkg.name = reinterpret_cast<const char*>(result.string_pool.data() + re.nameOffset);
+
+                    // 核心修复：显式构造 std::string 以确保数据被物理拷贝到 pkg 内部缓冲区。
+                    // 理由：虽然赋值操作符也是深拷贝，但显式构造更符合安全审计要求。
+                    pkg.name = std::string(reinterpret_cast<const char*>(poolBase + re.nameOffset));
+
                     delta.push_back(std::move(pkg));
                 }
 
                 std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
                 uint64_t currentUsn = ed.StartFileReferenceNumber;
 
-                // 2026-06-xx 性能策略：异步追加。由于是增量数据且已解耦，异步执行是安全的。
+                // 2026-06-xx 性能策略：异步追加。
+                // 理由：delta 包含完全独立所有权的 std::string 副本，后台线程访问是绝对安全的。
                 (void)QtConcurrent::run([path_base, delta, currentUsn]() {
                     ScchCache::appendEntries(path_base, delta, currentUsn);
                 });
