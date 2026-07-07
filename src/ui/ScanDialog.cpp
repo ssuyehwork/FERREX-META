@@ -1890,10 +1890,6 @@ void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
     Q_UNUSED(event);
 }
 
-void ScanDialog::onPasteTriggered() {
-    // 2026-07-07 物理清理：彻底删除粘贴功能体 (Analysis_Modification_Plan-154.md)
-}
-
 void ScanDialog::triggerWarmup() {
     // 2026-07-07 极致体感：流水线异步预热 (Analysis_Modification_Plan-154.md)
     QPointer<ScanDialog> weakThis(this);
