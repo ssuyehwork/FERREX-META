@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "ScanDialog.h"
+#include <QDataStream>
 #include "../core/CacheManager.h"
 #include <QPainter>
 #include <QTimer>
@@ -1483,6 +1484,11 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     QMenu menu(this);
     menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
 
+    auto* pasteAct = menu.addAction("粘贴", this, &ScanDialog::onPasteTriggered);
+    const QMimeData* clipData = QApplication::clipboard()->mimeData();
+    pasteAct->setEnabled(clipData && clipData->hasUrls());
+    menu.addSeparator();
+
     if (!selectedRows.isEmpty()) {
         int count = selectedRows.size();
         menu.addAction(count > 1 ? "批量打开文件" : "打开文件", [this, selectedRows]() {
@@ -1507,9 +1513,15 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
             for (const auto& idx : selectedRows) names << m_tableModel->data(m_tableModel->index(idx.row(), 0)).toString();
             QApplication::clipboard()->setText(names.join("\n"));
         });
+
+        menu.addSeparator();
+        menu.addAction("剪切", this, [this]() { onCopyTriggered(true); });
+        menu.addAction("复制", this, [this]() { onCopyTriggered(false); });
         
         if (count == 1) {
-            menu.addAction("重命名", this, &ScanDialog::onRenameTriggered);
+            menu.addAction("重命名", this, [this]() {
+                QTimer::singleShot(0, this, &ScanDialog::onRenameTriggered);
+            });
         }
         
         menu.addSeparator();
@@ -1775,6 +1787,82 @@ void ScanDialog::onRenameTriggered() {
     view->edit(selection.first());
 }
 
+void ScanDialog::onCopyTriggered(bool isCut) {
+    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    auto selectedIndexes = view->selectionModel()->selectedIndexes();
+    if (selectedIndexes.isEmpty()) return;
+
+    QMimeData* mimeData = m_tableModel->mimeData(selectedIndexes);
+    if (!mimeData) return;
+
+    // 2026-07-07 物理修复：通过 Preferred DropEffect 区分复制与剪切
+    QByteArray effectData;
+    QDataStream stream(&effectData, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream << (isCut ? (quint32)2 : (quint32)1); // MOVE=2, COPY=1
+    mimeData->setData("Preferred DropEffect", effectData);
+
+    QApplication::clipboard()->setMimeData(mimeData);
+}
+
+void ScanDialog::onPasteTriggered() {
+    const QMimeData* mimeData = QApplication::clipboard()->mimeData();
+    if (!mimeData || !mimeData->hasUrls()) return;
+
+    QList<QUrl> urls = mimeData->urls();
+    if (urls.isEmpty()) return;
+
+    // 确定目标目录
+    QString targetDir;
+    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    auto selection = view->selectionModel()->selectedRows();
+    if (!selection.isEmpty()) {
+        QString path = m_tableModel->data(m_tableModel->index(selection.first().row(), 1)).toString();
+        QFileInfo fi(path);
+        targetDir = fi.isDir() ? fi.absoluteFilePath() : fi.absolutePath();
+    } else if (m_tableModel->rowCount() > 0) {
+        QString path = m_tableModel->data(m_tableModel->index(0, 1)).toString();
+        targetDir = QFileInfo(path).absolutePath();
+    }
+    if (targetDir.isEmpty()) return;
+
+    // 读取操作类型
+    bool isMove = false;
+    if (mimeData->hasFormat("Preferred DropEffect")) {
+        QByteArray effectData = mimeData->data("Preferred DropEffect");
+        QDataStream stream(effectData);
+        stream.setByteOrder(QDataStream::LittleEndian);
+        quint32 effect;
+        stream >> effect;
+        if (effect == 2) isMove = true;
+    }
+
+    for (const QUrl& url : urls) {
+        QString srcPath = url.toLocalFile();
+        QFileInfo srcInfo(srcPath);
+        QString destPath = QDir(targetDir).filePath(srcInfo.fileName());
+
+        if (srcPath == destPath) continue;
+
+        if (QFile::exists(destPath)) {
+            auto btn = QMessageBox::question(this, "确认覆盖",
+                QString("目标文件已存在：\n%1\n是否覆盖？").arg(srcInfo.fileName()),
+                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+            if (btn == QMessageBox::No) continue;
+            if (btn == QMessageBox::Cancel) break;
+            QFile::remove(destPath);
+        }
+
+        bool ok = isMove ? QFile::rename(srcPath, destPath) : QFile::copy(srcPath, destPath);
+        if (!ok) {
+            QMessageBox::warning(this, "操作失败", QString("无法%1文件：%2").arg(isMove ? "移动" : "复制", srcInfo.fileName()));
+        }
+    }
+
+    // 2026-07-07 物理同步：操作完成后触发一次搜索以更新视图
+    onTriggerSearch();
+}
+
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_F2) {
         onRenameTriggered();
@@ -1788,6 +1876,18 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         // 2026-07-07 物理修复：调用全量选择逻辑，杜绝虚拟化加载导致的“漏选”
         selectAllResults();
         return; 
+    }
+    if (event->key() == Qt::Key_C && event->modifiers() == Qt::ControlModifier) {
+        onCopyTriggered(false);
+        return;
+    }
+    if (event->key() == Qt::Key_X && event->modifiers() == Qt::ControlModifier) {
+        onCopyTriggered(true);
+        return;
+    }
+    if (event->key() == Qt::Key_V && event->modifiers() == Qt::ControlModifier) {
+        onPasteTriggered();
+        return;
     }
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
         if (m_searchEdit->hasFocus() || m_extEdit->hasFocus()) {

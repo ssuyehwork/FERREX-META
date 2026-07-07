@@ -142,6 +142,8 @@ private slots:
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
     void onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
+    void onCopyTriggered(bool isCut = false);
+    void onPasteTriggered();
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
