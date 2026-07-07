@@ -12,6 +12,7 @@
 #include <winioctl.h>
 #include <ntddstor.h>
 #endif
+#include "../ui/UiHelper.h"
 
 namespace FERREX {
 
@@ -26,6 +27,9 @@ public:
      */
     static bool moveToTrash(const QStringList& paths) {
 #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+
         if (paths.isEmpty()) return true;
         std::wstring from;
         for (const QString& p : paths) {
@@ -48,6 +52,9 @@ public:
      */
     static bool copyOrMoveItems(const QStringList& sourcePaths, const QString& destDir, bool isMove) {
 #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+
         if (sourcePaths.isEmpty() || destDir.isEmpty()) return false;
         
         std::wstring from;
@@ -74,6 +81,9 @@ public:
      */
     static void showProperties(const QString& path) {
 #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+
         SHELLEXECUTEINFOW sei = { sizeof(sei) };
         sei.fMask = SEE_MASK_INVOKEIDLIST;
         sei.lpVerb = L"properties";

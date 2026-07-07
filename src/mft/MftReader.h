@@ -55,7 +55,9 @@ signals:
 public:
     // 生命周期管理
     void buildIndex(const QStringList& drives = QStringList());
-    bool loadFromCache();
+    bool loadFromCache(); // 默认全量加载
+    bool loadDriveFromCache(const QString& drive); // 按需加载单个盘符
+    void unloadDrive(const QString& drive);        // 动态卸载单个盘符
     bool saveToCache(); 
     bool saveDriveToCache(size_t driveIdx); 
     void clear();
@@ -160,7 +162,7 @@ private:
     mutable std::mutex m_pathCacheMutex;
 
     std::unordered_map<std::wstring, uint64_t>          m_next_usns;
-    std::vector<UsnWatcher*> m_watchers;
+    std::unordered_map<std::wstring, UsnWatcher*>      m_watcher_map; // 2026-07-07 物理重构：使用 Map 管理监听器以支持按盘符卸载
 
     mutable QReadWriteLock m_dataLock;
     QThreadPool*           m_metadataPool = nullptr; // 2026-06-xx 新增：物理属性补全专用线程池

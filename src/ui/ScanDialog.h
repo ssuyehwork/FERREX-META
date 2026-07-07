@@ -40,7 +40,6 @@ class ThumbnailDelegate;
 struct ScanConfig {
     QSet<QString> activeDrives;
     QSet<QString> defaultDrives;
-    QSet<QString> ignoredDrives;
     QStringList queryHistory;
     QStringList extHistory;
     
@@ -140,10 +139,8 @@ private slots:
     void onItemDoubleClicked(const QModelIndex& index);
     void onSelectionChanged();
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
-    void onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
     void onCopyTriggered(bool isCut = false);
-    void onPasteTriggered();
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;

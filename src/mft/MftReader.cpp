@@ -134,8 +134,10 @@ void MftReader::clear() {
     std::vector<UsnWatcher*> toStop;
     {
         QWriteLocker lock(&m_dataLock);
-        toStop = std::move(m_watchers);
-        m_watchers.clear();
+        for (auto it = m_watcher_map.begin(); it != m_watcher_map.end(); ++it) {
+            toStop.push_back(it->second);
+        }
+        m_watcher_map.clear();
     }
     for (auto* w : toStop) { if (w) { w->stop(); delete w; } }
     
@@ -245,7 +247,7 @@ void MftReader::buildIndex(const QStringList& drives) {
         saveDriveToCacheUnlocked(dIdx);
         
         auto* w = new UsnWatcher(sr.volume, sr.res.nextUsn, nullptr);
-        m_watchers.push_back(w);
+        m_watcher_map[sr.volume] = w;
         newWatchers.push_back(w);
     }
 
@@ -338,9 +340,10 @@ bool MftReader::loadFromCache() {
     // 理由：确保系统在从快照恢复后，能通过 USN 锚点自动追平离线期间的磁盘变动，并开始实时监听。
     std::vector<UsnWatcher*> newWatchers;
     for (const auto& drive : m_drive_list) {
+        if (m_watcher_map.count(drive)) continue; // 2026-07-07 物理防御：防止重复启动监听
         uint64_t lastUsn = m_next_usns.count(drive) ? m_next_usns[drive] : 0;
         auto* w = new UsnWatcher(drive, lastUsn, nullptr);
-        m_watchers.push_back(w);
+        m_watcher_map[drive] = w;
         newWatchers.push_back(w);
         qDebug() << "[MftReader] 从快照恢复监听驱动器:" << QString::fromStdWString(drive) << "起始 USN:" << lastUsn;
     }
@@ -350,6 +353,147 @@ bool MftReader::loadFromCache() {
     for (auto* w : newWatchers) w->start();
 
     return true;
+}
+
+bool MftReader::loadDriveFromCache(const QString& drive) {
+    std::wstring vol = drive.toStdWString();
+    if (vol.size() > 1 && (vol.back() == L'\\' || vol.back() == L'/')) vol.pop_back();
+
+    {
+        QReadLocker lock(&m_dataLock);
+        for (const auto& d : m_drive_list) if (_wcsicmp(d.c_str(), vol.c_str()) == 0) return true;
+    }
+
+    std::filesystem::path cacheDir = "FERREX/cache";
+    std::string stem = drive.left(1).toUpper().toStdString();
+    std::string path_base = (cacheDir / stem).string();
+
+    std::vector<ScchDataPackage> records;
+    uint64_t lastUsn = 0;
+
+    if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
+
+    QWriteLocker lock(&m_dataLock);
+    size_t dIdx = m_drive_list.size();
+    m_drive_list.push_back(vol);
+    m_next_usns[vol] = lastUsn;
+
+    for (const auto& pkg : records) {
+        uint32_t idx = (uint32_t)m_frns.size();
+        m_frn_to_idx[makeKey(dIdx, pkg.frn)] = idx;
+
+        m_frns.push_back(pkg.frn);
+        m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | (pkg.parent_frn & 0x0000FFFFFFFFFFFFull));
+        m_parent_indices.push_back(0xFFFFFFFF);
+        m_sizes.push_back(pkg.size);
+        m_timestamps.push_back(pkg.timestamp);
+        m_attributes.push_back(pkg.attributes);
+        m_metadata_fetched.push_back(pkg.metadata_fetched);
+
+        m_name_offsets.push_back((uint32_t)m_string_pool.size());
+        m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
+        m_string_pool.push_back('\0');
+
+        std::string extStr;
+        splitNameAndExt(pkg.name, extStr);
+        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
+        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
+        m_string_pool.push_back('\0');
+    }
+
+    rebuildFrnToIndexMap();
+    buildSortedIndices();
+    m_isInitialized = true;
+
+    auto* w = new UsnWatcher(vol, lastUsn, nullptr);
+    m_watcher_map[vol] = w;
+    lock.unlock();
+    w->start();
+
+    return true;
+}
+
+void MftReader::unloadDrive(const QString& drive) {
+    std::wstring vol = drive.toStdWString();
+    if (vol.size() > 1 && (vol.back() == L'\\' || vol.back() == L'/')) vol.pop_back();
+
+    UsnWatcher* w = nullptr;
+    size_t dIdx = (size_t)-1;
+
+    {
+        QWriteLocker lock(&m_dataLock);
+        for (size_t i = 0; i < m_drive_list.size(); ++i) {
+            if (_wcsicmp(m_drive_list[i].c_str(), vol.c_str()) == 0) {
+                dIdx = i;
+                break;
+            }
+        }
+        if (dIdx == (size_t)-1) return;
+
+        auto itW = m_watcher_map.find(vol);
+        if (itW != m_watcher_map.end()) {
+            w = itW->second;
+            m_watcher_map.erase(itW);
+        }
+
+        // 2026-07-07 物理补齐：按盘符卸载时清理路径缓存与 USN 锚点
+        m_next_usns.erase(vol);
+        {
+            std::lock_guard<std::mutex> pathLock(m_pathCacheMutex);
+            auto itP = m_path_cache.begin();
+            while (itP != m_path_cache.end()) {
+                if ((itP->first >> 48) == dIdx) itP = m_path_cache.erase(itP);
+                else ++itP;
+            }
+        }
+
+        // 策略：将该盘符的所有条目标记为已删除
+        for (size_t i = 0; i < m_frns.size(); ++i) {
+            if ((m_parent_frns[i] >> 48) == dIdx) {
+                m_frns[i] = 0;
+                m_dead_count++;
+            }
+        }
+
+        // 修正剩余条目的驱动器索引
+        m_drive_list.erase(m_drive_list.begin() + dIdx);
+        for (size_t i = 0; i < m_frns.size(); ++i) {
+            if (m_frns[i] == 0) continue;
+            size_t oldDIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
+            if (oldDIdx > dIdx) {
+                uint64_t frnPart = m_parent_frns[i] & 0x0000FFFFFFFFFFFFull;
+                m_parent_frns[i] = (static_cast<uint64_t>(oldDIdx - 1) << 48) | frnPart;
+            }
+        }
+
+        // 更新掩码与相关映射
+        auto shiftMap = [&](auto& map) {
+            auto oldMap = std::move(map);
+            map.clear();
+            for (auto const& [idx, val] : oldMap) {
+                if (idx == dIdx) continue;
+                map[(idx > dIdx) ? idx - 1 : idx] = val;
+            }
+        };
+        shiftMap(m_drive_ever_saved);
+        shiftMap(m_is_compacting);
+        shiftMap(m_compaction_buffer);
+
+        uint32_t oldMask = m_drive_active_mask.load();
+        uint32_t newMask = 0;
+        for (int i = 0; i < 32; ++i) {
+            if (i == (int)dIdx) continue;
+            if (oldMask & (1 << i)) {
+                int newPos = (i > (int)dIdx) ? i - 1 : i;
+                if (newPos < 32) newMask |= (1 << newPos);
+            }
+        }
+        m_drive_active_mask.store(newMask);
+
+        compact();
+    }
+
+    if (w) { w->stop(); delete w; }
 }
 
 bool MftReader::saveToCache() {
