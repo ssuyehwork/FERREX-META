@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "ScanDialog.h"
+#include <QDataStream>
 #include "../core/CacheManager.h"
 #include <QPainter>
 #include <QTimer>
@@ -93,7 +94,6 @@ void ScanConfig::load() {
         
         loadSet("activeDrives", activeDrives);
         loadSet("defaultDrives", defaultDrives);
-        loadSet("ignoredDrives", ignoredDrives);
         
         QJsonArray qArr = obj["queryHistory"].toArray();
         for (const auto& v : qArr) queryHistory.append(v.toString());
@@ -134,7 +134,6 @@ void ScanConfig::save() {
         
         saveSet("activeDrives", activeDrives);
         saveSet("defaultDrives", defaultDrives);
-        saveSet("ignoredDrives", ignoredDrives);
         
         QJsonArray qArr; for (const auto& v : queryHistory) qArr.append(v);
         obj["queryHistory"] = qArr;
@@ -167,9 +166,8 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
 {
     m_currentResultSet = std::make_shared<ResultSet>();
 
-    // 2026-06-xx 任务二：建立物理隔离的缩略图任务池，杜绝全局线程池饥饿
+    // 建立隔离的缩略图任务专用线程池，避免与主后台任务竞争资源
     m_thumbPool = new QThreadPool(this);
-    m_thumbPool->setExpiryTimeout(-1); // 缩略图任务生命周期内保持线程活跃
     
     // 2026-06-xx 任务三：磁盘类型感知的线程调度
     // 默认保守策略：若无法获取配置或存在 HDD，则使用串行模式 (1) 保护寻道性能
@@ -188,10 +186,10 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     }
 
     if (allSSD) {
-        // SSD 模式：开启并行流水线，限制为理想线程数的一半以平衡后台任务性能
+        // 对于 SSD，设置并发上限为理想线程数的一半，平衡系统负载
         m_thumbPool->setMaxThreadCount(std::max<int>(1, QThread::idealThreadCount() / 2));
     } else {
-        // HDD 模式：强制串行 I/O，防止磁头雪崩
+        // 对于 HDD，保持串行以减少寻道开销
         m_thumbPool->setMaxThreadCount(1);
     }
 
@@ -504,13 +502,10 @@ void ScanTableModel::processThumbQueue() {
     auto currentTasks = std::move(m_thumbTaskQueue);
     std::reverse(currentTasks.begin(), currentTasks.end());
 
-    // 2026-06-xx 极致性能流水线：彻底弃用 blockingMap，实现全隔离调度。
-    // 理由：blockingMap 强制使用全局池，会导致 UI 线程发起的其它任务积压。
+    // 使用独立线程池异步执行缩略图提取，不使用全局线程池以防饥饿
     for (const auto& t : currentTasks) {
         m_thumbPool->start([this, t]() {
-            // 2026-06-xx 极致性能：线程局部 COM 预热。
-            // 理由：每个工作线程仅初始化一次 COM 环境，杜绝每张图重复初始化的开销。
-            // 2026-06-xx 物理修复：改为存储对象而非指针，确保线程退出时正确释放
+            // 确保工作线程已初始化 COM 环境
             static QThreadStorage<ScopedComInit> comStorage;
             if (!comStorage.hasLocalData()) {
                 comStorage.setLocalData(ScopedComInit());
@@ -918,25 +913,48 @@ ScanDialog::ScanDialog(QWidget* parent)
     }
 
     QTimer::singleShot(100, this, [this]() {
-        updateStatus("正在载入本地快照...");
+        updateStatus("按需初始化中...");
         QPointer<ScanDialog> weakThis(this);
         (void)(QtConcurrent::run)([weakThis]() {
-            bool ok = MftReader::instance().loadFromCache();
-            QMetaObject::invokeMethod(weakThis.data(), [weakThis, ok]() {
+            if (!weakThis) return;
+            // 2026-07-07 架构重构：按需加载。启动时仅加载默认盘符。
+            bool anyLoaded = false;
+            QStringList toLoad;
+            for (const QString& d : weakThis->m_config.defaultDrives) toLoad << d;
+            
+            // 兜底策略：如果没设默认盘，则尝试加载 C: 盘作为可用状态
+            if (toLoad.isEmpty()) toLoad << "C:";
+
+            for (const QString& d : toLoad) {
+                if (MftReader::instance().loadDriveFromCache(d)) anyLoaded = true;
+            }
+
+            QMetaObject::invokeMethod(weakThis.data(), [weakThis, anyLoaded]() {
                 if (!weakThis) return;
-                if (ok) {
-                    weakThis->updateStatus("就绪");
-                    weakThis->m_controller->setSearchText("");
-                    weakThis->refreshDriveList(true); // 后台探测硬件
-                    // 2026-06-xx 物理对标：如果开启了“自动显示”，加载快照后立即触发一次全量过滤显示
-                    if (weakThis->m_config.autoDisplay) {
-                        weakThis->onFilterOptionChanged();
+                weakThis->updateStatus("就绪");
+                weakThis->m_controller->setSearchText("");
+                weakThis->refreshDriveList(true); // 后台探测硬件
+                if (weakThis->m_config.autoDisplay) weakThis->onFilterOptionChanged();
+                
+                // 2026-07-07 极致体感：流水线预热
+                (void)QtConcurrent::run([weakThis]() {
+                    // 1. 预热线程池
+                    weakThis->m_thumbPool->start([](){});
+                    // 2. 预热 COM 环境与 Shell 引擎
+                    int total = MftReader::instance().totalCount();
+                    if (total > 0) {
+                        // 寻找第一个普通图片文件进行冷启动预热
+                        for (int i = 0; i < std::min(total, 5000); ++i) {
+                            if (!MftReader::instance().isDirectory(i)) {
+                                QString ext = MftReader::instance().getExtQString(i);
+                                if (UiHelper::isGraphicsFile(ext)) {
+                                    UiHelper::getShellThumbnail(MftReader::instance().getFullPath(i), 64);
+                                    break;
+                                }
+                            }
+                        }
                     }
-                } else {
-                    weakThis->updateStatus("未检测到快照，全自动初始化...");
-                    weakThis->refreshDriveList(true);
-                    weakThis->onStartScan();
-                }
+                });
             });
         });
     });
@@ -1075,7 +1093,7 @@ void ScanDialog::setupUi() {
     m_resultView->setModel(m_tableModel);
     m_resultView->setContextMenuPolicy(Qt::CustomContextMenu);
     
-    // 2026-05-14 视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
+    // 2026-05-14视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
     // 2026-06-xx 按照用户要求：设置左侧 10px 间距，确保坐标校准，同时修正表头首列偏移
     m_resultView->setStyleSheet(
         "QTableView { "
@@ -1293,14 +1311,6 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             if (!weakThis) return;
             weakThis->m_cachedDriveInfos = drives;
             
-            // 2026-06-xx 物理修复：确保 C 盘显示且可扫描。
-            // 1. 强制撤销任何对 C 盘的忽略
-            if (weakThis->m_config.ignoredDrives.contains("C:")) {
-                weakThis->m_config.ignoredDrives.remove("C:");
-            }
-
-            // 2. 策略调整：确保 C 盘始终被激活。
-            // 2026-06-xx 物理加固：撤销对 C 盘 active 状态的任何前提条件（只要探测到就激活）。
             if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
                     if (info.hasMedia && info.isNtfs) {
@@ -1308,8 +1318,6 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     }
                 }
             } else {
-                // 核心修复：如果 C 盘被探测到，且未在激活列表，则强制激活。
-                // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
                 if (!weakThis->m_config.activeDrives.contains("C:")) {
                     for (const auto& info : drives) {
                         if (info.letter == "C:") {
@@ -1328,29 +1336,9 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveButtonMap.clear();
 
-            // 核心修复：检查是否有已激活但尚未建立索引的盘符，若有则自动触发补课扫描。
-            bool missingIndex = false;
-            for (const auto& d : weakThis->m_config.activeDrives) {
-                if (!MftReader::instance().isDriveIndexed(d)) {
-                    missingIndex = true;
-                    break;
-                }
-            }
-
-            if (missingIndex) {
-                weakThis->onStartScan();
-            }
-
-            // 2026-05-14 用户要求彻底移除 "DRIVES" 标签
-            // QLabel* driveLabel = new QLabel("DRIVES");
-            // driveLabel->setStyleSheet("color: #3D5060; font-weight: bold; font-size: 10px;");
-            // weakThis->m_driveLayout->addWidget(driveLabel);
-
             for (const auto& info : drives) {
                 if (!info.hasMedia) continue; 
-                // C 盘必须显示，无论是否标记为 NTFS (防止某些环境下 GetVolumeInformation 失败)
                 if (!info.isNtfs && info.letter != "C:") continue;
-                if (weakThis->m_config.ignoredDrives.contains(info.letter)) continue;
 
                 QString label = info.label.isEmpty() ? "本地磁盘" : info.label;
                 QString btnText = QString("%1 (%2)").arg(info.letter).arg(label);
@@ -1407,10 +1395,12 @@ void ScanDialog::updateDriveButtonStyles() {
     for (auto it = m_driveButtonMap.begin(); it != m_driveButtonMap.end(); ++it) {
         bool isActive = m_config.activeDrives.contains(it.key());
         bool isDefault = m_config.defaultDrives.contains(it.key());
+        bool isLoaded = MftReader::instance().isDriveIndexed(it.key());
         
         QPushButton* btn = it.value();
         btn->setProperty("isActive", isActive);
         btn->setProperty("isDefault", isDefault);
+        btn->setProperty("isLoaded", isLoaded);
         
         // 触发 QSS 刷新
         btn->style()->unpolish(btn);
@@ -1418,7 +1408,14 @@ void ScanDialog::updateDriveButtonStyles() {
         
         QString label = "";
         for (const auto& info : m_cachedDriveInfos) { if (info.letter == it.key()) { label = info.label; break; } }
-        btn->setText(QString("%1%2 (%3)").arg(isDefault ? "★ " : "").arg(it.key()).arg(label.isEmpty() ? "本地磁盘" : label));
+        QString statusSuffix = isLoaded ? "" : " [未加载]";
+        btn->setText(QString("%1%2 (%3)%4").arg(isDefault ? "★ " : "").arg(it.key()).arg(label.isEmpty() ? "本地磁盘" : label).arg(statusSuffix));
+        
+        if (!isLoaded) {
+            btn->setStyleSheet(btn->styleSheet() + " color: #555; ");
+        } else {
+            btn->setStyleSheet(btn->styleSheet().remove(" color: #555; "));
+        }
     }
 }
 
@@ -1433,27 +1430,33 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
         m_config.save();
         updateDriveButtonStyles();
     });
-    
-    menu.addAction("忽略此驱动器", [this, drive]() {
-        m_config.ignoredDrives.insert(drive);
-        m_config.activeDrives.remove(drive);
-        m_config.save();
-        refreshDriveList(true); // 重新生成按钮
-        onStartScan();
-    });
-    
-    menu.exec(QCursor::pos());
-}
 
-void ScanDialog::onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos) {
-    Q_UNUSED(pos);
-    QMenu menu(this);
-    menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
-    menu.addAction("恢复驱动器", [this, drive]() {
-        m_config.ignoredDrives.remove(drive);
-        m_config.save();
-        refreshDriveList(true);
+    menu.addSeparator();
+
+    bool isLoaded = MftReader::instance().isDriveIndexed(drive);
+    auto* loadAct = menu.addAction("加载数据", [this, drive]() {
+        updateStatus(QString("正在加载 %1...").arg(drive), true);
+        QPointer<ScanDialog> weakThis(this);
+        (void)QtConcurrent::run([weakThis, drive]() {
+            MftReader::instance().loadDriveFromCache(drive);
+            QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
+                if (weakThis) {
+                    weakThis->updateStatus("就绪");
+                    weakThis->updateDriveButtonStyles();
+                    weakThis->onTriggerSearch();
+                }
+            });
+        });
     });
+    loadAct->setEnabled(!isLoaded);
+
+    auto* unloadAct = menu.addAction("卸载数据", [this, drive]() {
+        MftReader::instance().unloadDrive(drive);
+        updateDriveButtonStyles();
+        onTriggerSearch();
+    });
+    unloadAct->setEnabled(isLoaded);
+    
     menu.exec(QCursor::pos());
 }
 
@@ -1507,9 +1510,15 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
             for (const auto& idx : selectedRows) names << m_tableModel->data(m_tableModel->index(idx.row(), 0)).toString();
             QApplication::clipboard()->setText(names.join("\n"));
         });
+
+        menu.addSeparator();
+        menu.addAction("剪切", this, [this]() { onCopyTriggered(true); });
+        menu.addAction("复制", this, [this]() { onCopyTriggered(false); });
         
         if (count == 1) {
-            menu.addAction("重命名", this, &ScanDialog::onRenameTriggered);
+            menu.addAction("重命名", this, [this]() {
+                QTimer::singleShot(0, this, &ScanDialog::onRenameTriggered);
+            });
         }
         
         menu.addSeparator();
@@ -1725,7 +1734,11 @@ void ScanDialog::updateStatusBar() {
     auto selectedRows = view->selectionModel()->selectedRows();
     
     int totalMatch = m_controller->resultCount();
-    m_statLabelMain->setText(QString("共找到 %1 条项目").arg(formatNumber(totalMatch)));
+    int loadedDrives = 0;
+    for (const auto& info : m_cachedDriveInfos) {
+        if (MftReader::instance().isDriveIndexed(info.letter)) loadedDrives++;
+    }
+    m_statLabelMain->setText(QString("共找到 %1 条项目 (搜索范围: %2 个已加载盘符)").arg(formatNumber(totalMatch)).arg(loadedDrives));
     m_statLabelTime->setText(QString("耗时 %1 ms").arg(m_lastSearchMs));
 
     if (!selectedRows.isEmpty()) {
@@ -1775,6 +1788,25 @@ void ScanDialog::onRenameTriggered() {
     view->edit(selection.first());
 }
 
+void ScanDialog::onCopyTriggered(bool isCut) {
+    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    auto selectedIndexes = view->selectionModel()->selectedIndexes();
+    if (selectedIndexes.isEmpty()) return;
+
+    QMimeData* mimeData = m_tableModel->mimeData(selectedIndexes);
+    if (!mimeData) return;
+
+    // 2026-07-07 物理修复：通过 Preferred DropEffect 区分复制与剪切
+    QByteArray effectData;
+    QDataStream stream(&effectData, QIODevice::WriteOnly);
+    stream.setByteOrder(QDataStream::LittleEndian);
+    stream << (isCut ? (quint32)2 : (quint32)1); // MOVE=2, COPY=1
+    mimeData->setData("Preferred DropEffect", effectData);
+
+    QApplication::clipboard()->setMimeData(mimeData);
+}
+
+
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
     if (event->key() == Qt::Key_F2) {
         onRenameTriggered();
@@ -1785,12 +1817,21 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_A && event->modifiers() == Qt::ControlModifier) { 
-        auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
-        
-        // 2026-07-07 物理修复：在全选前强制加载所有虚拟化行，确保 selectAll() 逻辑上覆盖全部结果
-        m_tableModel->forceFetchAll();
-        view->selectAll(); 
+        // 2026-07-07 物理修复：调用全量选择逻辑，杜绝虚拟化加载导致的“漏选”
+        selectAllResults();
         return; 
+    }
+    if (event->key() == Qt::Key_C && event->modifiers() == Qt::ControlModifier) {
+        onCopyTriggered(false);
+        return;
+    }
+    if (event->key() == Qt::Key_X && event->modifiers() == Qt::ControlModifier) {
+        onCopyTriggered(true);
+        return;
+    }
+    if (event->key() == Qt::Key_V && event->modifiers() == Qt::ControlModifier) {
+        updateStatus("当前视图不支持粘贴");
+        return;
     }
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
         if (m_searchEdit->hasFocus() || m_extEdit->hasFocus()) {
@@ -1804,6 +1845,27 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
     }
     handleMetadataShortcut(event);
     FramelessDialog::keyPressEvent(event);
+}
+
+void ScanDialog::selectAllResults() {
+    // 2026-07-07 核心修复：不依赖 QAbstractItemView::selectAll()，因为它依赖视图内部几何状态（可能因虚拟化而未就绪）
+    m_tableModel->forceFetchAll();
+    int total = m_tableModel->rowCount();
+    if (total <= 0) return;
+
+    auto view = (m_viewStack->currentIndex() == 0) 
+        ? static_cast<QAbstractItemView*>(m_resultView) 
+        : static_cast<QAbstractItemView*>(m_iconView);
+
+    // 直接构建覆盖全量行的 QItemSelection，绕过视图布局依赖
+    QItemSelection selection(
+        m_tableModel->index(0, 0), 
+        m_tableModel->index(total - 1, m_tableModel->columnCount() - 1)
+    );
+    view->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    
+    // 手动触发状态栏更新，因为同步调用可能错过 selectionChanged 信号（取决于具体实现）
+    updateStatusBar();
 }
 
 // 2026-05-16 快捷键核心处理逻辑：支持评分、置顶、标签等深度管理快捷键

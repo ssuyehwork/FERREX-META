@@ -40,7 +40,6 @@ class ThumbnailDelegate;
 struct ScanConfig {
     QSet<QString> activeDrives;
     QSet<QString> defaultDrives;
-    QSet<QString> ignoredDrives;
     QStringList queryHistory;
     QStringList extHistory;
     
@@ -140,8 +139,8 @@ private slots:
     void onItemDoubleClicked(const QModelIndex& index);
     void onSelectionChanged();
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
-    void onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
+    void onCopyTriggered(bool isCut = false);
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -154,6 +153,7 @@ private:
     void updateDriveButtonStyles();
     void updateStatus(const QString& text, bool scanning = false, int64_t totalCount = -1);
     void updateStatusBar();
+    void selectAllResults(); // 2026-07-07 物理修复：实现绕过视图布局状态的全量选择逻辑
     void handleMetadataShortcut(QKeyEvent* event);
     QString formatNumber(int64_t n);
     QString formatSize(int64_t bytes);

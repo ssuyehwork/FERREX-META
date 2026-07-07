@@ -51,9 +51,8 @@
 namespace FERREX {
 
 /**
- * @brief COM 环境 RAII 守卫
- * 2026-06-xx 任务一：解决跨线程调用 Shell 接口时的 COM 环境缺失问题，杜绝静默串行化。
- * 2026-06-xx 极致性能加固：基于引用计数实现可拷贝语义，配合 QThreadStorage 实现线程级的 COM 预初始化。
+ * @brief COM 环境 RAII 守卫，确保在调用 Windows Shell API 前正确初始化 COM 环境。
+ * 依靠 shared_ptr 实现引用计数，支持在 QThreadStorage 中存储并在最后一个引用销毁时释放。
  */
 struct ScopedComInit {
     ScopedComInit() : m_data(std::make_shared<ComData>()) {}
@@ -175,11 +174,10 @@ public:
     }
 
     static QIcon getFileIcon(const QString& filePath, int size = 18, const QColor& overrideColor = QColor()) {
-        #ifdef Q_OS_WIN
+#ifdef Q_OS_WIN
         static QThreadStorage<ScopedComInit> s_comInit;
         if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
-        #endif
-
+#endif
         Q_UNUSED(overrideColor);
         Q_UNUSED(size);
         
@@ -293,11 +291,10 @@ public:
      * 2026-06-xx 架构重构：彻底弃用外部工具链 (ImageMagick/Ghostscript)，全面转向原生 Shell 引擎
      */
     static QVector<QPair<QColor, float>> extractPalette(const QString& targetFile) {
-        #ifdef Q_OS_WIN
+#ifdef Q_OS_WIN
         static QThreadStorage<ScopedComInit> s_comInit;
         if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
-        #endif
-
+#endif
         // 优先从系统缩略图引擎获取数据，支持 PSD, AI, EPS, PDF 等专业格式 (前提是系统有预览插件)
         QImage targetImg = getShellThumbnail(targetFile, 128);
 
@@ -402,12 +399,11 @@ public:
 
 public:
     static QImage getShellThumbnail(const QString& path, int size) {
-        #ifdef Q_OS_WIN
+#ifdef Q_OS_WIN
         static QThreadStorage<ScopedComInit> s_comInit;
         if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
-        #endif
-
-        // 2026-06-xx 物理重构：引入磁盘缓存机制，消除“失忆症”
+#endif
+        // 引入磁盘缓存机制
         QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         QString cacheDir = QDir(appData).filePath("thumbs/");
         QDir().mkpath(cacheDir);
