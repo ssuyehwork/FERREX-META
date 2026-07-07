@@ -343,7 +343,7 @@ bool MftReader::loadFromCache() {
     rebuildFrnToIndexMap(); 
 
     // 2026-07-07 物理修复：物理回收重复项空间 (Analysis_Modification_Plan-154.md)
-    if (m_dead_count > 0) compact();
+    compact();
 
     buildSortedIndices();
 
@@ -424,8 +424,8 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     }
 
     rebuildFrnToIndexMap();
-    // 2026-07-07 物理修复：单盘加载后的去重收缩 (Analysis_Modification_Plan-154.md)
-    if (m_dead_count > 0) compact();
+    // 2026-07-07 物理修复：单盘加载后的强制去重收缩 (Analysis_Modification_Plan-154.md)
+    compact();
     buildSortedIndices();
     m_isInitialized = true;
 
@@ -1470,32 +1470,36 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
 }
 
 void MftReader::rebuildFrnToIndexMap() {
+    // 2026-07-07 极致去重重构：利用 Map 覆盖特性实现物理级去重 (Analysis_Modification_Plan-154.md)
     m_frn_to_idx.clear();
+
+    // 第一遍：构建索引地图（增量记录会自动覆盖旧的下标，保留最后出现的即最新的记录）
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_frns[i] != 0) {
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-            uint64_t key = makeKey(dIdx, m_frns[i]);
-
-            // 2026-07-07 物理修复：处理增量缓存导致的重复项 (Analysis_Modification_Plan-154.md)
-            auto it = m_frn_to_idx.find(key);
-            if (it != m_frn_to_idx.end()) {
-                // 如果已存在，标记旧项为死亡（因为遍历是顺序的，新项覆盖旧项）
-                m_frns[it->second] = 0;
-                m_dead_count++;
-            }
-
-            m_frn_to_idx[key] = (uint32_t)i;
+            m_frn_to_idx[makeKey(dIdx, m_frns[i])] = (uint32_t)i;
         }
     }
 
-    // 2026-06-xx 物理优化：预先计算父节点下标，彻底消除路径回溯时的 Map 查找开销
+    // 第二遍：反向标记物理冗余（物理剔除被增量覆盖的旧条目）
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if (m_frns[i] == 0) continue;
+        size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
+        uint64_t key = makeKey(dIdx, m_frns[i]);
+        if (m_frn_to_idx[key] != (uint32_t)i) {
+            m_frns[i] = 0;
+            m_dead_count++;
+        }
+    }
+
+    // 第三遍：父节点下标预映射（提升路径回溯性能）
     m_parent_indices.assign(m_frns.size(), 0xFFFFFFFF);
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_frns[i] == 0) continue;
         uint64_t encodedPf = m_parent_frns[i];
-        auto it = m_frn_to_idx.find(encodedPf);
-        if (it != m_frn_to_idx.end()) {
-            m_parent_indices[i] = it->second;
+        auto itP = m_frn_to_idx.find(encodedPf);
+        if (itP != m_frn_to_idx.end()) {
+            m_parent_indices[i] = itP->second;
         }
     }
 }
