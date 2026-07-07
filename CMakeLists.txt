@@ -4,11 +4,17 @@ project(FERREX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 修复：优先探测 QT_DIR 环境变量，若无则使用文档红线默认路径
+# 改进：引入自动寻找机制，优先使用 QT_DIR 环境变量，否则尝试动态获取或回退到默认路径
 if(DEFINED ENV{QT_DIR})
     set(CMAKE_PREFIX_PATH "$ENV{QT_DIR}")
 else()
-    set(CMAKE_PREFIX_PATH "C:/Qt/6.10.2/msvc2022_64")
+    find_program(QT_QMAKE_EXECUTABLE NAMES qmake)
+    if(QT_QMAKE_EXECUTABLE)
+        get_filename_component(QT_BIN_DIR "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+        get_filename_component(CMAKE_PREFIX_PATH "${QT_BIN_DIR}" DIRECTORY)
+    else()
+        set(CMAKE_PREFIX_PATH "C:/Qt/6.10.2/msvc2022_64")
+    endif()
 endif()
 
 # 强制 MSVC 编译器及选项 (文档红线: /W4 /O2)
@@ -23,9 +29,9 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Sql Concurrent)
 # 2026-03-xx 按照用户要求：禁用 Vulkan 探测以消除日志报错，并清理构建路径矛盾
 set(QT_NO_VULKAN ON)
 
-# 路径严谨性核查：若检测到 VS 默认的 out 路径，主动输出警告提示
-if(CMAKE_BINARY_DIR MATCHES "/out/")
-    message(WARNING "⚠️ 检测到非法构建路径 [out]！请在 VS 工具栏切换至 [x64-release] 预设以符合《源码纯净》规范。")
+# 路径严谨性核查：兼容 VS 默认的 out/build 目录，仅在检测到源内构建（In-source build）时报错
+if("${CMAKE_BINARY_DIR}" STREQUAL "${PROJECT_SOURCE_DIR}")
+    message(FATAL_ERROR "⚠️ 禁止源内构建！请使用独立的构建目录（如 out/build/）以符合《源码纯净》规范。")
 endif()
 
 # 2026-03-xx 按照用户要求：将可执行文件直接输出到指定项目子目录 FERREX 下，解决 \out 文件夹查找不便的问题
@@ -64,8 +70,6 @@ set(SOURCES
     src/db/ItemRepo.h
     src/db/SyncEngine.cpp
     src/db/SyncEngine.h
-    src/meta/AmMetaJson.cpp
-    src/meta/AmMetaJson.h
     src/meta/AllFrnManager.cpp
     src/meta/AllFrnManager.h
     src/meta/BatchRenameEngine.cpp
