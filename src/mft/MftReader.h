@@ -154,6 +154,7 @@ private:
     std::atomic<uint64_t>     m_generation{0};        // 数据代数，用于检测 compact
 
     std::unordered_map<uint64_t, uint32_t>              m_frn_to_idx;
+    std::unordered_map<size_t, bool>                    m_drive_ever_saved; // 2026-06-xx 按盘符独立维护全量保存状态
 
     mutable std::unordered_map<uint64_t, std::wstring>  m_path_cache;
     mutable std::mutex m_pathCacheMutex;
