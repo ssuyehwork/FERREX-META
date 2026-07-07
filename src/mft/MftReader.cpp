@@ -238,8 +238,16 @@ void MftReader::buildIndex(const QStringList& drives) {
             continue;
         }
         
-        size_t dIdx = m_drive_list.size();
-        m_drive_list.push_back(sr.volume);
+        // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
+        size_t dIdx = (size_t)-1;
+        for (size_t i = 0; i < m_drive_list.size(); ++i) {
+            if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = sr.volume; break; }
+        }
+        if (dIdx == (size_t)-1) {
+            dIdx = m_drive_list.size();
+            m_drive_list.push_back(sr.volume);
+        }
+
         if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
         m_next_usns[sr.volume] = sr.res.nextUsn;
         mergeDriveResult(sr.volume, sr.res, dIdx);
@@ -374,8 +382,17 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
 
     QWriteLocker lock(&m_dataLock);
-    size_t dIdx = m_drive_list.size();
-    m_drive_list.push_back(vol);
+    // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
+    size_t dIdx = (size_t)-1;
+    for (size_t i = 0; i < m_drive_list.size(); ++i) {
+        if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = vol; break; }
+    }
+    if (dIdx == (size_t)-1) {
+        dIdx = m_drive_list.size();
+        m_drive_list.push_back(vol);
+    }
+
+    if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
     m_next_usns[vol] = lastUsn;
 
     for (const auto& pkg : records) {
@@ -455,40 +472,17 @@ void MftReader::unloadDrive(const QString& drive) {
             }
         }
 
-        // 修正剩余条目的驱动器索引
-        m_drive_list.erase(m_drive_list.begin() + dIdx);
-        for (size_t i = 0; i < m_frns.size(); ++i) {
-            if (m_frns[i] == 0) continue;
-            size_t oldDIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-            if (oldDIdx > dIdx) {
-                uint64_t frnPart = m_parent_frns[i] & 0x0000FFFFFFFFFFFFull;
-                m_parent_frns[i] = (static_cast<uint64_t>(oldDIdx - 1) << 48) | frnPart;
-            }
-        }
+        // 修正：保留占位，禁止平移索引以杜绝漂移 (Analysis_Modification_Plan-154.md)
+        m_drive_list[dIdx] = L"";
 
         // 更新掩码与相关映射
-        auto shiftMap = [&](auto& map) {
-            auto oldMap = std::move(map);
-            map.clear();
-            for (auto const& [idx, val] : oldMap) {
-                if (idx == dIdx) continue;
-                map[(idx > dIdx) ? idx - 1 : idx] = val;
-            }
-        };
-        shiftMap(m_drive_ever_saved);
-        shiftMap(m_is_compacting);
-        shiftMap(m_compaction_buffer);
+        m_drive_ever_saved.erase(dIdx);
+        m_is_compacting.erase(dIdx);
+        m_compaction_buffer.erase(dIdx);
 
-        uint32_t oldMask = m_drive_active_mask.load();
-        uint32_t newMask = 0;
-        for (int i = 0; i < 32; ++i) {
-            if (i == (int)dIdx) continue;
-            if (oldMask & (1 << i)) {
-                int newPos = (i > (int)dIdx) ? i - 1 : i;
-                if (newPos < 32) newMask |= (1 << newPos);
-            }
-        }
-        m_drive_active_mask.store(newMask);
+        uint32_t mask = m_drive_active_mask.load();
+        mask &= ~(1 << dIdx);
+        m_drive_active_mask.store(mask);
 
         compact(); 
     }

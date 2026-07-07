@@ -132,7 +132,6 @@ public:
     ~ScanDialog() override;
 
 private slots:
-    void onStartScan();
     void onTriggerSearch();
     void onFilterOptionChanged();
     void onCustomContextMenu(const QPoint& pos);
@@ -140,6 +139,7 @@ private slots:
     void onSelectionChanged();
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
+    void onPasteTriggered();
     void onCopyTriggered(bool isCut = false);
 
 protected:
@@ -153,6 +153,7 @@ private:
     void updateDriveButtonStyles();
     void updateStatus(const QString& text, bool scanning = false, int64_t totalCount = -1);
     void updateStatusBar();
+    void triggerWarmup(); // 2026-07-07 新增：缩略图预热流水线 (Analysis_Modification_Plan-154.md)
     void selectAllResults(); // 2026-07-07 物理修复：实现绕过视图布局状态的全量选择逻辑
     void handleMetadataShortcut(QKeyEvent* event);
     QString formatNumber(int64_t n);
