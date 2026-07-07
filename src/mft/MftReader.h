@@ -55,7 +55,6 @@ signals:
 public:
     // 生命周期管理
     void buildIndex(const QStringList& drives = QStringList());
-    void unloadDrive(const QString& drive); // 2026-06-xx 新增：按需卸载驱动器数据
     bool loadFromCache();
     bool saveToCache(); 
     bool saveDriveToCache(size_t driveIdx); 
