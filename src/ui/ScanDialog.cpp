@@ -939,7 +939,9 @@ ScanDialog::ScanDialog(QWidget* parent)
                 // 2026-07-07 极致体感：流水线预热
                 (void)QtConcurrent::run([weakThis]() {
                     // 1. 预热线程池
-                    weakThis->m_thumbPool->start([](){});
+                    if (weakThis->m_tableModel && weakThis->m_tableModel->m_thumbPool) {
+                        weakThis->m_tableModel->m_thumbPool->start([](){});
+                    }
                     // 2. 预热 COM 环境与 Shell 引擎
                     int total = MftReader::instance().totalCount();
                     if (total > 0) {
