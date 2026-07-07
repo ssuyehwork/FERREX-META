@@ -1216,7 +1216,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                 uint64_t currentUsn = ed.StartFileReferenceNumber;
 
                 // 2026-06-xx 性能策略：异步追加。由于是增量数据且已解耦，异步执行是安全的。
-                QtConcurrent::run([path_base, delta, currentUsn]() {
+                (void)QtConcurrent::run([path_base, delta, currentUsn]() {
                     ScchCache::appendEntries(path_base, delta, currentUsn);
                 });
 
