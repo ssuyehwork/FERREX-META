@@ -925,8 +925,18 @@ ScanDialog::ScanDialog(QWidget* parent)
             // 兜底策略：如果没设默认盘，则尝试加载 C: 盘作为可用状态
             if (toLoad.isEmpty()) toLoad << "C:";
 
+            QStringList toScan;
             for (const QString& d : toLoad) {
                 if (MftReader::instance().loadDriveFromCache(d)) anyLoaded = true;
+                else toScan << d;
+            }
+
+            if (!toScan.isEmpty()) {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, toScan]() {
+                    if (weakThis) {
+                        for (const QString& d : toScan) weakThis->onStartScan(d);
+                    }
+                });
             }
 
             QMetaObject::invokeMethod(weakThis.data(), [weakThis, anyLoaded]() {
@@ -936,27 +946,8 @@ ScanDialog::ScanDialog(QWidget* parent)
                 weakThis->refreshDriveList(true); // 后台探测硬件
                 if (weakThis->m_config.autoDisplay) weakThis->onFilterOptionChanged();
                 
-                // 2026-07-07 极致体感：流水线预热
-                (void)QtConcurrent::run([weakThis]() {
-                    // 1. 预热线程池
-                    if (weakThis->m_tableModel && weakThis->m_tableModel->m_thumbPool) {
-                        weakThis->m_tableModel->m_thumbPool->start([](){});
-                    }
-                    // 2. 预热 COM 环境与 Shell 引擎
-                    int total = MftReader::instance().totalCount();
-                    if (total > 0) {
-                        // 寻找第一个普通图片文件进行冷启动预热
-                        for (int i = 0; i < std::min(total, 5000); ++i) {
-                            if (!MftReader::instance().isDirectory(i)) {
-                                QString ext = MftReader::instance().getExtQString(i);
-                                if (UiHelper::isGraphicsFile(ext)) {
-                                    UiHelper::getShellThumbnail(MftReader::instance().getFullPath(i), 64);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                });
+                // 2026-07-07 物理修复：调用封装后的预热函数 (Analysis_Modification_Plan-154.md)
+                weakThis->triggerWarmup();
             });
         });
     });
@@ -1371,10 +1362,11 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
                     MftReader::instance().updateActiveDrives(activeList);
 
-                    // 2026-05-14 架构对标优化：如果驱动器已在索引中，仅进行视图过滤（瞬时响应）
-                    // 只有当点击的是新驱动器且需要初始扫描时，才调用重量级的 onStartScan
+                    // 2026-07-07 核心修正：左键仅筛选，严禁加载数据库 (Analysis_Modification_Plan-154.md)
                     if (isSelected && !MftReader::instance().isDriveIndexed(letter)) {
-                        weakThis->onStartScan();
+                        weakThis->updateStatus("请先通过右键菜单‘加载数据’");
+                        weakThis->m_config.activeDrives.remove(letter);
+                        weakThis->updateDriveButtonStyles();
                     } else {
                         weakThis->onTriggerSearch();
                     }
@@ -1436,21 +1428,33 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
     menu.addSeparator();
 
     bool isLoaded = MftReader::instance().isDriveIndexed(drive);
-    auto* loadAct = menu.addAction("加载数据", [this, drive]() {
+    auto* loadAct = menu.addAction("加载数据 (快速)", [this, drive]() {
         updateStatus(QString("正在加载 %1...").arg(drive), true);
         QPointer<ScanDialog> weakThis(this);
         (void)QtConcurrent::run([weakThis, drive]() {
-            MftReader::instance().loadDriveFromCache(drive);
-            QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
-                if (weakThis) {
-                    weakThis->updateStatus("就绪");
-                    weakThis->updateDriveButtonStyles();
-                    weakThis->onTriggerSearch();
-                }
-            });
+            // 尝试加载缓存，若失败则自动触发扫描
+            if (!MftReader::instance().loadDriveFromCache(drive)) {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, drive]() {
+                    if (weakThis) weakThis->onStartScan(drive);
+                });
+            } else {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
+                    if (weakThis) {
+                        weakThis->updateStatus("就绪");
+                        weakThis->updateDriveButtonStyles();
+                        weakThis->onTriggerSearch();
+                        weakThis->triggerWarmup();
+                    }
+                });
+            }
         });
     });
     loadAct->setEnabled(!isLoaded);
+
+    auto* scanAct = menu.addAction("立即扫描并索引", [this, drive]() {
+        onStartScan(drive);
+    });
+    scanAct->setEnabled(!isLoaded);
 
     auto* unloadAct = menu.addAction("卸载数据", [this, drive]() {
         MftReader::instance().unloadDrive(drive);
@@ -1642,9 +1646,15 @@ void ScanDialog::onSelectionChanged() {
     updateStatusBar();
 }
 
-void ScanDialog::onStartScan() {
+
+void ScanDialog::onStartScan(const QString& drive) {
     QStringList selectedDrives;
-    for (const auto& d : m_config.activeDrives) selectedDrives << (d + QLatin1String("\\"));
+    if (drive.isEmpty()) {
+        for (const auto& d : m_config.activeDrives) selectedDrives << (d + QLatin1String("\\"));
+    } else {
+        selectedDrives << (drive + QLatin1String("\\"));
+    }
+
     if (selectedDrives.isEmpty()) { onTriggerSearch(); return; }
     updateStatus("正在扫描...", true);
 
@@ -1654,7 +1664,9 @@ void ScanDialog::onStartScan() {
         QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
             if (!weakThis) return;
             weakThis->updateStatus("就绪");
+            weakThis->updateDriveButtonStyles();
             weakThis->onTriggerSearch();
+            weakThis->triggerWarmup();
         });
     });
 }
@@ -1740,7 +1752,8 @@ void ScanDialog::updateStatusBar() {
     for (const auto& info : m_cachedDriveInfos) {
         if (MftReader::instance().isDriveIndexed(info.letter)) loadedDrives++;
     }
-    m_statLabelMain->setText(QString("共找到 %1 条项目 (搜索范围: %2 个已加载盘符)").arg(formatNumber(totalMatch)).arg(loadedDrives));
+    // 2026-07-07 物理修正：更新状态栏文案 (Analysis_Modification_Plan-154.md)
+    m_statLabelMain->setText(QString("当前仅在 %1 个已加载盘符范围内搜索 (匹配: %2)").arg(loadedDrives).arg(formatNumber(totalMatch)));
     m_statLabelTime->setText(QString("耗时 %1 ms").arg(m_lastSearchMs));
 
     if (!selectedRows.isEmpty()) {
@@ -1832,6 +1845,7 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_V && event->modifiers() == Qt::ControlModifier) {
+        // 2026-07-07 物理清理：移除粘贴功能，仅保留提示 (Analysis_Modification_Plan-154.md)
         updateStatus("当前视图不支持粘贴");
         return;
     }
@@ -1874,6 +1888,32 @@ void ScanDialog::selectAllResults() {
 void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
     // 2026-06-xx 任务：移除深度管理功能，停用对应的快捷键分发逻辑。
     Q_UNUSED(event);
+}
+
+void ScanDialog::triggerWarmup() {
+    // 2026-07-07 极致体感：流水线异步预热 (Analysis_Modification_Plan-154.md)
+    QPointer<ScanDialog> weakThis(this);
+    (void)QtConcurrent::run([weakThis]() {
+        if (!weakThis) return;
+        // 1. 预热缩略图专用线程池
+        if (weakThis->m_tableModel && weakThis->m_tableModel->m_thumbPool) {
+            weakThis->m_tableModel->m_thumbPool->start([](){});
+        }
+        // 2. 预热 COM 环境与 Shell 引擎
+        int total = MftReader::instance().totalCount();
+        if (total > 0) {
+            // 寻找前 5000 个文件中的首个合法图形文件进行冷启动预热
+            for (int i = 0; i < std::min(total, 5000); ++i) {
+                if (!MftReader::instance().isDirectory(i)) {
+                    QString ext = MftReader::instance().getExtQString(i);
+                    if (UiHelper::isGraphicsFile(ext)) {
+                        UiHelper::getShellThumbnail(MftReader::instance().getFullPath(i), 64);
+                        break;
+                    }
+                }
+            }
+        }
+    });
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {

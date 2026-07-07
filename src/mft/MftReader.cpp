@@ -121,6 +121,8 @@ void MftReader::clearInternal() {
     m_next_usns.clear();
     m_isInitialized = false;
     m_dirty_count = 0;
+    m_dead_count = 0;
+    m_wasted_string_bytes = 0;
 }
 
 void MftReader::clear() {
@@ -238,8 +240,16 @@ void MftReader::buildIndex(const QStringList& drives) {
             continue;
         }
         
-        size_t dIdx = m_drive_list.size();
-        m_drive_list.push_back(sr.volume);
+        // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
+        size_t dIdx = (size_t)-1;
+        for (size_t i = 0; i < m_drive_list.size(); ++i) {
+            if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = sr.volume; break; }
+        }
+        if (dIdx == (size_t)-1) {
+            dIdx = m_drive_list.size();
+            m_drive_list.push_back(sr.volume);
+        }
+
         if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
         m_next_usns[sr.volume] = sr.res.nextUsn;
         mergeDriveResult(sr.volume, sr.res, dIdx);
@@ -332,6 +342,9 @@ bool MftReader::loadFromCache() {
     // 2026-06-xx 物理补齐：缓存加载后必须执行重映射，以补全 m_parent_indices 链条
     rebuildFrnToIndexMap(); 
 
+    // 2026-07-07 物理修复：物理回收重复项空间 (Analysis_Modification_Plan-154.md)
+    compact();
+
     buildSortedIndices();
 
     m_isInitialized = true;
@@ -374,8 +387,17 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
 
     QWriteLocker lock(&m_dataLock);
-    size_t dIdx = m_drive_list.size();
-    m_drive_list.push_back(vol);
+    // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
+    size_t dIdx = (size_t)-1;
+    for (size_t i = 0; i < m_drive_list.size(); ++i) {
+        if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = vol; break; }
+    }
+    if (dIdx == (size_t)-1) {
+        dIdx = m_drive_list.size();
+        m_drive_list.push_back(vol);
+    }
+
+    if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
     m_next_usns[vol] = lastUsn;
 
     for (const auto& pkg : records) {
@@ -402,6 +424,8 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     }
 
     rebuildFrnToIndexMap();
+    // 2026-07-07 物理修复：单盘加载后的强制去重收缩 (Analysis_Modification_Plan-154.md)
+    compact();
     buildSortedIndices();
     m_isInitialized = true;
 
@@ -455,40 +479,17 @@ void MftReader::unloadDrive(const QString& drive) {
             }
         }
 
-        // 修正剩余条目的驱动器索引
-        m_drive_list.erase(m_drive_list.begin() + dIdx);
-        for (size_t i = 0; i < m_frns.size(); ++i) {
-            if (m_frns[i] == 0) continue;
-            size_t oldDIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-            if (oldDIdx > dIdx) {
-                uint64_t frnPart = m_parent_frns[i] & 0x0000FFFFFFFFFFFFull;
-                m_parent_frns[i] = (static_cast<uint64_t>(oldDIdx - 1) << 48) | frnPart;
-            }
-        }
+        // 修正：保留占位，禁止平移索引以杜绝漂移 (Analysis_Modification_Plan-154.md)
+        m_drive_list[dIdx] = L"";
 
         // 更新掩码与相关映射
-        auto shiftMap = [&](auto& map) {
-            auto oldMap = std::move(map);
-            map.clear();
-            for (auto const& [idx, val] : oldMap) {
-                if (idx == dIdx) continue;
-                map[(idx > dIdx) ? idx - 1 : idx] = val;
-            }
-        };
-        shiftMap(m_drive_ever_saved);
-        shiftMap(m_is_compacting);
-        shiftMap(m_compaction_buffer);
+        m_drive_ever_saved.erase(dIdx);
+        m_is_compacting.erase(dIdx);
+        m_compaction_buffer.erase(dIdx);
 
-        uint32_t oldMask = m_drive_active_mask.load();
-        uint32_t newMask = 0;
-        for (int i = 0; i < 32; ++i) {
-            if (i == (int)dIdx) continue;
-            if (oldMask & (1 << i)) {
-                int newPos = (i > (int)dIdx) ? i - 1 : i;
-                if (newPos < 32) newMask |= (1 << newPos);
-            }
-        }
-        m_drive_active_mask.store(newMask);
+        uint32_t mask = m_drive_active_mask.load();
+        mask &= ~(1 << dIdx);
+        m_drive_active_mask.store(mask);
 
         compact(); 
     }
@@ -704,7 +705,8 @@ bool MftReader::isMetadataFetched(int index) const {
 
 int MftReader::totalCount() const {
     QReadLocker lock(&m_dataLock);
-    return (int)m_frns.size();
+    // 2026-07-07 物理修正：返回活跃条目的绝对总数 (Analysis_Modification_Plan-154.md)
+    return (int)m_frn_to_idx.size();
 }
 
 int MftReader::getIndexByKey(uint64_t compositeKey) const {
@@ -1468,23 +1470,36 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
 }
 
 void MftReader::rebuildFrnToIndexMap() {
+    // 2026-07-07 极致去重重构：利用 Map 覆盖特性实现物理级去重 (Analysis_Modification_Plan-154.md)
     m_frn_to_idx.clear();
+
+    // 第一遍：构建索引地图（增量记录会自动覆盖旧的下标，保留最后出现的即最新的记录）
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_frns[i] != 0) {
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-            uint64_t key = makeKey(dIdx, m_frns[i]);
-            m_frn_to_idx[key] = (uint32_t)i;
+            m_frn_to_idx[makeKey(dIdx, m_frns[i])] = (uint32_t)i;
         }
     }
 
-    // 2026-06-xx 物理优化：预先计算父节点下标，彻底消除路径回溯时的 Map 查找开销
+    // 第二遍：反向标记物理冗余（物理剔除被增量覆盖的旧条目）
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if (m_frns[i] == 0) continue;
+        size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
+        uint64_t key = makeKey(dIdx, m_frns[i]);
+        if (m_frn_to_idx[key] != (uint32_t)i) {
+            m_frns[i] = 0;
+            m_dead_count++;
+        }
+    }
+
+    // 第三遍：父节点下标预映射（提升路径回溯性能）
     m_parent_indices.assign(m_frns.size(), 0xFFFFFFFF);
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_frns[i] == 0) continue;
         uint64_t encodedPf = m_parent_frns[i];
-        auto it = m_frn_to_idx.find(encodedPf);
-        if (it != m_frn_to_idx.end()) {
-            m_parent_indices[i] = it->second;
+        auto itP = m_frn_to_idx.find(encodedPf);
+        if (itP != m_frn_to_idx.end()) {
+            m_parent_indices[i] = itP->second;
         }
     }
 }
