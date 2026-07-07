@@ -189,12 +189,8 @@ static bool isSolidStateDrive(const QString& drivePath) {
                         &bytesReturned, NULL)) {
         isSSD = !descriptor.IncursSeekPenalty;
     } else {
-        // 方案 2: 若方案 1 失败，查询转速信息 (Nominal Media Rotation Rate)
-        STORAGE_PROPERTY_QUERY queryRotate;
-        queryRotate.PropertyId = StorageDeviceDeviceProperty;
-        queryRotate.QueryType = PropertyStandardQuery;
-
-        // 实际应用中可能需要更复杂的结构，此处作为退化逻辑，默认对于无法探测的路径保守处理
+        // 方案 2: 若方案 1 失败，此处作为退化逻辑，默认对于无法探测的路径保守处理
+        // 2026-06-xx 物理修正：移除未定义的 StorageDeviceDeviceProperty
         isSSD = false;
     }
 
