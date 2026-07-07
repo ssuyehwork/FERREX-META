@@ -272,16 +272,22 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         QList<int> rows = m_pendingRows.values();
         std::sort(rows.begin(), rows.end());
         m_pendingRows.clear();
-        int startRow = rows[0];
-        int endRow = rows[0];
-        for (int i = 1; i < rows.size(); ++i) {
-            if (rows[i] == endRow + 1) endRow = rows[i];
-            else {
-                emit dataChanged(index(startRow, 0), index(endRow, 3));
-                startRow = rows[i]; endRow = rows[i];
+
+        for (int i = 0; i < rows.size(); ) {
+            int startRow = rows[i];
+            int endRow = rows[i];
+            int j = i + 1;
+            while (j < rows.size() && rows[j] == endRow + 1) {
+                endRow = rows[j];
+                j++;
             }
+
+            // 2026-06-xx 物理加固：在发射 dataChanged 前强制核对行号边界，防止越界触发断言
+            if (startRow >= 0 && endRow < m_displayCount) {
+                emit dataChanged(index(startRow, 0), index(endRow, 3));
+            }
+            i = j;
         }
-        emit dataChanged(index(startRow, 0), index(endRow, 3));
     });
 
     // 2026-06-xx 架构重构：切换至 Controller 驱动的原子快照更新 (使用信号携带的快照，绝对安全)
@@ -474,6 +480,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
         m_currentResultSet = newSet;
         m_displayCount = (std::min<int>)(newSize, 100); 
         m_requestedThumbs.clear();
+        m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
         endResetModel();
         return;
     }
@@ -488,9 +495,11 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
         m_currentResultSet = newSet;
         m_displayCount = newSize;
         endRemoveRows();
-    } else {
+    } else if (newSize > 0) {
         m_currentResultSet = newSet;
         emit dataChanged(index(0, 0), index(newSize - 1, 3));
+    } else {
+        m_currentResultSet = newSet;
     }
 }
 
