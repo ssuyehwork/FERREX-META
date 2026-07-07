@@ -50,6 +50,8 @@
 #include <QJsonArray>
 #include <windows.h>
 #include <shellapi.h>
+#include <winioctl.h>
+#include <ntddstor.h>
 
 #include "ScanController.h"
 #include "JustifiedView.h"
@@ -157,12 +159,79 @@ void ScanConfig::save() {
     }
 }
 
+/**
+ * @brief 探测是否为固态硬盘 (SSD)
+ * 2026-06-xx 任务三：物理寻道特征探测。
+ * 理由：HDD 对多线程随机 I/O 极其敏感，磁头剧烈寻道会导致性能雪崩；SSD 则可维持较高并发。
+ */
+static bool isSolidStateDrive(const QString& drivePath) {
+    QString path = drivePath;
+    if (!path.endsWith("\\")) path += "\\";
+    QString volumePath = "\\\\.\\" + path.left(2); // 格式如 \\.\C:
+
+    HANDLE hDevice = CreateFileW(reinterpret_cast<const wchar_t*>(volumePath.utf16()),
+                                 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 NULL, OPEN_EXISTING, 0, NULL);
+    if (hDevice == INVALID_HANDLE_VALUE) return false;
+
+    // 方案 1: 查询存储设备寻道罚分属性 (Seek Penalty)
+    STORAGE_PROPERTY_QUERY query;
+    query.PropertyId = StorageDeviceSeekPenaltyProperty;
+    query.QueryType = PropertyStandardQuery;
+
+    DEVICE_SEEK_PENALTY_DESCRIPTOR descriptor;
+    DWORD bytesReturned;
+    bool isSSD = false;
+
+    if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY,
+                        &query, sizeof(query),
+                        &descriptor, sizeof(descriptor),
+                        &bytesReturned, NULL)) {
+        isSSD = !descriptor.IncursSeekPenalty;
+    } else {
+        // 方案 2: 若方案 1 失败，此处作为退化逻辑，默认对于无法探测的路径保守处理
+        // 2026-06-xx 物理修正：移除未定义的 StorageDeviceDeviceProperty
+        isSSD = false; 
+    }
+
+    CloseHandle(hDevice);
+    return isSSD;
+}
+
 // --- ScanTableModel Implementation ---
 
 ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent) 
     : QAbstractTableModel(parent), m_controller(controller) 
 {
     m_currentResultSet = std::make_shared<ResultSet>();
+
+    // 2026-06-xx 任务二：建立物理隔离的缩略图任务池，杜绝全局线程池饥饿
+    m_thumbPool = new QThreadPool(this);
+    m_thumbPool->setExpiryTimeout(-1); // 缩略图任务生命周期内保持线程活跃
+    
+    // 2026-06-xx 任务三：磁盘类型感知的线程调度
+    // 默认保守策略：若无法获取配置或存在 HDD，则使用串行模式 (1) 保护寻道性能
+    bool allSSD = true;
+    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent);
+    if (dlg) {
+        for (const QString& d : dlg->m_config.activeDrives) {
+            if (!isSolidStateDrive(d)) {
+                allSSD = false;
+                break;
+            }
+        }
+    } else {
+        allSSD = false; // 未知环境下保守处理
+    }
+
+    if (allSSD) {
+        // SSD 模式：开启并行流水线 (4-8 线程)
+        m_thumbPool->setMaxThreadCount(std::clamp((int)std::thread::hardware_concurrency(), 4, 8));
+    } else {
+        // HDD 模式：强制串行 I/O，防止磁头雪崩
+        m_thumbPool->setMaxThreadCount(1);
+    }
+
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
@@ -220,7 +289,11 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         updateResults(newSet);
     });
 }
-ScanTableModel::~ScanTableModel() {}
+ScanTableModel::~ScanTableModel() {
+    if (m_thumbPool) {
+        m_thumbPool->waitForDone();
+    }
+}
 
 int ScanTableModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) return 0;
@@ -446,8 +519,9 @@ void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
     auto currentTasks = std::move(m_thumbTaskQueue);
 
+    // 2026-06-xx 任务二：重定向至隔离线程池，杜绝 UI 饥饿
     // 2026-06-xx 极致性能流水线：后台并行生成 + 批量结果归并
-    (void)QtConcurrent::run([this, currentTasks]() {
+    (void)QtConcurrent::run(m_thumbPool, [this, currentTasks]() {
         struct ThumbResult { uint64_t key; QString cacheKey; QImage img; double ar; };
         QVector<ThumbResult> results(currentTasks.size());
 
@@ -456,6 +530,8 @@ void ScanTableModel::processThumbQueue() {
         std::iota(taskIndices.begin(), taskIndices.end(), 0);
 
         QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [this, &currentTasks, &results](int i) {
+            // 2026-06-xx 任务一：在工作线程内显式管理 COM 生命周期，解决编组延迟
+            ScopedComInit comGuard;
             const auto& t = currentTasks[i];
             auto& reader = MftReader::instance();
             
