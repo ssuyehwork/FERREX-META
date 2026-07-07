@@ -293,6 +293,11 @@ public:
      * 2026-06-xx 架构重构：彻底弃用外部工具链 (ImageMagick/Ghostscript)，全面转向原生 Shell 引擎
      */
     static QVector<QPair<QColor, float>> extractPalette(const QString& targetFile) {
+        #ifdef Q_OS_WIN
+        static QThreadStorage<ScopedComInit> s_comInit;
+        if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
+        #endif
+
         // 优先从系统缩略图引擎获取数据，支持 PSD, AI, EPS, PDF 等专业格式 (前提是系统有预览插件)
         QImage targetImg = getShellThumbnail(targetFile, 128);
 
