@@ -257,6 +257,66 @@ void MftReader::buildIndex(const QStringList& drives) {
     for (auto* w : newWatchers) w->start();
 }
 
+void MftReader::unloadDrive(const QString& drive) {
+    std::wstring vol = drive.toStdWString();
+    if (vol.size() > 1 && (vol.back() == L'\\' || vol.back() == L'/')) vol.pop_back();
+
+    QWriteLocker lock(&m_dataLock);
+    
+    // 1. 查找驱动器索引
+    int dIdx = -1;
+    for (size_t i = 0; i < m_drive_list.size(); ++i) {
+        if (_wcsicmp(m_drive_list[i].c_str(), vol.c_str()) == 0) {
+            dIdx = (int)i;
+            break;
+        }
+    }
+    if (dIdx == -1) return;
+
+    // 2. 停止并移除 USN 监听器
+    auto itW = std::remove_if(m_watchers.begin(), m_watchers.end(), [&](UsnWatcher* w) {
+        if (_wcsicmp(w->volume().c_str(), vol.c_str()) == 0) {
+            w->stop();
+            w->wait();
+            delete w;
+            return true;
+        }
+        return false;
+    });
+    m_watchers.erase(itW, m_watchers.end());
+
+    // 3. 标记所有属于该驱动器的条目为死亡 (FRN = 0)
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if ((m_parent_frns[i] >> 48) == static_cast<size_t>(dIdx)) {
+            m_frns[i] = 0;
+            m_dead_count++;
+        }
+    }
+
+    // 4. 清除路径缓存中属于该盘的项
+    {
+        std::lock_guard<std::mutex> pLock(m_pathCacheMutex);
+        auto itPath = m_path_cache.begin();
+        while (itPath != m_path_cache.end()) {
+            if ((itPath->first >> 48) == static_cast<uint64_t>(dIdx)) {
+                itPath = m_path_cache.erase(itPath);
+            } else {
+                ++itPath;
+            }
+        }
+    }
+
+    // 5. 更新驱动器激活掩码
+    m_drive_active_mask.fetch_and(~(1 << dIdx));
+
+    // 6. 执行物理回收与碎片整理
+    compact();
+    rebuildFrnToIndexMap();
+    buildSortedIndices();
+    
+    qDebug() << "[MftReader] 已成功卸载驱动器并回收内存:" << drive;
+}
+
 bool MftReader::loadFromCache() {
     std::filesystem::path cacheDir = "FERREX/cache";
     if (!std::filesystem::exists(cacheDir)) return false;

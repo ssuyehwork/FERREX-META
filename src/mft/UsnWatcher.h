@@ -38,6 +38,7 @@ public:
     virtual ~UsnWatcher();
 
     void stop();
+    const std::wstring& volume() const { return m_volume; }
 
 protected:
     void run() override;

@@ -139,7 +139,6 @@ private slots:
     void onItemDoubleClicked(const QModelIndex& index);
     void onSelectionChanged();
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
-    void onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
 
 protected:

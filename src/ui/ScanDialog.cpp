@@ -1424,27 +1424,31 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
         m_config.save();
         updateDriveButtonStyles();
     });
-    
-    menu.addAction("忽略此驱动器", [this, drive]() {
-        m_config.ignoredDrives.insert(drive);
-        m_config.activeDrives.remove(drive);
-        m_config.save();
-        refreshDriveList(true); // 重新生成按钮
-        onStartScan();
-    });
-    
-    menu.exec(QCursor::pos());
-}
 
-void ScanDialog::onIgnoredDriveContextMenu(const QString& drive, const QPoint& pos) {
-    Q_UNUSED(pos);
-    QMenu menu(this);
-    menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
-    menu.addAction("恢复驱动器", [this, drive]() {
-        m_config.ignoredDrives.remove(drive);
-        m_config.save();
-        refreshDriveList(true);
-    });
+    // 2026-06-xx 任务一：移除冗余的“忽略此驱动器”功能
+    // 2026-06-xx 任务二：新增“加载数据”和“卸载数据”选项，支持单盘符按需管理内存
+    bool isLoaded = MftReader::instance().isDriveIndexed(drive);
+    if (!isLoaded) {
+        menu.addAction("加载数据", [this, drive]() {
+            // 确保驱动器处于激活状态
+            m_config.activeDrives.insert(drive);
+            // 通过 startScan 流程触发对目标盘符的扫描（它会自动过滤已加载盘符）
+            onStartScan();
+        });
+    } else {
+        menu.addAction("卸载数据", [this, drive]() {
+            // 物理卸载：停止 USN 监听并从内存池中抹除该盘数据
+            showDriveLoading();
+            (void)QtConcurrent::run([this, drive]() {
+                MftReader::instance().unloadDrive(drive);
+                QMetaObject::invokeMethod(this, [this]() {
+                    refreshDriveList(false); // 更新 UI 状态
+                    onTriggerSearch();       // 刷新结果列表
+                });
+            });
+        });
+    }
+    
     menu.exec(QCursor::pos());
 }
 
