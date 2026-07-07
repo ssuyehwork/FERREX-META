@@ -1232,11 +1232,11 @@ void ScanDialog::setupUi() {
         Q_UNUSED(count);
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
-        updateStatusBar();
+        updateStatus("就绪");
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
-        updateStatusBar();
+        updateStatus("就绪");
     });
 
     showDriveLoading();
@@ -1643,7 +1643,7 @@ void ScanDialog::onItemDoubleClicked(const QModelIndex& index) {
 }
 
 void ScanDialog::onSelectionChanged() {
-    updateStatusBar();
+    updateStatus("就绪");
 }
 
 
@@ -1734,7 +1734,8 @@ void ScanDialog::onFilterOptionChanged() {
 void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalCount) {
     Q_UNUSED(text);
     if (m_titleStatusLabel) {
-        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().totalCount();
+        // 2026-07-07 物理修正：标题栏仅展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
+        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().activeCount();
         m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(total)));
         m_titleStatusLabel->setStyleSheet(scanning ? "color: #FF8C00; font-size: 10px; font-weight: bold;" : "color: #46B478; font-size: 10px; font-weight: bold;");
     }
@@ -1774,8 +1775,11 @@ void ScanDialog::updateStatusBar() {
         m_csvBtn->hide();
     }
     
-    double memoryMb = (MftReader::instance().totalCount() * 184.0) / 1024.0 / 1024.0;
-    m_statLabelMemory->setText(QString("数据占用 %1 MB").arg(memoryMb, 0, 'f', 1));
+    int64_t dbTotal = MftReader::instance().totalCount();
+    double memoryMb = (dbTotal * 184.0) / 1024.0 / 1024.0;
+    // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
+    m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
+
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
