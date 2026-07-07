@@ -1226,6 +1226,14 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 } else {
                     info.isNtfs = false;
                 }
+
+                // 2026-06-xx 极致性能对标与 C 盘加固：
+                // 只要探测到 C 盘，无论其文件系统报告如何，强制视为 NTFS 以允许进入 MFT 扫描引擎。
+                // 理由：系统盘可能因为权限竞争导致 fsName 获取为空，但物理上必然存在 MFT。
+                if (letter == "C:") {
+                    info.isNtfs = true;
+                }
+                
                 drives.append(info);
             }
         }
@@ -1240,8 +1248,8 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                 weakThis->m_config.ignoredDrives.remove("C:");
             }
 
-            // 2. 策略调整：确保 C 盘始终被激活（除非被显式忽略）。
-            // 对于其它盘符，如果是首次运行（activeDrives为空）则全部激活。
+            // 2. 策略调整：确保 C 盘始终被激活。
+            // 2026-06-xx 物理加固：撤销对 C 盘 active 状态的任何前提条件（只要探测到就激活）。
             if (weakThis->m_config.activeDrives.isEmpty()) {
                 for (const auto& info : drives) {
                     if (info.hasMedia && info.isNtfs) {
@@ -1249,11 +1257,11 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     }
                 }
             } else {
-                // 核心修复：如果 C 盘被探测到且未被忽略，也未在激活列表，则强制激活。
+                // 核心修复：如果 C 盘被探测到，且未在激活列表，则强制激活。
                 // 理由：本应用专为 C 盘设计，C 盘数据不可缺失。
-                if (!weakThis->m_config.ignoredDrives.contains("C:") && !weakThis->m_config.activeDrives.contains("C:")) {
+                if (!weakThis->m_config.activeDrives.contains("C:")) {
                     for (const auto& info : drives) {
-                        if (info.letter == "C:" && info.isNtfs) {
+                        if (info.letter == "C:") {
                             weakThis->m_config.activeDrives.insert("C:");
                             break;
                         }

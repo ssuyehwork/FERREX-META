@@ -119,10 +119,11 @@ private:
         uint64_t size; // 2026-05-14 补全：文件大小字段
         uint32_t attributes;
         int64_t  modifyTime;
-        std::string nameUtf8;
+        uint32_t nameOffset; // 2026-06-xx 极致优化：使用偏移量替代 std::string，实现零分配扫描
     };
     struct DriveResult {
         std::vector<RawEntry> entries;
+        std::vector<uint8_t>  string_pool; // 2026-06-xx 极致优化：本地字符串池
         uint64_t nextUsn;
     };
 
@@ -153,6 +154,7 @@ private:
     std::atomic<uint64_t>     m_generation{0};        // 数据代数，用于检测 compact
 
     std::unordered_map<uint64_t, uint32_t>              m_frn_to_idx;
+    std::unordered_map<size_t, bool>                    m_drive_ever_saved; // 2026-06-xx 按盘符独立维护全量保存状态
 
     mutable std::unordered_map<uint64_t, std::wstring>  m_path_cache;
     mutable std::mutex m_pathCacheMutex;
