@@ -1232,11 +1232,11 @@ void ScanDialog::setupUi() {
         Q_UNUSED(count);
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
-        updateStatusBar();
+        updateStatus("就绪");
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
-        updateStatusBar();
+        updateStatus("就绪");
     });
 
     showDriveLoading();
@@ -1643,7 +1643,7 @@ void ScanDialog::onItemDoubleClicked(const QModelIndex& index) {
 }
 
 void ScanDialog::onSelectionChanged() {
-    updateStatusBar();
+    updateStatus("就绪");
 }
 
 
@@ -1780,8 +1780,6 @@ void ScanDialog::updateStatusBar() {
     // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
 
-    // 同步更新标题栏计数
-    updateStatus("就绪");
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
