@@ -121,6 +121,8 @@ void MftReader::clearInternal() {
     m_next_usns.clear();
     m_isInitialized = false;
     m_dirty_count = 0;
+    m_dead_count = 0;
+    m_wasted_string_bytes = 0;
 }
 
 void MftReader::clear() {
@@ -340,6 +342,9 @@ bool MftReader::loadFromCache() {
     // 2026-06-xx 物理补齐：缓存加载后必须执行重映射，以补全 m_parent_indices 链条
     rebuildFrnToIndexMap(); 
 
+    // 2026-07-07 物理修复：物理回收重复项空间 (Analysis_Modification_Plan-154.md)
+    if (m_dead_count > 0) compact();
+
     buildSortedIndices();
 
     m_isInitialized = true;
@@ -419,6 +424,8 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     }
 
     rebuildFrnToIndexMap();
+    // 2026-07-07 物理修复：单盘加载后的去重收缩 (Analysis_Modification_Plan-154.md)
+    if (m_dead_count > 0) compact();
     buildSortedIndices();
     m_isInitialized = true;
 
@@ -698,7 +705,8 @@ bool MftReader::isMetadataFetched(int index) const {
 
 int MftReader::totalCount() const {
     QReadLocker lock(&m_dataLock);
-    return (int)m_frns.size();
+    // 2026-07-07 物理修正：返回活跃条目的绝对总数 (Analysis_Modification_Plan-154.md)
+    return (int)m_frn_to_idx.size();
 }
 
 int MftReader::getIndexByKey(uint64_t compositeKey) const {
@@ -1467,6 +1475,15 @@ void MftReader::rebuildFrnToIndexMap() {
         if (m_frns[i] != 0) {
             size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
             uint64_t key = makeKey(dIdx, m_frns[i]);
+
+            // 2026-07-07 物理修复：处理增量缓存导致的重复项 (Analysis_Modification_Plan-154.md)
+            auto it = m_frn_to_idx.find(key);
+            if (it != m_frn_to_idx.end()) {
+                // 如果已存在，标记旧项为死亡（因为遍历是顺序的，新项覆盖旧项）
+                m_frns[it->second] = 0;
+                m_dead_count++;
+            }
+
             m_frn_to_idx[key] = (uint32_t)i;
         }
     }
