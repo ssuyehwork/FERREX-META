@@ -175,6 +175,12 @@ bool ScchCache::appendEntries(const std::string& path_base, const std::vector<Sc
     std::string bin_path = path_base + ".bin";
     std::string idx_path = path_base + ".idx";
 
+    // 2026-06-xx 任务一修复：防御性逻辑。如果 appendEntries 被调用时发现目标 .bin 不存在，
+    // 自动改为创建新文件（执行 saveAll 逻辑），防止因为文件缺失导致持久化静默失败。
+    if (!std::filesystem::exists(bin_path)) {
+        return saveAll(path_base, records, last_usn);
+    }
+
     HANDLE hBin = CreateFileA(bin_path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hBin == INVALID_HANDLE_VALUE) return false;
 

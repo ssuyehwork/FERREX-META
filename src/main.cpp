@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QDebug>
+#include <QMutex>
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
@@ -26,9 +27,25 @@
  * @brief 自定义日志处理程序，将 qDebug 消息重定向至本地 .log 文件
  * 2026-03-xx 按照用户要求：在手动运行 .exe 时，通过日志文件排查初始化挂起或信号丢失问题。
  */
+static qint64 g_currentLogSize = -1; // 内存计数器，避免频繁 stat 系统调用
+static QMutex g_logMutex;            // 2026-06-xx 物理加固：保护日志写入与轮转逻辑的线程安全
+
 void customMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
     Q_UNUSED(context); 
-    QFile logFile("FERREX_debug.log");
+    QMutexLocker locker(&g_logMutex);
+
+    const QString logFileName = "FERREX_debug.log";
+    const qint64 maxLogSize = 10 * 1024 * 1024; // 10MB 轮转阈值
+    const int maxHistoryFiles = 3;           // 保留 3 个历史备份
+
+    // 1. 初始化计数器
+    if (g_currentLogSize < 0) {
+        QFile f(logFileName);
+        g_currentLogSize = f.exists() ? f.size() : 0;
+    }
+
+    // 2. 写入日志
+    QFile logFile(logFileName);
     if (logFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         QTextStream textStream(&logFile);
         QString timeStr = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss.zzz");
@@ -40,8 +57,29 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
             case QtCriticalMsg: level = "CRIT ";    break;
             case QtFatalMsg:    level = "FATAL";    break;
         }
-        textStream << QString("[%1][%2] %3").arg(timeStr, level, msg) << Qt::endl;
+        QString line = QString("[%1][%2] %3\n").arg(timeStr, level, msg);
+        textStream << line;
+        textStream.flush();
+        g_currentLogSize += line.toUtf8().size(); // 累加内存计数
         logFile.close();
+
+        // 3. 检查并执行轮转 (发生在写入完成后)
+        if (g_currentLogSize > maxLogSize) {
+            // 清理旧文件并重命名链
+            for (int i = maxHistoryFiles; i >= 1; --i) {
+                QString oldName = logFileName + QString(".%1").arg(i);
+                QString newName = logFileName + QString(".%1").arg(i + 1);
+                if (i == maxHistoryFiles) {
+                    QFile::remove(oldName);
+                } else {
+                    if (QFile::exists(oldName)) QFile::rename(oldName, newName);
+                }
+            }
+            // 当前文件重命名为 .1
+            if (QFile::rename(logFileName, logFileName + ".1")) {
+                g_currentLogSize = 0;
+            }
+        }
     }
 }
 
