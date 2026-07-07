@@ -223,7 +223,35 @@ void MftReader::buildIndex(const QStringList& drives) {
     QtConcurrent::blockingMap(taskIndices.begin(), taskIndices.end(), [&](int i) {
         if (m_isStopping.load()) return;
         scannedResults[i].volume = toScan[i];
-        scannedResults[i].success = loadMftDirect(toScan[i], scannedResults[i].res);
+
+        // 2026-06-xx 任务 4.1：实施“快照优先”策略。
+        // 理由：按需加载时，若存在缓存则应秒级进入，而非强制触发物理扫描。
+        QString letter = QString::fromWStdString(toScan[i]).left(1).toUpper();
+        std::string path_base = "FERREX/cache/" + letter.toStdString();
+
+        std::vector<ScchDataPackage> records;
+        uint64_t lastUsn = 0;
+        if (ScchCache::load(path_base, records, lastUsn) == ScchResult::Ok) {
+            // 将缓存包转换为 DriveResult
+            scannedResults[i].res.nextUsn = lastUsn;
+            scannedResults[i].res.string_pool.reserve(records.size() * 32);
+            for (const auto& pkg : records) {
+                MftReader::RawEntry e;
+                e.frn = pkg.frn;
+                e.parentFrn = pkg.parent_frn;
+                e.size = pkg.size;
+                e.attributes = pkg.attributes;
+                e.modifyTime = pkg.timestamp;
+                e.nameOffset = (uint32_t)scannedResults[i].res.string_pool.size();
+                scannedResults[i].res.string_pool.insert(scannedResults[i].res.string_pool.end(), pkg.name.begin(), pkg.name.end());
+                scannedResults[i].res.string_pool.push_back('\0');
+                scannedResults[i].res.entries.push_back(e);
+            }
+            scannedResults[i].success = true;
+            qDebug() << "[MftReader] BuildIndex: 已通过缓存加速加载盘符:" << letter;
+        } else {
+            scannedResults[i].success = loadMftDirect(toScan[i], scannedResults[i].res);
+        }
     });
 
     if (m_isStopping.load()) return;
@@ -257,6 +285,81 @@ void MftReader::buildIndex(const QStringList& drives) {
     for (auto* w : newWatchers) w->start();
 }
 
+bool MftReader::loadDrive(const QString& drive) {
+    if (isDriveIndexed(drive)) return true;
+
+    QString letter = drive.left(1).toUpper();
+    std::wstring driveW = letter.toStdWString() + L":";
+    std::string path_base = "FERREX/cache/" + letter.toStdString();
+
+    // 1. 尝试从快照 (Cache) 加载
+    std::vector<ScchDataPackage> records;
+    uint64_t lastUsn = 0;
+    if (ScchCache::load(path_base, records, lastUsn) == ScchResult::Ok) {
+        QWriteLocker lock(&m_dataLock);
+        size_t dIdx = m_drive_list.size();
+        m_drive_list.push_back(driveW);
+        if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
+        m_next_usns[driveW] = lastUsn;
+
+        for (const auto& pkg : records) {
+            uint32_t idx = (uint32_t)m_frns.size();
+            m_frn_to_idx[makeKey(dIdx, pkg.frn)] = idx;
+            m_frns.push_back(pkg.frn);
+            m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | (pkg.parent_frn & 0x0000FFFFFFFFFFFFull));
+            m_parent_indices.push_back(0xFFFFFFFF);
+            m_sizes.push_back(pkg.size);
+            m_timestamps.push_back(pkg.timestamp);
+            m_attributes.push_back(pkg.attributes);
+            m_metadata_fetched.push_back(pkg.metadata_fetched);
+            m_name_offsets.push_back((uint32_t)m_string_pool.size());
+            m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
+            m_string_pool.push_back('\0');
+
+            std::string extStr;
+            splitNameAndExt(pkg.name, extStr);
+            m_ext_offsets.push_back((uint32_t)m_string_pool.size());
+            m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
+            m_string_pool.push_back('\0');
+        }
+
+        rebuildFrnToIndexMap();
+        buildSortedIndices();
+
+        // 启动 UsnWatcher 追平
+        auto* w = new UsnWatcher(driveW, lastUsn, nullptr);
+        m_watchers.push_back(w);
+        w->start();
+
+        qDebug() << "[MftReader] 已从快照成功按需加载驱动器:" << drive;
+        return true;
+    }
+
+    // 2. 无快照则执行全量扫描
+    MftReader::DriveResult res;
+    if (loadMftDirect(driveW, res)) {
+        QWriteLocker lock(&m_dataLock);
+        size_t dIdx = m_drive_list.size();
+        m_drive_list.push_back(driveW);
+        if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
+        m_next_usns[driveW] = res.nextUsn;
+        mergeDriveResult(driveW, res, dIdx);
+        saveDriveToCacheUnlocked(dIdx);
+
+        rebuildFrnToIndexMap();
+        buildSortedIndices();
+
+        auto* w = new UsnWatcher(driveW, res.nextUsn, nullptr);
+        m_watchers.push_back(w);
+        w->start();
+
+        qDebug() << "[MftReader] 快照缺失，已执行物理扫描并按需加载:" << drive;
+        return true;
+    }
+
+    return false;
+}
+
 void MftReader::unloadDrive(const QString& drive) {
     std::wstring vol = drive.toStdWString();
     if (vol.size() > 1 && (vol.back() == L'\\' || vol.back() == L'/')) vol.pop_back();
@@ -274,19 +377,18 @@ void MftReader::unloadDrive(const QString& drive) {
     if (dIdx == -1) return;
 
     // 2. 停止并移除 USN 监听器
-    auto itW = std::remove_if(m_watchers.begin(), m_watchers.end(), [&](UsnWatcher* w) {
-        if (_wcsicmp(w->volume().c_str(), vol.c_str()) == 0) {
-            w->stop();
-            w->wait();
-            delete w;
-            return true;
-        }
-        return false;
+    // 注意：持有写锁时调用 wait() 必须极其小心。由于 UsnWatcher 会回调 MftReader，
+    // 我们必须确保没有死锁。方案建议通过 QtConcurrent 或在锁外停止。
+    UsnWatcher* targetWatcher = nullptr;
+    auto itW = std::find_if(m_watchers.begin(), m_watchers.end(), [&](UsnWatcher* w) {
+        return _wcsicmp(w->volume().c_str(), vol.c_str()) == 0;
     });
-    m_watchers.erase(itW, m_watchers.end());
+    if (itW != m_watchers.end()) {
+        targetWatcher = *itW;
+        m_watchers.erase(itW);
+    }
 
-    // 3. 标记所有属于该驱动器的条目为死亡 (FRN = 0) 并从哈希表中移除
-    // 2026-06-xx 任务二强化：物理清理哈希表项，防止内存虚高
+    // 3. 标记条目作废
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if ((m_parent_frns[i] >> 48) == static_cast<size_t>(dIdx)) {
             if (m_frns[i] != 0) {
@@ -297,7 +399,7 @@ void MftReader::unloadDrive(const QString& drive) {
         }
     }
 
-    // 4. 清除路径缓存中属于该盘的项
+    // 4. 清理路径缓存
     {
         std::lock_guard<std::mutex> pLock(m_pathCacheMutex);
         auto itPath = m_path_cache.begin();
@@ -310,18 +412,23 @@ void MftReader::unloadDrive(const QString& drive) {
         }
     }
 
-    // 5. 驱动器列表与掩码同步
-    // 将该盘符从列表中抹除（置为空字符串），保证 dIdx 的物理位置不偏移但逻辑失效
     m_drive_list[dIdx] = L"";
     m_drive_active_mask.fetch_and(~(1 << dIdx));
 
-    // 6. 执行物理回收与碎片整理
-    // compact() 会物理删除 m_frns 为 0 的项，并重新压紧字符串池
+    // 5. 物理回收 (重型操作)
     compact();
     rebuildFrnToIndexMap();
     buildSortedIndices();
 
-    qDebug() << "[MftReader] 已成功卸载驱动器并回收内存:" << drive;
+    lock.unlock(); // [LOCK RELEASE]
+
+    if (targetWatcher) {
+        targetWatcher->stop();
+        targetWatcher->wait();
+        delete targetWatcher;
+    }
+
+    qDebug() << "[MftReader] 驱动器物理卸载完成，内存已回收:" << drive;
 }
 
 bool MftReader::loadFromCache() {

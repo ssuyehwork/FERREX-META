@@ -814,8 +814,8 @@ ScanDialog::ScanDialog(QWidget* parent)
         }
         QPushButton[isActive="false"] {
             background: #111519; 
-            color: #7A8F9E; 
-            border: 1px solid #252E37; 
+            color: #555;
+            border: 1px solid #333;
             padding: 0 10px; 
             font-size: 12px;
             border-radius: 4px;
@@ -1404,35 +1404,53 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
     QMenu menu(this);
     menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
     
-    bool isDefault = m_config.defaultDrives.contains(drive);
-    menu.addAction(isDefault ? "取消默认选项" : "设为默认选项", [this, drive, isDefault]() {
-        if (isDefault) m_config.defaultDrives.remove(drive);
-        else m_config.defaultDrives.insert(drive);
-        m_config.save();
-        updateDriveButtonStyles();
-    });
-
-    // 2026-06-xx 任务一：移除冗余的“忽略此驱动器”功能
-    // 2026-06-xx 任务二：新增“加载数据”和“卸载数据”选项，支持单盘符按需管理内存
+    // 2026-06-xx 物理对标：按需加载状态检测
     bool isLoaded = MftReader::instance().isDriveIndexed(drive);
+    bool isDefault = m_config.defaultDrives.contains(drive);
+
+    // 2026-06-xx 任务 4.2：菜单动态化。未加载仅显示加载，已加载显示卸载与默认设置。
     if (!isLoaded) {
         menu.addAction("加载数据", [this, drive]() {
-            // 确保驱动器处于激活状态
             m_config.activeDrives.insert(drive);
-            // 通过 startScan 流程触发对目标盘符的扫描（它会自动过滤已加载盘符）
-            onStartScan();
+            // 2026-06-xx 极致架构：加载路径异步化
+            showDriveLoading();
+            (void)QtConcurrent::run([this, drive]() {
+                MftReader::instance().loadDrive(drive);
+                QMetaObject::invokeMethod(this, [this]() {
+                    updateDriveButtonStyles();
+                    updateStatus("就绪");
+                    onTriggerSearch();
+                });
+            });
         });
     } else {
         menu.addAction("卸载数据", [this, drive]() {
-            // 物理卸载：停止 USN 监听并从内存池中抹除该盘数据
+            // 2026-06-xx 任务三：物理卸载。C 盘作为核心卷，虽允许卸载但需 UI 逻辑层级警示
+            if (drive == "C:") {
+                if (QMessageBox::warning(this, "物理卸载警示", "正在从内存中物理移除 C 盘 MFT 索引。这将导致 C 盘搜索失效且回收元数据缓存。\n是否继续？", QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+                    return;
+                }
+            }
+
             showDriveLoading();
             (void)QtConcurrent::run([this, drive]() {
                 MftReader::instance().unloadDrive(drive);
-                QMetaObject::invokeMethod(this, [this]() {
-                    refreshDriveList(false); // 更新 UI 状态
-                    onTriggerSearch();       // 刷新结果列表
+                QMetaObject::invokeMethod(this, [this, drive]() {
+                    m_config.activeDrives.remove(drive);
+                    m_config.save();
+                    updateDriveButtonStyles();
+                    onTriggerSearch();
                 });
             });
+        });
+
+        menu.addSeparator();
+
+        menu.addAction(isDefault ? "取消默认选项" : "设为默认选项", [this, drive, isDefault]() {
+            if (isDefault) m_config.defaultDrives.remove(drive);
+            else m_config.defaultDrives.insert(drive);
+            m_config.save();
+            updateDriveButtonStyles();
         });
     }
 
