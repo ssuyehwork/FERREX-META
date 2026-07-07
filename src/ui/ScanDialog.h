@@ -154,6 +154,7 @@ private:
     void updateDriveButtonStyles();
     void updateStatus(const QString& text, bool scanning = false, int64_t totalCount = -1);
     void updateStatusBar();
+    void selectAllResults(); // 2026-07-07 物理修复：实现绕过视图布局状态的全量选择逻辑
     void handleMetadataShortcut(QKeyEvent* event);
     QString formatNumber(int64_t n);
     QString formatSize(int64_t bytes);

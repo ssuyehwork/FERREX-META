@@ -1075,7 +1075,7 @@ void ScanDialog::setupUi() {
     m_resultView->setModel(m_tableModel);
     m_resultView->setContextMenuPolicy(Qt::CustomContextMenu);
     
-    // 2026-05-14 视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
+    // 2026-05-14视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
     // 2026-06-xx 按照用户要求：设置左侧 10px 间距，确保坐标校准，同时修正表头首列偏移
     m_resultView->setStyleSheet(
         "QTableView { "
@@ -1785,11 +1785,8 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_A && event->modifiers() == Qt::ControlModifier) { 
-        auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
-
-        // 2026-07-07 物理修复：在全选前强制加载所有虚拟化行，确保 selectAll() 逻辑上覆盖全部结果
-        m_tableModel->forceFetchAll();
-        view->selectAll(); 
+        // 2026-07-07 物理修复：调用全量选择逻辑，杜绝虚拟化加载导致的“漏选”
+        selectAllResults();
         return; 
     }
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
@@ -1804,6 +1801,27 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
     }
     handleMetadataShortcut(event);
     FramelessDialog::keyPressEvent(event);
+}
+
+void ScanDialog::selectAllResults() {
+    // 2026-07-07 核心修复：不依赖 QAbstractItemView::selectAll()，因为它依赖视图内部几何状态（可能因虚拟化而未就绪）
+    m_tableModel->forceFetchAll();
+    int total = m_tableModel->rowCount();
+    if (total <= 0) return;
+
+    auto view = (m_viewStack->currentIndex() == 0)
+        ? static_cast<QAbstractItemView*>(m_resultView)
+        : static_cast<QAbstractItemView*>(m_iconView);
+
+    // 直接构建覆盖全量行的 QItemSelection，绕过视图布局依赖
+    QItemSelection selection(
+        m_tableModel->index(0, 0),
+        m_tableModel->index(total - 1, m_tableModel->columnCount() - 1)
+    );
+    view->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+
+    // 手动触发状态栏更新，因为同步调用可能错过 selectionChanged 信号（取决于具体实现）
+    updateStatusBar();
 }
 
 // 2026-05-16 快捷键核心处理逻辑：支持评分、置顶、标签等深度管理快捷键
