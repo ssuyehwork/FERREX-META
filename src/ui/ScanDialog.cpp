@@ -487,6 +487,15 @@ void ScanTableModel::setVisibleRange(int top, int bottom) {
     m_metadataTimer->start();
 }
 
+void ScanTableModel::forceFetchAll() {
+    int total = (int)m_currentResultSet->keys.size();
+    if (m_displayCount >= total) return;
+
+    beginInsertRows(QModelIndex(), m_displayCount, total - 1);
+    m_displayCount = total;
+    endInsertRows();
+}
+
 void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
 
@@ -1777,6 +1786,9 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
     }
     if (event->key() == Qt::Key_A && event->modifiers() == Qt::ControlModifier) { 
         auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+
+        // 2026-07-07 物理修复：在全选前强制加载所有虚拟化行，确保 selectAll() 逻辑上覆盖全部结果
+        m_tableModel->forceFetchAll();
         view->selectAll(); 
         return; 
     }
