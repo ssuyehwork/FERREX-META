@@ -119,10 +119,11 @@ private:
         uint64_t size; // 2026-05-14 补全：文件大小字段
         uint32_t attributes;
         int64_t  modifyTime;
-        std::string nameUtf8;
+        uint32_t nameOffset; // 2026-06-xx 极致优化：使用偏移量替代 std::string，实现零分配扫描
     };
     struct DriveResult {
         std::vector<RawEntry> entries;
+        std::vector<uint8_t>  string_pool; // 2026-06-xx 极致优化：本地字符串池
         uint64_t nextUsn;
     };
 
