@@ -87,7 +87,8 @@ public:
     uint32_t getAttributes(int index) const;
     uint64_t getFrn(int index) const;
     bool isDirectory(int index) const;
-    int totalCount() const;
+    int totalCount() const;            // 代表内存中加载的所有条目总数（用于内存计算）
+    int activeCount() const;           // 新增：仅返回当前处于激活（勾选）状态的盘符的文件总数
     QString getFullPath(int index) const;
     void requestMetadata(int index);
     bool isMetadataFetched(int index) const;

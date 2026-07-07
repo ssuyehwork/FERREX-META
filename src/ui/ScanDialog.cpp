@@ -1734,10 +1734,9 @@ void ScanDialog::onFilterOptionChanged() {
 void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalCount) {
     Q_UNUSED(text);
     if (m_titleStatusLabel) {
-        // 2026-07-07 物理修正：标题栏计数逻辑对标匹配结果数而非数据库总数 (Analysis_Modification_Plan-154.md)
-        // 理由：显示全量索引总数会让用户对当前的搜索上下文产生误解，对标匹配数更符合搜索直觉。
-        int64_t count = scanning ? ((totalCount >= 0) ? totalCount : MftReader::instance().totalCount()) : m_controller->resultCount();
-        m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(count)));
+        // 2026-07-07 物理修正：标题栏仅展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
+        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().activeCount();
+        m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(total)));
         m_titleStatusLabel->setStyleSheet(scanning ? "color: #FF8C00; font-size: 10px; font-weight: bold;" : "color: #46B478; font-size: 10px; font-weight: bold;");
     }
     
