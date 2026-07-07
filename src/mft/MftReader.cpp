@@ -226,7 +226,7 @@ void MftReader::buildIndex(const QStringList& drives) {
 
         // 2026-06-xx 任务 4.1：实施“快照优先”策略。
         // 理由：按需加载时，若存在缓存则应秒级进入，而非强制触发物理扫描。
-        QString letter = QString::fromWStdString(toScan[i]).left(1).toUpper();
+        QString letter = QString::fromStdWString(toScan[i]).left(1).toUpper();
         std::string path_base = "FERREX/cache/" + letter.toStdString();
 
         std::vector<ScchDataPackage> records;
