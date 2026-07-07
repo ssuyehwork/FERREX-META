@@ -925,8 +925,18 @@ ScanDialog::ScanDialog(QWidget* parent)
             // 兜底策略：如果没设默认盘，则尝试加载 C: 盘作为可用状态
             if (toLoad.isEmpty()) toLoad << "C:";
 
+            QStringList toScan;
             for (const QString& d : toLoad) {
                 if (MftReader::instance().loadDriveFromCache(d)) anyLoaded = true;
+                else toScan << d;
+            }
+
+            if (!toScan.isEmpty()) {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, toScan]() {
+                    if (weakThis) {
+                        for (const QString& d : toScan) weakThis->onStartScan(d);
+                    }
+                });
             }
 
             QMetaObject::invokeMethod(weakThis.data(), [weakThis, anyLoaded]() {
@@ -1418,22 +1428,33 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
     menu.addSeparator();
 
     bool isLoaded = MftReader::instance().isDriveIndexed(drive);
-    auto* loadAct = menu.addAction("加载数据", [this, drive]() {
+    auto* loadAct = menu.addAction("加载数据 (快速)", [this, drive]() {
         updateStatus(QString("正在加载 %1...").arg(drive), true);
         QPointer<ScanDialog> weakThis(this);
         (void)QtConcurrent::run([weakThis, drive]() {
-            MftReader::instance().loadDriveFromCache(drive);
-            QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
-                if (weakThis) {
-                    weakThis->updateStatus("就绪");
-                    weakThis->updateDriveButtonStyles();
-                    weakThis->onTriggerSearch();
-                    weakThis->triggerWarmup(); // 2026-07-07 物理修复：加载成功后触发预热
-                }
-            });
+            // 尝试加载缓存，若失败则自动触发扫描
+            if (!MftReader::instance().loadDriveFromCache(drive)) {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, drive]() {
+                    if (weakThis) weakThis->onStartScan(drive);
+                });
+            } else {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
+                    if (weakThis) {
+                        weakThis->updateStatus("就绪");
+                        weakThis->updateDriveButtonStyles();
+                        weakThis->onTriggerSearch();
+                        weakThis->triggerWarmup();
+                    }
+                });
+            }
         });
     });
     loadAct->setEnabled(!isLoaded);
+
+    auto* scanAct = menu.addAction("立即扫描并索引", [this, drive]() {
+        onStartScan(drive);
+    });
+    scanAct->setEnabled(!isLoaded);
 
     auto* unloadAct = menu.addAction("卸载数据", [this, drive]() {
         MftReader::instance().unloadDrive(drive);
@@ -1625,6 +1646,30 @@ void ScanDialog::onSelectionChanged() {
     updateStatusBar();
 }
 
+
+void ScanDialog::onStartScan(const QString& drive) {
+    QStringList selectedDrives;
+    if (drive.isEmpty()) {
+        for (const auto& d : m_config.activeDrives) selectedDrives << (d + QLatin1String("\\"));
+    } else {
+        selectedDrives << (drive + QLatin1String("\\"));
+    }
+
+    if (selectedDrives.isEmpty()) { onTriggerSearch(); return; }
+    updateStatus("正在扫描...", true);
+
+    QPointer<ScanDialog> weakThis(this);
+    (void)(QtConcurrent::run)([weakThis, selectedDrives]() {
+        MftReader::instance().buildIndex(selectedDrives);
+        QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
+            if (!weakThis) return;
+            weakThis->updateStatus("就绪");
+            weakThis->updateDriveButtonStyles();
+            weakThis->onTriggerSearch();
+            weakThis->triggerWarmup();
+        });
+    });
+}
 
 void ScanDialog::onTriggerSearch() {
     QString q = m_searchEdit->text().trimmed();

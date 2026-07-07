@@ -132,6 +132,7 @@ public:
     ~ScanDialog() override;
 
 private slots:
+    void onStartScan(const QString& drive = QString());
     void onTriggerSearch();
     void onFilterOptionChanged();
     void onCustomContextMenu(const QPoint& pos);
@@ -139,7 +140,6 @@ private slots:
     void onSelectionChanged();
     void onDriveContextMenu(const QString& drive, const QPoint& pos);
     void onRenameTriggered();
-    void onPasteTriggered();
     void onCopyTriggered(bool isCut = false);
 
 protected:
