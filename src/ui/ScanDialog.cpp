@@ -41,6 +41,7 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QPointer>
+#include <QThreadStorage>
 #include <QElapsedTimer>
 #include <QtConcurrent/QtConcurrent>
 #include <QDir>
@@ -1895,29 +1896,48 @@ void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
 }
 
 void ScanDialog::triggerWarmup() {
-    // 2026-07-07 极致体感：流水线异步预热 (Analysis_Modification_Plan-154.md)
+    // 极致体感：流水线异步预热
     QPointer<ScanDialog> weakThis(this);
-    (void)QtConcurrent::run([weakThis]() {
-        if (!weakThis) return;
-        // 1. 预热缩略图专用线程池
-        if (weakThis->m_tableModel && weakThis->m_tableModel->m_thumbPool) {
-            weakThis->m_tableModel->m_thumbPool->start([](){});
-        }
-        // 2. 预热 COM 环境与 Shell 引擎
-        int total = MftReader::instance().totalCount();
-        if (total > 0) {
-            // 寻找前 5000 个文件中的首个合法图形文件进行冷启动预热
-            for (int i = 0; i < std::min(total, 5000); ++i) {
-                if (!MftReader::instance().isDirectory(i)) {
-                    QString ext = MftReader::instance().getExtQString(i);
-                    if (UiHelper::isGraphicsFile(ext)) {
-                        UiHelper::getShellThumbnail(MftReader::instance().getFullPath(i), 64);
-                        break;
+
+    // 我们不使用全局 QtConcurrent，而是直接针对 m_thumbPool 进行定向精准预热
+    if (!weakThis || !weakThis->m_tableModel || !weakThis->m_tableModel->m_thumbPool) {
+        return;
+    }
+
+    auto* pool = weakThis->m_tableModel->m_thumbPool;
+    int maxThreads = pool->maxThreadCount(); // 获取当前线程池的最大并发线程数（SSD 模式下可能为 2~4，HDD 模式下为 1）
+
+    // 物理预热：让线程池里的每一个工作线程都至少执行一次初始化
+    for (int t = 0; t < maxThreads; ++t) {
+        pool->start([weakThis]() {
+            if (!weakThis) return;
+
+            // 1. 确保每个线程的 COM 环境基础（ScopedComInit）在这里完成首次物理初始化
+            static QThreadStorage<ScopedComInit> comStorage;
+            if (!comStorage.hasLocalData()) {
+                comStorage.setLocalData(ScopedComInit());
+            }
+
+            // 2. 提前让该线程触发一次 Shell 引擎调用
+            int total = MftReader::instance().totalCount();
+            if (total > 0) {
+                for (int i = 0; i < std::min(total, 5000); ++i) {
+                    if (!MftReader::instance().isDirectory(i)) {
+                        QString ext = MftReader::instance().getExtQString(i);
+                        // 仅寻找一个图片类型文件执行首次 getShellThumbnail 模拟调用
+                        if (UiHelper::isGraphicsFile(ext)) {
+                            QString dummyPath = MftReader::instance().getFullPath(i);
+                            if (!dummyPath.isEmpty()) {
+                                // 此时 Shell32、WIC、套间等一次性初始化成本在此工作线程内瞬间被消化掉
+                                UiHelper::getShellThumbnail(dummyPath, 64);
+                            }
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
