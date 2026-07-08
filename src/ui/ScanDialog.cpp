@@ -279,11 +279,25 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     auto& reader = MftReader::instance();
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
+
+    // 2026-06-xx 极致性能重构：行内计算缓存。
+    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
+    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
+    thread_local static int lastRow = -1;
+    thread_local static uint64_t lastKey = 0;
+    thread_local static QString cachedPath;
+
+    auto getPath = [&]() {
+        if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
+        lastRow = row; lastKey = key;
+        cachedPath = reader.getFullPath(actualIndex);
+        return cachedPath;
+    };
     
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
             case 0: return reader.getName(actualIndex);
-            case 1: return reader.getFullPath(actualIndex);
+            case 1: return getPath();
             case 2: {
                 if (reader.isDirectory(actualIndex)) return "-";
                 int64_t size = reader.getSize(actualIndex);
@@ -330,10 +344,15 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
-        // 2026-05-16 视觉同步：从 MetadataManager 获取颜色标记并适配主界面高端色值
-        // 2026-05-17 按照用户要求：使用 UiHelper::parseColorName 确保所有颜色（如黄色 #FECF0E）完全一致高雅
-        std::wstring path = reader.getFullPath(actualIndex).toStdWString();
-        auto meta = MetadataManager::instance().getMeta(path);
+        // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
+        auto it = m_currentResultSet->metadata.find(key);
+        if (it != m_currentResultSet->metadata.end()) {
+            return it->second.color;
+        }
+
+        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
+        QString qPath = getPath();
+        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         if (!meta.color.empty()) {
             QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
             if (tagC.isValid()) return tagC;
@@ -341,11 +360,10 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
-        // 2026-05-16 交互同步：显示备注与标签
-        // 2026-06-xx 物理修复：移除错误的 QLatin1String 引用，改用 UTF-8 字面量修复中文乱码
-        std::wstring path = reader.getFullPath(actualIndex).toStdWString();
-        auto meta = MetadataManager::instance().getMeta(path);
-        QString tip = QString::fromUtf8("路径: ") + QString::fromStdWString(path);
+        // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
+        QString qPath = getPath();
+        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
+        QString tip = QString::fromUtf8("路径: ") + qPath;
         if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
         if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;

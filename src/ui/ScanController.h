@@ -32,9 +32,14 @@ struct ScanFilterState {
 /**
  * @brief 稳定的结果集封装 (支持 O(1) 定位)
  */
+struct RenderMeta {
+    QColor color;
+};
+
 struct ResultSet {
     std::vector<uint64_t> keys;
     std::unordered_map<uint64_t, int> keyToPos;
+    std::unordered_map<uint64_t, RenderMeta> metadata;
 };
 
 class ScanController : public QObject {

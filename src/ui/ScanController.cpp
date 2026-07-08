@@ -1,5 +1,7 @@
 #include "ScanController.h"
 #include "../mft/MftReader.h"
+#include "../meta/MetadataManager.h"
+#include "UiHelper.h"
 #include <QtConcurrent/QtConcurrent>
 #include <QElapsedTimer>
 
@@ -116,6 +118,25 @@ void ScanController::performSearch() {
         auto rs = std::make_shared<ResultSet>();
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
+
+        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
+        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
+        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000));
+        for (size_t i = 0; i < decorCount; ++i) {
+            uint64_t k = rs->keys[i];
+            auto& reader = MftReader::instance();
+            int idx = reader.getIndexByKey(k);
+            if (idx == -1) continue;
+            QString path = reader.getFullPath(idx);
+            if (path.isEmpty()) continue;
+
+            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
+            if (!meta.color.empty()) {
+                QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
+                if (c.isValid()) rs->metadata[k] = {c};
+            }
+        }
+
         return rs;
     });
 
