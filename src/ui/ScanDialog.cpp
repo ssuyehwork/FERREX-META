@@ -279,11 +279,25 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     auto& reader = MftReader::instance();
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
+
+    // 2026-06-xx 极致性能重构：行内计算缓存。
+    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
+    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
+    thread_local static int lastRow = -1;
+    thread_local static uint64_t lastKey = 0;
+    thread_local static QString cachedPath;
+    
+    auto getPath = [&]() {
+        if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
+        lastRow = row; lastKey = key;
+        cachedPath = reader.getFullPath(actualIndex);
+        return cachedPath;
+    };
     
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
             case 0: return reader.getName(actualIndex);
-            case 1: return reader.getFullPath(actualIndex);
+            case 1: return getPath();
             case 2: {
                 if (reader.isDirectory(actualIndex)) return "-";
                 int64_t size = reader.getSize(actualIndex);
@@ -330,10 +344,15 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
-        // 2026-05-16 视觉同步：从 MetadataManager 获取颜色标记并适配主界面高端色值
-        // 2026-05-17 按照用户要求：使用 UiHelper::parseColorName 确保所有颜色（如黄色 #FECF0E）完全一致高雅
-        std::wstring path = reader.getFullPath(actualIndex).toStdWString();
-        auto meta = MetadataManager::instance().getMeta(path);
+        // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
+        auto it = m_currentResultSet->metadata.find(key);
+        if (it != m_currentResultSet->metadata.end()) {
+            return it->second.color;
+        }
+
+        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
+        QString qPath = getPath();
+        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         if (!meta.color.empty()) {
             QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
             if (tagC.isValid()) return tagC;
@@ -341,11 +360,10 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
-        // 2026-05-16 交互同步：显示备注与标签
-        // 2026-06-xx 物理修复：移除错误的 QLatin1String 引用，改用 UTF-8 字面量修复中文乱码
-        std::wstring path = reader.getFullPath(actualIndex).toStdWString();
-        auto meta = MetadataManager::instance().getMeta(path);
-        QString tip = QString::fromUtf8("路径: ") + QString::fromStdWString(path);
+        // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
+        QString qPath = getPath();
+        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
+        QString tip = QString::fromUtf8("路径: ") + qPath;
         if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
         if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;
@@ -1041,8 +1059,13 @@ void ScanDialog::setupUi() {
     m_searchEdit->installEventFilter(this);
     connect(m_searchEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
         m_controller->setSearchText(text);
-        m_controller->triggerSearch();
+        if (text.isEmpty()) {
+            m_controller->triggerSearch(true);
+        } else {
+            m_controller->triggerSearch(false);
+        }
     });
+    connect(m_searchEdit, &QLineEdit::editingFinished, this, [this]() { m_config.save(); });
     connect(m_searchEdit, &QLineEdit::returnPressed, this, &ScanDialog::onTriggerSearch);
     searchRow->addWidget(m_searchEdit, 1);
 
@@ -1054,8 +1077,21 @@ void ScanDialog::setupUi() {
     m_extEdit->setClearButtonEnabled(true);
     m_extEdit->installEventFilter(this);
     connect(m_extEdit, &QLineEdit::textChanged, this, [this](const QString&) {
-        onFilterOptionChanged();
+        // 2026-06-xx 性能优化：仅同步过滤状态，使用防抖触发搜索，避免输入后缀时发生假死
+        ScanFilterState state;
+        state.useRegex = m_checkRegex->isChecked();
+        state.caseSensitive = m_checkCase->isChecked();
+        state.includeHidden = m_checkHidden->isChecked();
+        state.includeSystem = m_checkSystem->isChecked();
+        state.includeDollar = m_checkDollar->isChecked();
+        state.autoDisplay = m_checkAuto->isChecked();
+        QString extText = m_extEdit->text().toLower();
+        if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
+        
+        m_controller->setFilterState(state);
+        m_controller->triggerSearch(false); 
     });
+    connect(m_extEdit, &QLineEdit::editingFinished, this, [this]() { m_config.save(); });
     connect(m_extEdit, &QLineEdit::returnPressed, this, &ScanDialog::onTriggerSearch);
     searchRow->addWidget(m_extEdit);
 
@@ -1703,19 +1739,15 @@ void ScanDialog::onTriggerSearch() {
 }
 
 void ScanDialog::onFilterOptionChanged() {
-    // 2026-06-xx 物理修复：在过滤选项变更时强制同步驱动器掩码。
-    // 如果不在此处同步，当用户切换“自动显示”开关时，搜索引擎可能因为默认 Mask 为 0 而导致搜索结果为空。
-    QStringList activeList;
-    for (const QString& d : m_config.activeDrives) activeList << d;
-    MftReader::instance().updateActiveDrives(activeList);
-
+    // 2026-06-xx 性能优化：移除这里的 config.save() 和频繁的驱动器同步。
+    // 只有在明确需要重新搜索时才触发。驱动器同步已移至 onStartScan 或 onTriggerSearch。
+    
     m_config.useRegex = m_checkRegex->isChecked();
     m_config.caseSensitive = m_checkCase->isChecked();
     m_config.includeHidden = m_checkHidden->isChecked();
     m_config.includeSystem = m_checkSystem->isChecked();
     m_config.includeDollar = m_checkDollar->isChecked();
     m_config.autoDisplay = m_checkAuto->isChecked();
-    m_config.save();
 
     ScanFilterState state;
     state.useRegex = m_config.useRegex;
@@ -1728,7 +1760,7 @@ void ScanDialog::onFilterOptionChanged() {
     if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
     
     m_controller->setFilterState(state);
-    // 2026-06-xx 物理对标：配置变更时触发立即搜索，以响应“自动显示”等开关状态
+    // 2026-06-xx 物理对标：配置变更（如勾选开关）时触发立即搜索，以响应“自动显示”等开关状态
     m_controller->triggerSearch(true);
 }
 

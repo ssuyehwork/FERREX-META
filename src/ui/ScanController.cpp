@@ -1,5 +1,7 @@
 #include "ScanController.h"
 #include "../mft/MftReader.h"
+#include "../meta/MetadataManager.h"
+#include "UiHelper.h"
 #include <QtConcurrent/QtConcurrent>
 #include <QElapsedTimer>
 
@@ -88,15 +90,26 @@ void ScanController::performSearch() {
     QElapsedTimer timer;
     timer.start();
 
-    auto future = QtConcurrent::run([this, text = m_searchText, state = m_filterState]() {
+    // 2026-06-xx 性能优化：对于明确为空且未开启自动显示的请求，直接在 UI 线程构造空结果，避免线程调度开销
+    const QString text = m_searchText;
+    const ScanFilterState state = m_filterState;
+
+    if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
+        auto newSet = std::make_shared<ResultSet>();
+        {
+            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            m_resultSet = newSet;
+        }
+        emit resultsSwapped(newSet);
+        emit searchFinished(0, timer.elapsed());
+        return;
+    }
+
+    auto future = QtConcurrent::run([this, text, state]() {
         std::vector<uint64_t> keys;
         // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
             keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
-        }
-        // 否则，如果不是自动显示且查询为空，返回空结果
-        else if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
-            keys = std::vector<uint64_t>();
         }
         else {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
@@ -105,6 +118,25 @@ void ScanController::performSearch() {
         auto rs = std::make_shared<ResultSet>();
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
+
+        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
+        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
+        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000)); 
+        for (size_t i = 0; i < decorCount; ++i) {
+            uint64_t k = rs->keys[i];
+            auto& reader = MftReader::instance();
+            int idx = reader.getIndexByKey(k);
+            if (idx == -1) continue;
+            QString path = reader.getFullPath(idx);
+            if (path.isEmpty()) continue;
+
+            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
+            if (!meta.color.empty()) {
+                QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
+                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
+            }
+        }
+
         return rs;
     });
 
