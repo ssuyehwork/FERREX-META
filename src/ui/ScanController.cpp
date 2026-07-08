@@ -4,6 +4,7 @@
 #include "UiHelper.h"
 #include <QtConcurrent/QtConcurrent>
 #include <QElapsedTimer>
+#include <QDebug>
 
 namespace FERREX {
 
@@ -82,7 +83,10 @@ int ScanController::resultCount() const {
 }
 
 void ScanController::performSearch() {
-    if (m_watcher.isRunning()) m_watcher.cancel();
+    if (m_watcher.isRunning()) {
+        m_watcher.cancel();
+        qDebug() << "[ScanController] 取消正在运行的搜索任务";
+    }
     if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
 
     emit searchStarted();
@@ -106,6 +110,9 @@ void ScanController::performSearch() {
     }
 
     auto future = QtConcurrent::run([this, text, state]() {
+        QElapsedTimer subTimer;
+        subTimer.start();
+
         std::vector<uint64_t> keys;
         // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
@@ -115,12 +122,14 @@ void ScanController::performSearch() {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
         }
 
+        int64_t searchMs = subTimer.elapsed();
         auto rs = std::make_shared<ResultSet>();
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
         // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
         // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
+        subTimer.restart();
         size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000));
         for (size_t i = 0; i < decorCount; ++i) {
             uint64_t k = rs->keys[i];
@@ -136,6 +145,9 @@ void ScanController::performSearch() {
                 if (c.isValid()) rs->metadata[k] = RenderMeta(c);
             }
         }
+        int64_t decorMs = subTimer.elapsed();
+
+        qDebug() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
     });
