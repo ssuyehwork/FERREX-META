@@ -942,8 +942,9 @@ ScanDialog::ScanDialog(QWidget* parent)
 
             QMetaObject::invokeMethod(weakThis.data(), [weakThis, anyLoaded]() {
                 if (!weakThis) return;
+                weakThis->updateStatus("就绪");
                 weakThis->m_controller->setSearchText("");
-                weakThis->refreshDriveList(true); // 后台探测硬件并同步掩码
+                weakThis->refreshDriveList(true); // 后台探测硬件
                 if (weakThis->m_config.autoDisplay) weakThis->onFilterOptionChanged();
                 
                 // 2026-07-07 物理修复：调用封装后的预热函数 (Analysis_Modification_Plan-154.md)
@@ -1322,11 +1323,6 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_config.save();
 
-            // 物理补齐：在硬件列表探测和选择完毕后，立刻将激活盘符同步到 MftReader 的掩码中，杜绝冷启动 0 计数的异常
-            QStringList activeList;
-            for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
-            MftReader::instance().updateActiveDrives(activeList);
-
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
                 if (item->widget()) item->widget()->deleteLater();
@@ -1367,20 +1363,11 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
                     MftReader::instance().updateActiveDrives(activeList);
 
-                    // 极致瞬时反馈体感：在点击触发异步检索的同时，立即更新标题栏的文件总量计数
-                    weakThis->updateStatus("就绪");
-
                     // 2026-07-07 核心修正：左键仅筛选，严禁加载数据库 (Analysis_Modification_Plan-154.md)
                     if (isSelected && !MftReader::instance().isDriveIndexed(letter)) {
                         weakThis->updateStatus("请先通过右键菜单‘加载数据’");
                         weakThis->m_config.activeDrives.remove(letter);
                         weakThis->updateDriveButtonStyles();
-                        
-                        // 修正：复原状态下的掩码二次同步与标题刷新
-                        QStringList reSyncList;
-                        for (const QString& d : weakThis->m_config.activeDrives) reSyncList << d;
-                        MftReader::instance().updateActiveDrives(reSyncList);
-                        weakThis->updateStatus("就绪");
                     } else {
                         weakThis->onTriggerSearch();
                     }
@@ -1395,9 +1382,6 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
             }
             weakThis->m_driveLayout->addStretch();
             weakThis->updateDriveButtonStyles();
-
-            // 物理补齐：全部加载完毕后，在 UI 线程显式刷新标题计数为精确的激活盘符条目总数
-            weakThis->updateStatus("就绪");
         });
     });
 }
@@ -1457,11 +1441,6 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
             } else {
                 QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
                     if (weakThis) {
-                        // 物理补齐：加载新盘完成后，立即同步最新激活盘符掩码
-                        QStringList activeList;
-                        for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
-                        MftReader::instance().updateActiveDrives(activeList);
-
                         weakThis->updateStatus("就绪");
                         weakThis->updateDriveButtonStyles();
                         weakThis->onTriggerSearch();
@@ -1685,11 +1664,6 @@ void ScanDialog::onStartScan(const QString& drive) {
         MftReader::instance().buildIndex(selectedDrives);
         QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
             if (!weakThis) return;
-            // 物理补齐：扫描入库完成后，立即同步盘符掩码，避免后续获取为 0
-            QStringList activeList;
-            for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
-            MftReader::instance().updateActiveDrives(activeList);
-
             weakThis->updateStatus("就绪");
             weakThis->updateDriveButtonStyles();
             weakThis->onTriggerSearch();
@@ -1806,6 +1780,7 @@ void ScanDialog::updateStatusBar() {
     double memoryMb = (dbTotal * 184.0) / 1024.0 / 1024.0;
     // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
+
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
