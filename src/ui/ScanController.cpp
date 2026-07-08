@@ -30,7 +30,7 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
         if (m_sortWatcher.isCanceled()) return;
         
         std::shared_ptr<ResultSet> newSet = m_sortWatcher.result();
-        if (!newSet || newSet->keys.empty()) return;
+        if (!newSet || newSet->records.empty()) return;
 
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
@@ -79,7 +79,28 @@ std::shared_ptr<ResultSet> ScanController::snapshot() const {
 
 int ScanController::resultCount() const {
     std::lock_guard<std::mutex> lock(m_resultsMutex);
-    return static_cast<int>(m_resultSet->keys.size());
+    return static_cast<int>(m_resultSet->records.size());
+}
+
+static SearchResultRecord bakeRecord(uint64_t key) {
+    auto& reader = MftReader::instance();
+    int idx = reader.getIndexByKey(key);
+    SearchResultRecord rec;
+    rec.key = key;
+    if (idx != -1) {
+        rec.name = reader.getName(idx);
+        rec.path = reader.getFullPath(idx);
+        rec.size = reader.getSize(idx);
+        rec.mtime = reader.getModifyTime(idx);
+        rec.isDirectory = reader.isDirectory(idx);
+        rec.extension = reader.getExtQString(idx).toLower();
+
+        auto meta = MetadataManager::instance().getMeta(rec.path.toStdWString());
+        if (!meta.color.empty()) {
+            rec.color = UiHelper::parseColorName(QString::fromStdWString(meta.color));
+        }
+    }
+    return rec;
 }
 
 void ScanController::performSearch() {
@@ -124,30 +145,18 @@ void ScanController::performSearch() {
 
         int64_t searchMs = subTimer.elapsed();
         auto rs = std::make_shared<ResultSet>();
-        rs->keys = std::move(keys);
-        updateKeyToPosMapping(*rs);
 
-        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
-        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
-        subTimer.restart();
-        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000)); 
-        for (size_t i = 0; i < decorCount; ++i) {
-            uint64_t k = rs->keys[i];
-            auto& reader = MftReader::instance();
-            int idx = reader.getIndexByKey(k);
-            if (idx == -1) continue;
-            QString path = reader.getFullPath(idx);
-            if (path.isEmpty()) continue;
-
-            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
-            if (!meta.color.empty()) {
-                QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
-            }
+        // 2026-07-22 工业级性能重构：后台预烘焙（Pre-bake）
+        // 在后台线程完整填充 SearchResultRecord，消除 UI 线程渲染时的路径回溯与锁竞争
+        rs->records.reserve(keys.size());
+        for (uint64_t k : keys) {
+            rs->records.push_back(bakeRecord(k));
         }
-        int64_t decorMs = subTimer.elapsed();
 
-        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
+        updateKeyToPosMapping(*rs);
+        int64_t bakeMs = subTimer.elapsed() - searchMs;
+
+        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 预烘焙耗时:" << bakeMs << "ms, 结果数:" << rs->records.size();
 
         return rs;
     });
@@ -163,7 +172,7 @@ void ScanController::performSearch() {
             m_resultSet = newSet;
         }
         emit resultsSwapped(newSet);
-        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
+        emit searchFinished(static_cast<int>(m_resultSet->records.size()), timer.elapsed());
     });
 
     m_watcher.setFuture(future);
@@ -202,51 +211,22 @@ void ScanController::sort(int column, int order) {
 
     std::shared_ptr<ResultSet> snap = snapshot();
     
-    // 2026-06-xx 极致架构优化：去锁化投影排序。
-    // 理由：通过物理拷贝文件名/数值至投影结构，彻底杜绝排序过程中的锁竞争与野指针风险。
+    // 2026-07-22 工业级性能重构：基于预烘焙数据的无锁排序
     auto future = QtConcurrent::run([this, snap, column, order]() {
-        auto newSet = std::make_shared<ResultSet>();
-        newSet->keys = snap->keys;
-        if (newSet->keys.empty()) return newSet;
+        auto newSet = std::make_shared<ResultSet>(*snap);
+        if (newSet->records.empty()) return newSet;
 
-        auto& reader = MftReader::instance();
-        std::vector<SortProxy> proxies;
-        proxies.reserve(newSet->keys.size());
-
-        // 1. 投影阶段：申请单次大范围读锁，直接从 SoA 池物理拷贝数据
-        // 理由：彻底消除 O(N) 次的锁申请/释放开销，并绕过 QString 中转，极致压榨 CPU 性能。
-        {
-            QReadLocker lock(&reader.m_dataLock);
-            for (uint64_t k : newSet->keys) {
-                auto it = reader.m_frn_to_idx.find(k);
-                SortProxy p; p.key = k;
-                if (it != reader.m_frn_to_idx.end()) {
-                    uint32_t idx = it->second;
-                    if (column == 0) p.sVal = reinterpret_cast<const char*>(reader.m_string_pool.data() + reader.m_name_offsets[idx]);
-                    else if (column == 1) {
-                        // 路径投影相对复杂，暂时维持现状或使用缓存。为了安全与一致性，此处调用 getPathFast
-                        p.sVal = QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[idx] >> 48), reader.m_frns[idx])).toStdString();
-                    }
-                    else if (column == 2) p.iVal = reader.m_sizes[idx];
-                    else if (column == 3) p.iVal = reader.m_timestamps[idx];
-                }
-                proxies.push_back(std::move(p));
-            }
-        }
-
-        // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
-        std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
+        std::sort(newSet->records.begin(), newSet->records.end(), [column, order](const SearchResultRecord& a, const SearchResultRecord& b) {
             bool less = false;
-            if (column == 0 || column == 1) {
-                less = _stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0;
-            } else {
-                less = a.iVal < b.iVal;
+            switch (column) {
+                case 0: less = a.name.compare(b.name, Qt::CaseInsensitive) < 0; break;
+                case 1: less = a.path.compare(b.path, Qt::CaseInsensitive) < 0; break;
+                case 2: less = a.size < b.size; break;
+                case 3: less = a.mtime < b.mtime; break;
             }
             return (order == 0) ? less : !less;
         });
 
-        // 3. 写回结果并构建映射
-        for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
         updateKeyToPosMapping(*newSet);
         return newSet;
     });
@@ -257,9 +237,9 @@ void ScanController::sort(int column, int order) {
 
 void ScanController::updateKeyToPosMapping(ResultSet& rs) {
     rs.keyToPos.clear();
-    rs.keyToPos.reserve(rs.keys.size());
-    for (size_t i = 0; i < rs.keys.size(); ++i) {
-        rs.keyToPos[rs.keys[i]] = static_cast<int>(i);
+    rs.keyToPos.reserve(rs.records.size());
+    for (size_t i = 0; i < rs.records.size(); ++i) {
+        rs.keyToPos[rs.records[i].key] = static_cast<int>(i);
     }
 }
 
@@ -309,13 +289,13 @@ void ScanController::processBatchUpdates() {
             if (ev.type == MftReader::ChangeEvent::Added) {
                 if (itPos == snap->keyToPos.end() && checkMatch(ev.index)) {
                     if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
-                    newSet->keys.push_back(ev.key);
+                    newSet->records.push_back(bakeRecord(ev.key));
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Removed) {
                 if (itPos != snap->keyToPos.end()) {
                     if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
-                    newSet->keys[itPos->second] = 0;
+                    newSet->records[itPos->second].key = 0; // 标记删除
                     changed = true;
                 }
             } else if (ev.type == MftReader::ChangeEvent::Updated) {
@@ -323,45 +303,38 @@ void ScanController::processBatchUpdates() {
                 if (itPos != snap->keyToPos.end()) {
                     if (!matches) {
                         if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
-                        newSet->keys[itPos->second] = 0;
+                        newSet->records[itPos->second].key = 0; // 标记失效
+                        changed = true;
+                    } else {
+                        // 更新烘焙数据
+                        if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
+                        newSet->records[itPos->second] = bakeRecord(ev.key);
                         changed = true;
                     }
                 } else if (matches) {
                     if (!newSet) newSet = std::make_shared<ResultSet>(*snap);
-                    newSet->keys.push_back(ev.key);
+                    newSet->records.push_back(bakeRecord(ev.key));
                     changed = true;
                 }
             }
         }
 
         if (changed && newSet) {
-            newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
+            // 清理标记为删除的项目
+            newSet->records.erase(std::remove_if(newSet->records.begin(), newSet->records.end(), [](const SearchResultRecord& r){ return r.key == 0; }), newSet->records.end());
             
-            // 执行后台安全重排序 (复用投影排序逻辑)
-            std::vector<SortProxy> proxies;
-            proxies.reserve(newSet->keys.size());
-            {
-                QReadLocker lock(&reader.m_dataLock);
-                for (uint64_t k : newSet->keys) {
-                    auto it = reader.m_frn_to_idx.find(k);
-                    SortProxy p; p.key = k;
-                    if (it != reader.m_frn_to_idx.end()) {
-                        uint32_t idx = it->second;
-                        if (column == 0) p.sVal = reinterpret_cast<const char*>(reader.m_string_pool.data() + reader.m_name_offsets[idx]);
-                        else if (column == 1) p.sVal = QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[idx] >> 48), reader.m_frns[idx])).toStdString();
-                        else if (column == 2) p.iVal = reader.m_sizes[idx];
-                        else if (column == 3) p.iVal = reader.m_timestamps[idx];
-                    }
-                    proxies.push_back(std::move(p));
+            // 2026-07-22 工业级性能重构：基于预烘焙数据的增量排序
+            std::sort(newSet->records.begin(), newSet->records.end(), [column, order](const SearchResultRecord& a, const SearchResultRecord& b) {
+                bool less = false;
+                switch (column) {
+                    case 0: less = a.name.compare(b.name, Qt::CaseInsensitive) < 0; break;
+                    case 1: less = a.path.compare(b.path, Qt::CaseInsensitive) < 0; break;
+                    case 2: less = a.size < b.size; break;
+                    case 3: less = a.mtime < b.mtime; break;
                 }
-            }
-
-            std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
-                bool less = (column == 0 || column == 1) ? (_stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0) : (a.iVal < b.iVal);
                 return (order == 0) ? less : !less;
             });
 
-            for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
             return newSet;
         }

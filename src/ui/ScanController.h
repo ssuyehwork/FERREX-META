@@ -33,15 +33,22 @@ struct ScanFilterState {
 /**
  * @brief 稳定的结果集封装 (支持 O(1) 定位)
  */
-struct RenderMeta {
+struct SearchResultRecord {
+    uint64_t key = 0;
+    QString name;
+    QString path;
+    int64_t size = 0;
+    int64_t mtime = 0;
+    bool isDirectory = false;
+    QString extension;
+    // 用于缩略图和高亮等
+    QString fileId;
     QColor color;
-    explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
 };
 
 struct ResultSet {
-    std::vector<uint64_t> keys;
+    std::vector<SearchResultRecord> records;
     std::unordered_map<uint64_t, int> keyToPos;
-    std::unordered_map<uint64_t, RenderMeta> metadata;
 };
 
 class ScanController : public QObject {

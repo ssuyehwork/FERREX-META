@@ -273,61 +273,36 @@ int ScanTableModel::columnCount(const QModelIndex& /*parent*/) const { return 4;
 QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid()) return QVariant();
     int row = index.row();
-    if (row < 0 || row >= (int)m_currentResultSet->keys.size()) return QVariant();
+    if (row < 0 || row >= (int)m_currentResultSet->records.size()) return QVariant();
     
-    uint64_t key = m_currentResultSet->keys[row];
-    auto& reader = MftReader::instance();
-    int actualIndex = reader.getIndexByKey(key);
-    if (actualIndex == -1) return QVariant(); // 文件可能已被删除
+    const SearchResultRecord& rec = m_currentResultSet->records[row];
+    uint64_t key = rec.key;
 
-    // 2026-06-xx 极致性能重构：行内计算缓存。
-    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
-    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
-    thread_local static int lastRow = -1;
-    thread_local static uint64_t lastKey = 0;
-    thread_local static QString cachedPath;
-    
-    auto getPath = [&]() {
-        if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
-        lastRow = row; lastKey = key;
-        cachedPath = reader.getFullPath(actualIndex);
-        return cachedPath;
-    };
-    
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
-            case 0: return reader.getName(actualIndex);
-            case 1: return getPath();
+            case 0: return rec.name;
+            case 1: return rec.path;
             case 2: {
-                if (reader.isDirectory(actualIndex)) return "-";
-                int64_t size = reader.getSize(actualIndex);
-                if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    return "...";
-                }
+                if (rec.isDirectory) return "-";
+                int64_t size = rec.size;
                 if (size < 1024) return QString("%1 B").arg(size);
                 if (size < 1024 * 1024) return QString("%1 KB").arg(size / 1024.0, 0, 'f', 2);
                 if (size < 1024LL * 1024 * 1024) return QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 2);
                 return QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
             }
             case 3: {
-                int64_t ts = reader.getModifyTime(actualIndex);
-                if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    return "-";
-                }
+                int64_t ts = rec.mtime;
                 if (ts == 0) return "-";
                 return QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
             }
         }
     } else if (role == Qt::DecorationRole && index.column() == 0) {
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
-        QString ext = reader.getExtQString(actualIndex);
+        // 2026-07-22 性能重构：使用预烘焙的 extension 填充缓存
+        QString ext = rec.extension;
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
-        if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
-            int64_t size = reader.getSize(actualIndex);
-            int64_t mtime = reader.getModifyTime(actualIndex);
-            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+        if (thumbExts.contains(ext) && !rec.isDirectory) {
+            QString cacheKey = QString("%1_%2_%3").arg(key).arg(rec.size).arg(rec.mtime);
 
             QPixmap* cached = m_thumbCache.object(cacheKey);
             if (cached) return *cached;
@@ -337,35 +312,18 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 
-                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
-        return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
+        return MftReader::instance().getCachedIcon(ext, rec.isDirectory);
     } else if (role == Qt::ForegroundRole) {
-        // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
-        auto it = m_currentResultSet->metadata.find(key);
-        if (it != m_currentResultSet->metadata.end()) {
-            return it->second.color;
-        }
-
-        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
-        QString qPath = getPath();
-        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        if (!meta.color.empty()) {
-            QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-            if (tagC.isValid()) return tagC;
-        }
-        // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
-        if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
+        // 2026-07-22 工业级无锁渲染：直接读取预烘焙颜色
+        if (rec.color.isValid()) return rec.color;
+        if (index.column() == 0 || rec.isDirectory) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
-        // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
-        QString qPath = getPath();
-        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        QString tip = QString::fromUtf8("路径: ") + qPath;
-        if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
-        if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
+        QString tip = QString::fromUtf8("路径: ") + rec.path;
+        // 备注等信息目前未烘焙，后续若有需要可扩充 SearchResultRecord
         return tip;
     } else if (role == Qt::TextAlignmentRole) {
         switch (index.column()) {
@@ -447,8 +405,8 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
 
 void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     auto newSet = nextSet ? nextSet : m_controller->snapshot();
-    int oldSize = (int)m_currentResultSet->keys.size();
-    int newSize = (int)newSet->keys.size();
+    int oldSize = (int)m_currentResultSet->records.size();
+    int newSize = (int)newSet->records.size();
 
     // 2026-06-xx 极致性能重构：Diffing 局部刷新。
     // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
@@ -485,12 +443,12 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
 
 bool ScanTableModel::canFetchMore(const QModelIndex& parent) const {
     if (parent.isValid()) return false;
-    return m_displayCount < (int)m_currentResultSet->keys.size();
+    return m_displayCount < (int)m_currentResultSet->records.size();
 }
 
 void ScanTableModel::fetchMore(const QModelIndex& parent) {
     if (parent.isValid()) return;
-    int remainder = static_cast<int>(m_currentResultSet->keys.size()) - m_displayCount;
+    int remainder = static_cast<int>(m_currentResultSet->records.size()) - m_displayCount;
     int itemsToFetch = (std::min<int>)(remainder, 100);
     
     beginInsertRows(QModelIndex(), m_displayCount, m_displayCount + itemsToFetch - 1);
@@ -505,7 +463,7 @@ void ScanTableModel::setVisibleRange(int top, int bottom) {
 }
 
 void ScanTableModel::forceFetchAll() {
-    int total = (int)m_currentResultSet->keys.size();
+    int total = (int)m_currentResultSet->records.size();
     if (m_displayCount >= total) return;
     
     beginInsertRows(QModelIndex(), m_displayCount, total - 1);
@@ -585,17 +543,15 @@ Qt::DropActions ScanTableModel::supportedDragActions() const {
 QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
     QMimeData* data = new QMimeData();
     QList<QUrl> urls;
-    QSet<int> seen;
+    QSet<uint64_t> seen;
     for (const QModelIndex& idx : indexes) {
         if (idx.column() != 0) continue;
         int row = idx.row();
-        if (row < 0 || row >= (int)m_currentResultSet->keys.size()) continue;
-        uint64_t key = m_currentResultSet->keys[row];
-        int actualIdx = MftReader::instance().getIndexByKey(key);
-        if (actualIdx == -1 || seen.contains(actualIdx)) continue;
-        seen.insert(actualIdx);
-        QString path = MftReader::instance().getFullPath(actualIdx);
-        if (!path.isEmpty()) urls << QUrl::fromLocalFile(path);
+        if (row < 0 || row >= (int)m_currentResultSet->records.size()) continue;
+        const SearchResultRecord& rec = m_currentResultSet->records[row];
+        if (seen.contains(rec.key)) continue;
+        seen.insert(rec.key);
+        if (!rec.path.isEmpty()) urls << QUrl::fromLocalFile(rec.path);
     }
     data->setUrls(urls);
     return data;
@@ -1793,11 +1749,12 @@ void ScanDialog::updateStatusBar() {
     if (!selectedRows.isEmpty()) {
         m_selectionLabel->show();
         int64_t totalSize = 0;
-        auto& reader = MftReader::instance();
         for (const auto& index : selectedRows) {
-            uint64_t key = m_tableModel->data(index, Qt::UserRole).toULongLong();
-            int actualIdx = reader.getIndexByKey(key);
-            if (actualIdx != -1 && !reader.isDirectory(actualIdx)) totalSize += reader.getSize(actualIdx);
+            int row = index.row();
+            if (row >= 0 && row < (int)m_tableModel->m_currentResultSet->records.size()) {
+                const auto& rec = m_tableModel->m_currentResultSet->records[row];
+                if (!rec.isDirectory) totalSize += rec.size;
+            }
         }
         m_selectionLabel->setText(QString(" | 已选择 %1 项 (%2)").arg(selectedRows.size()).arg(formatSize(totalSize)));
         
