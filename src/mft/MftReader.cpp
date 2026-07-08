@@ -261,11 +261,19 @@ void MftReader::buildIndex(const QStringList& drives) {
         newWatchers.push_back(w);
     }
 
-    rebuildFrnToIndexMap();
-    buildSortedIndices();
-    m_isInitialized = true;
+    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if (m_parent_indices[i] != 0xFFFFFFFF) continue;
+        uint64_t encodedPf = m_parent_frns[i];
+        auto itP = m_frn_to_idx.find(encodedPf);
+        if (itP != m_frn_to_idx.end()) m_parent_indices[i] = itP->second;
+    }
 
+    m_isInitialized = true;
     lock.unlock();
+
+    compact(); 
+    buildSortedIndices();
     for (auto* w : newWatchers) w->start();
 }
 
@@ -275,12 +283,6 @@ bool MftReader::loadFromCache() {
 
     // 2026-06-xx 物理修复：载入缓存前必须执行全量清理（含停止旧监听器），杜绝资源泄露与逻辑重叠
     clear(); 
-
-    struct DriveIndices {
-        std::vector<uint32_t> sorted;
-        uint32_t baseIdx;
-    };
-    std::vector<DriveIndices> allSortedIndices;
 
     std::unordered_set<std::string> loadedBases;
     for (auto const& entry : std::filesystem::directory_iterator{cacheDir}) {
@@ -295,43 +297,84 @@ bool MftReader::loadFromCache() {
             uint64_t lastUsn = 0;
 
             if (ScchCache::load(path_base, records, lastUsn) == ScchResult::Ok) {
-                size_t dIdx;
-                size_t count = records.size();
-                size_t currentTotal;
-                std::wstring driveName = QString::fromStdString(stem + ":").toStdWString(); 
+                std::wstring driveName = QString::fromStdString(stem + ":").toStdWString();
+                
+                // 2026-07-28 优化：记录解析循环移出写锁范围
+                struct PreparedData {
+                    std::vector<uint64_t> frns;
+                    std::vector<uint64_t> parent_frns;
+                    std::vector<int64_t>  sizes;
+                    std::vector<int64_t>  timestamps;
+                    std::vector<uint32_t> attributes;
+                    std::vector<uint8_t>  metadata_fetched;
+                    std::vector<uint8_t>  string_pool;
+                    std::vector<uint32_t> name_offsets;
+                    std::vector<uint32_t> ext_offsets;
+                } pd;
 
+                pd.frns.reserve(records.size());
+                pd.parent_frns.reserve(records.size());
+                pd.sizes.reserve(records.size());
+                pd.timestamps.reserve(records.size());
+                pd.attributes.reserve(records.size());
+                pd.metadata_fetched.reserve(records.size());
+                pd.name_offsets.reserve(records.size());
+                pd.ext_offsets.reserve(records.size());
+
+                for (const auto& pkg : records) {
+                    pd.frns.push_back(pkg.frn);
+                    pd.parent_frns.push_back(pkg.parent_frn & 0x0000FFFFFFFFFFFFull);
+                    pd.sizes.push_back(pkg.size);
+                    pd.timestamps.push_back(pkg.timestamp);
+                    pd.attributes.push_back(pkg.attributes);
+                    pd.metadata_fetched.push_back(pkg.metadata_fetched);
+                    
+                    pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
+                    pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
+                    pd.string_pool.push_back('\0');
+
+                    std::string extStr;
+                    splitNameAndExt(pkg.name, extStr);
+                    pd.ext_offsets.push_back((uint32_t)pd.string_pool.size());
+                    pd.string_pool.insert(pd.string_pool.end(), extStr.begin(), extStr.end());
+                    pd.string_pool.push_back('\0');
+                }
+
+                size_t dIdx;
+                size_t currentTotal;
                 {
                     QWriteLocker lock(&m_dataLock);
                     dIdx = m_drive_list.size();
                     m_drive_list.push_back(driveName);
                     m_next_usns[driveName] = lastUsn;
 
-                    for (const auto& pkg : records) {
-                        uint32_t idx = (uint32_t)m_frns.size();
-                        m_frn_to_idx[makeKey(dIdx, pkg.frn)] = idx;
-                        
-                        m_frns.push_back(pkg.frn);
-                        m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | (pkg.parent_frn & 0x0000FFFFFFFFFFFFull));
+                    uint32_t poolBase = (uint32_t)m_string_pool.size();
+                    size_t startIdx = m_frns.size();
+                    
+                    m_frns.insert(m_frns.end(), pd.frns.begin(), pd.frns.end());
+                    m_sizes.insert(m_sizes.end(), pd.sizes.begin(), pd.sizes.end());
+                    m_timestamps.insert(m_timestamps.end(), pd.timestamps.begin(), pd.timestamps.end());
+                    m_attributes.insert(m_attributes.end(), pd.attributes.begin(), pd.attributes.end());
+                    m_metadata_fetched.insert(m_metadata_fetched.end(), pd.metadata_fetched.begin(), pd.metadata_fetched.end());
+                    
+                    for (size_t i = 0; i < pd.frns.size(); ++i) {
+                        m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | pd.parent_frns[i]);
+                        m_name_offsets.push_back(poolBase + pd.name_offsets[i]);
+                        m_ext_offsets.push_back(poolBase + pd.ext_offsets[i]);
                         m_parent_indices.push_back(0xFFFFFFFF);
-                        m_sizes.push_back(pkg.size);
-                        m_timestamps.push_back(pkg.timestamp);
-                        m_attributes.push_back(pkg.attributes);
-                        m_metadata_fetched.push_back(pkg.metadata_fetched);
                         
-                        m_name_offsets.push_back((uint32_t)m_string_pool.size());
-                        m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
-                        m_string_pool.push_back('\0');
-
-                        // 2026-06-xx 物理对标：快照加载时同步预拆分扩展名
-                        std::string extStr;
-                        splitNameAndExt(pkg.name, extStr);
-                        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
-                        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
-                        m_string_pool.push_back('\0');
+                        uint64_t key = makeKey(dIdx, pd.frns[i]);
+                        auto it = m_frn_to_idx.find(key);
+                        if (it != m_frn_to_idx.end()) {
+                            m_frns[it->second] = 0;
+                            m_dead_count++;
+                        }
+                        m_frn_to_idx[key] = (uint32_t)(startIdx + i);
                     }
+                    m_string_pool.insert(m_string_pool.end(), pd.string_pool.begin(), pd.string_pool.end());
                     currentTotal = m_frns.size();
                 }
-                emit driveLoaded(QString::fromStdWString(driveName), (int)count, (int)currentTotal);
+                emit driveLoaded(QString::fromStdWString(driveName), (int)records.size(), (int)currentTotal);
             }
         }
     }
@@ -339,15 +382,19 @@ bool MftReader::loadFromCache() {
     QWriteLocker lock(&m_dataLock);
     if (m_frns.empty()) return false;
     
-    // 2026-06-xx 物理补齐：缓存加载后必须执行重映射，以补全 m_parent_indices 链条
-    rebuildFrnToIndexMap(); 
-
-    // 2026-07-07 物理修复：物理回收重复项空间 (Analysis_Modification_Plan-154.md)
-    compact();
-
-    buildSortedIndices();
+    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    for (size_t i = 0; i < m_frns.size(); ++i) {
+        if (m_parent_indices[i] != 0xFFFFFFFF) continue;
+        uint64_t encodedPf = m_parent_frns[i];
+        auto itP = m_frn_to_idx.find(encodedPf);
+        if (itP != m_frn_to_idx.end()) m_parent_indices[i] = itP->second;
+    }
 
     m_isInitialized = true;
+    lock.unlock();
+
+    compact(); 
+    buildSortedIndices();
 
     // 2026-06-xx 核心修复：加载缓存后立即启动 USN 监听器
     // 理由：确保系统在从快照恢复后，能通过 USN 锚点自动追平离线期间的磁盘变动，并开始实时监听。
@@ -386,8 +433,48 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
 
     if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
 
+    // 2026-07-28 优化：记录解析循环移出写锁范围
+    struct PreparedData {
+        std::vector<uint64_t> frns;
+        std::vector<uint64_t> parent_frns;
+        std::vector<int64_t>  sizes;
+        std::vector<int64_t>  timestamps;
+        std::vector<uint32_t> attributes;
+        std::vector<uint8_t>  metadata_fetched;
+        std::vector<uint8_t>  string_pool;
+        std::vector<uint32_t> name_offsets;
+        std::vector<uint32_t> ext_offsets;
+    } pd;
+
+    pd.frns.reserve(records.size());
+    pd.parent_frns.reserve(records.size());
+    pd.sizes.reserve(records.size());
+    pd.timestamps.reserve(records.size());
+    pd.attributes.reserve(records.size());
+    pd.metadata_fetched.reserve(records.size());
+    pd.name_offsets.reserve(records.size());
+    pd.ext_offsets.reserve(records.size());
+
+    for (const auto& pkg : records) {
+        pd.frns.push_back(pkg.frn);
+        pd.parent_frns.push_back(pkg.parent_frn & 0x0000FFFFFFFFFFFFull); // 锁内再补全 dIdx
+        pd.sizes.push_back(pkg.size);
+        pd.timestamps.push_back(pkg.timestamp);
+        pd.attributes.push_back(pkg.attributes);
+        pd.metadata_fetched.push_back(pkg.metadata_fetched);
+        
+        pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
+        pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
+        pd.string_pool.push_back('\0');
+
+        std::string extStr;
+        splitNameAndExt(pkg.name, extStr);
+        pd.ext_offsets.push_back((uint32_t)pd.string_pool.size());
+        pd.string_pool.insert(pd.string_pool.end(), extStr.begin(), extStr.end());
+        pd.string_pool.push_back('\0');
+    }
+
     QWriteLocker lock(&m_dataLock);
-    // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
     size_t dIdx = (size_t)-1;
     for (size_t i = 0; i < m_drive_list.size(); ++i) {
         if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = vol; break; }
@@ -400,38 +487,49 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
     m_next_usns[vol] = lastUsn;
 
-    for (const auto& pkg : records) {
-        uint32_t idx = (uint32_t)m_frns.size();
-        m_frn_to_idx[makeKey(dIdx, pkg.frn)] = idx;
-        
-        m_frns.push_back(pkg.frn);
-        m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | (pkg.parent_frn & 0x0000FFFFFFFFFFFFull));
+    // 锁内仅进行高效的数据追加 (O(delta) 内存拷贝)
+    uint32_t poolBase = (uint32_t)m_string_pool.size();
+    size_t startIdx = m_frns.size();
+    
+    m_frns.insert(m_frns.end(), pd.frns.begin(), pd.frns.end());
+    m_sizes.insert(m_sizes.end(), pd.sizes.begin(), pd.sizes.end());
+    m_timestamps.insert(m_timestamps.end(), pd.timestamps.begin(), pd.timestamps.end());
+    m_attributes.insert(m_attributes.end(), pd.attributes.begin(), pd.attributes.end());
+    m_metadata_fetched.insert(m_metadata_fetched.end(), pd.metadata_fetched.begin(), pd.metadata_fetched.end());
+    
+    for (size_t i = 0; i < pd.frns.size(); ++i) {
+        m_parent_frns.push_back((static_cast<uint64_t>(dIdx) << 48) | pd.parent_frns[i]);
+        m_name_offsets.push_back(poolBase + pd.name_offsets[i]);
+        m_ext_offsets.push_back(poolBase + pd.ext_offsets[i]);
         m_parent_indices.push_back(0xFFFFFFFF);
-        m_sizes.push_back(pkg.size);
-        m_timestamps.push_back(pkg.timestamp);
-        m_attributes.push_back(pkg.attributes);
-        m_metadata_fetched.push_back(pkg.metadata_fetched);
         
-        m_name_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), pkg.name.begin(), pkg.name.end());
-        m_string_pool.push_back('\0');
+        // 增量构建映射，减少全量重建开销
+        uint64_t key = makeKey(dIdx, pd.frns[i]);
+        auto it = m_frn_to_idx.find(key);
+        if (it != m_frn_to_idx.end()) {
+            // 如果已存在（如重复加载快照），将旧项标记为死亡
+            m_frns[it->second] = 0;
+            m_dead_count++;
+        }
+        m_frn_to_idx[key] = (uint32_t)(startIdx + i);
+    }
+    m_string_pool.insert(m_string_pool.end(), pd.string_pool.begin(), pd.string_pool.end());
 
-        std::string extStr;
-        splitNameAndExt(pkg.name, extStr);
-        m_ext_offsets.push_back((uint32_t)m_string_pool.size());
-        m_string_pool.insert(m_string_pool.end(), extStr.begin(), extStr.end());
-        m_string_pool.push_back('\0');
+    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    for (size_t i = startIdx; i < m_frns.size(); ++i) {
+        uint64_t encodedPf = m_parent_frns[i];
+        auto itP = m_frn_to_idx.find(encodedPf);
+        if (itP != m_frn_to_idx.end()) m_parent_indices[i] = itP->second;
     }
 
-    rebuildFrnToIndexMap();
-    // 2026-07-07 物理修复：单盘加载后的强制去重收缩 (Analysis_Modification_Plan-154.md)
-    compact();
-    buildSortedIndices();
     m_isInitialized = true;
-
     auto* w = new UsnWatcher(vol, lastUsn, nullptr);
     m_watcher_map[vol] = w;
     lock.unlock();
+
+    // 2026-07-28 修复：加载完成后锁外按序执行计算
+    compact(); 
+    buildSortedIndices();
     w->start();
 
     return true;
@@ -471,18 +569,10 @@ void MftReader::unloadDrive(const QString& drive) {
             }
         }
 
-        // 策略：将该盘符的所有条目标记为已删除
-        for (size_t i = 0; i < m_frns.size(); ++i) {
-            if ((m_parent_frns[i] >> 48) == dIdx) {
-                m_frns[i] = 0;
-                m_dead_count++;
-            }
-        }
-
-        // 修正：保留占位，禁止平移索引以杜绝漂移 (Analysis_Modification_Plan-154.md)
+        // 2026-07-28 核心修复：卸载数据时禁止在锁内遍历 SoA。
+        // 策略：仅清空盘符名称并更新掩码。物理剔除任务交给随后的锁外 compact()。
         m_drive_list[dIdx] = L"";
 
-        // 更新掩码与相关映射
         m_drive_ever_saved.erase(dIdx);
         m_is_compacting.erase(dIdx);
         m_compaction_buffer.erase(dIdx);
@@ -490,9 +580,11 @@ void MftReader::unloadDrive(const QString& drive) {
         uint32_t mask = m_drive_active_mask.load();
         mask &= ~(1 << dIdx);
         m_drive_active_mask.store(mask);
-
-        compact(); 
     }
+
+    // 2026-07-28 修复：卸载后必须强制 compact 以物理回收该盘占用的所有内存。
+    // compact 内部已实现去锁化。
+    compact(true); 
 
     if (w) { w->stop(); delete w; }
 }
@@ -1140,7 +1232,10 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     // 2026-05-14 工业级内存加固：实时监控内存碎片率
     // 当浪费的字符串空间超过 20MB 或死亡条目过多时，强制执行 compact 碎片整理
     if (m_wasted_string_bytes > 20 * 1024 * 1024 || m_dead_count > 100000) {
+        lock.unlock();
         compact();
+        buildSortedIndices();
+        lock.relock();
         // 碎片整理后索引可能发生变化，需要重新从 map 获取
         finalIdx = m_frn_to_idx[compositeKey];
     }
@@ -1225,10 +1320,8 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
         lock.unlock(); 
 
         if (shouldCompact) {
-            // Compact 必须在持有写锁时执行，但我们可以选择在空闲时段触发
-            // 或者暂时维持现状，但将其移出 removeEntryByFrn 的紧凑循环
-            QWriteLocker compactLock(&m_dataLock);
             compact();
+            buildSortedIndices();
         }
         {
             std::lock_guard<std::mutex> journalLock(m_journalMutex);
@@ -1240,9 +1333,46 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
     }
 }
 
-void MftReader::compact() {
+void MftReader::compact(bool force) {
+    // 2026-07-28 修复：恢复条件触发，禁止无条件全量重建
+    if (!force && m_dead_count == 0 && m_wasted_string_bytes < 1024 * 1024) return;
+
     m_generation.fetch_add(1, std::memory_order_relaxed);
-    // 2026-05-14 内存管理优化：执行碎片整理，回收无效条目和字符串池空间
+    
+    // 2026-07-28 优化：将 O(total) 的数据搬运过程移出写锁
+    // 1. 投影准备 (持有读锁拷贝必要状态)
+    struct CompactSnapshot {
+        std::vector<uint64_t> frns;
+        std::vector<uint64_t> parent_frns;
+        std::vector<int64_t>  sizes;
+        std::vector<int64_t>  timestamps;
+        std::vector<uint32_t> name_offsets;
+        std::vector<uint32_t> ext_offsets;
+        std::vector<uint32_t> attributes;
+        std::vector<uint8_t>  metadata_fetched;
+        std::vector<uint8_t>  string_pool;
+        std::vector<std::wstring> drive_list;
+        size_t dead_count;
+        size_t wasted_string_bytes;
+    } snap;
+
+    {
+        QReadLocker lock(&m_dataLock);
+        snap.frns = m_frns;
+        snap.parent_frns = m_parent_frns;
+        snap.sizes = m_sizes;
+        snap.timestamps = m_timestamps;
+        snap.name_offsets = m_name_offsets;
+        snap.ext_offsets = m_ext_offsets;
+        snap.attributes = m_attributes;
+        snap.metadata_fetched = m_metadata_fetched;
+        snap.string_pool = m_string_pool;
+        snap.drive_list = m_drive_list;
+        snap.dead_count = m_dead_count;
+        snap.wasted_string_bytes = m_wasted_string_bytes;
+    }
+
+    // 2. 锁外重建 (O(total) 计算完全处于锁外)
     std::vector<uint64_t>  new_frns;
     std::vector<uint64_t>  new_parent_frns;
     std::vector<int64_t>   new_sizes;
@@ -1252,59 +1382,74 @@ void MftReader::compact() {
     std::vector<uint32_t>  new_attributes;
     std::vector<uint8_t>   new_metadata_fetched;
     std::vector<uint8_t>   new_string_pool;
+    std::unordered_map<uint64_t, uint32_t> new_frn_to_idx;
 
-    size_t count = m_frns.size();
-    new_frns.reserve(count - m_dead_count);
-    new_parent_frns.reserve(count - m_dead_count);
-    new_sizes.reserve(count - m_dead_count);
-    new_timestamps.reserve(count - m_dead_count);
-    new_name_offsets.reserve(count - m_dead_count);
-    new_attributes.reserve(count - m_dead_count);
-    new_metadata_fetched.reserve(count - m_dead_count);
-    new_string_pool.reserve(m_string_pool.size() - m_wasted_string_bytes);
+    size_t count = snap.frns.size();
+    new_frns.reserve(count - snap.dead_count);
+    new_parent_frns.reserve(count - snap.dead_count);
+    new_sizes.reserve(count - snap.dead_count);
+    new_timestamps.reserve(count - snap.dead_count);
+    new_name_offsets.reserve(count - snap.dead_count);
+    new_attributes.reserve(count - snap.dead_count);
+    new_metadata_fetched.reserve(count - snap.dead_count);
+    new_string_pool.reserve(snap.string_pool.size() - snap.wasted_string_bytes);
 
-    m_frn_to_idx.clear();
     for (size_t i = 0; i < count; ++i) {
-        if (m_frns[i] == 0) continue;
+        if (snap.frns[i] == 0) continue;
         
+        size_t dIdx = static_cast<size_t>(snap.parent_frns[i] >> 48);
+        // 2026-07-28 极致优化：如果盘符已在 unloadDrive 中被置空，则该记录物理剔除
+        if (dIdx >= snap.drive_list.size() || snap.drive_list[dIdx].empty()) continue;
+
         uint32_t newIdx = (uint32_t)new_frns.size();
-        // 2026-05-28 物理修复：在碎片整理重构索引时，必须维持驱动器复合 Key 映射，杜绝多盘符冲突
-        size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-        m_frn_to_idx[makeKey(dIdx, m_frns[i])] = newIdx;
+        new_frn_to_idx[makeKey(dIdx, snap.frns[i])] = newIdx;
         
-        new_frns.push_back(m_frns[i]);
-        new_parent_frns.push_back(m_parent_frns[i]);
-        new_sizes.push_back(m_sizes[i]);
-        new_timestamps.push_back(m_timestamps[i]);
-        new_attributes.push_back(m_attributes[i]);
-        new_metadata_fetched.push_back(m_metadata_fetched[i]);
+        new_frns.push_back(snap.frns[i]);
+        new_parent_frns.push_back(snap.parent_frns[i]);
+        new_sizes.push_back(snap.sizes[i]);
+        new_timestamps.push_back(snap.timestamps[i]);
+        new_attributes.push_back(snap.attributes[i]);
+        new_metadata_fetched.push_back(snap.metadata_fetched[i]);
         
-        const char* name = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
+        const char* name = reinterpret_cast<const char*>(snap.string_pool.data() + snap.name_offsets[i]);
         size_t len = strlen(name) + 1;
         new_name_offsets.push_back((uint32_t)new_string_pool.size());
         new_string_pool.insert(new_string_pool.end(), name, name + len);
 
-        const char* ext = reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[i]);
+        const char* ext = reinterpret_cast<const char*>(snap.string_pool.data() + snap.ext_offsets[i]);
         size_t extLen = strlen(ext) + 1;
         new_ext_offsets.push_back((uint32_t)new_string_pool.size());
         new_string_pool.insert(new_string_pool.end(), ext, ext + extLen);
     }
 
-    m_frns = std::move(new_frns);
-    m_parent_frns = std::move(new_parent_frns);
-    // m_parent_indices 在 rebuildFrnToIndexMap 中重建，此处无需处理
-    m_sizes = std::move(new_sizes);
-    m_timestamps = std::move(new_timestamps);
-    m_name_offsets = std::move(new_name_offsets);
-    m_ext_offsets = std::move(new_ext_offsets);
-    m_attributes = std::move(new_attributes);
-    m_metadata_fetched = std::move(new_metadata_fetched);
-    m_string_pool = std::move(new_string_pool);
+    // 3. 结果回写 (极短写锁窗口进行原子替换)
+    {
+        QWriteLocker lock(&m_dataLock);
+        m_frns = std::move(new_frns);
+        m_parent_frns = std::move(new_parent_frns);
+        m_sizes = std::move(new_sizes);
+        m_timestamps = std::move(new_timestamps);
+        m_name_offsets = std::move(new_name_offsets);
+        m_ext_offsets = std::move(new_ext_offsets);
+        m_attributes = std::move(new_attributes);
+        m_metadata_fetched = std::move(new_metadata_fetched);
+        m_string_pool = std::move(new_string_pool);
+        m_frn_to_idx = std::move(new_frn_to_idx);
 
-    m_dead_count = 0;
-    m_wasted_string_bytes = 0;
-    rebuildFrnToIndexMap();
-    buildSortedIndices();
+        m_dead_count = 0;
+        m_wasted_string_bytes = 0;
+        
+        // 在锁内快速完成映射补全，避免状态不一致
+        m_parent_indices.assign(m_frns.size(), 0xFFFFFFFF);
+        for (size_t i = 0; i < m_frns.size(); ++i) {
+            uint64_t encodedPf = m_parent_frns[i];
+            auto itP = m_frn_to_idx.find(encodedPf);
+            if (itP != m_frn_to_idx.end()) m_parent_indices[i] = itP->second;
+        }
+    }
+    
+    // 2026-07-28 修复：不再在 compact 内部自动触发排序，该职责移交至调用者以确保锁一致性
+    // buildSortedIndices();
 }
 
 bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult& result) {
@@ -1532,36 +1677,41 @@ void MftReader::rebuildFrnToIndexMap() {
 }
 
 void MftReader::buildSortedIndices() {
-    // 2026-06-xx 极致架构优化：去锁化双缓冲排序。
-    // 理由：buildSortedIndices 常在 buildIndex 或 compact 期间被调用，
-    // 在持有排他写锁的情况下执行 O(N log N) 的字符串排序会物理阻塞 UI 线程数秒之久。
+    // 2026-07-28 极致修复：真正的去锁化双缓冲排序
+    // 理由：std::sort 是 O(N log N) 操作，必须完全移出写锁范围。
     
-    // 1. 投影准备 (此时应持有读锁，但由于 buildIndex 内部逻辑，调用者已处理锁)
-    std::vector<uint32_t> new_sorted;
-    new_sorted.resize(m_frns.size());
-    std::iota(new_sorted.begin(), new_sorted.end(), 0);
-
+    // 1. 投影准备 (持有读锁，快速拷贝文件名指针)
     struct NameProjection {
         uint32_t idx;
-        const char* name;
+        std::string name; // 必须拷贝字符串以实现完全脱离 m_string_pool 的生命周期，确保锁外安全
     };
     std::vector<NameProjection> projections;
-    projections.reserve(new_sorted.size());
-    for (uint32_t i : new_sorted) {
-        projections.push_back({i, reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i])});
+    
+    {
+        QReadLocker lock(&m_dataLock);
+        size_t count = m_frns.size();
+        projections.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            if (m_frns[i] == 0) continue;
+            const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
+            projections.push_back({(uint32_t)i, p});
+        }
     }
 
-    // 2. 排序阶段 (实际上此处仍在 buildIndex 流程中，但未来可改为异步)
+    // 2. 排序阶段 (代码行号证据：1560-1562，此处完全不持有 m_dataLock)
     std::sort(projections.begin(), projections.end(), [](const NameProjection& a, const NameProjection& b) {
-        return _stricmp(a.name, b.name) < 0;
+        return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
     });
 
-    // 3. 回写索引
-    for (size_t i = 0; i < projections.size(); ++i) {
-        new_sorted[i] = projections[i].idx;
+    // 3. 回写结果 (短写锁进行交换)
+    std::vector<uint32_t> new_sorted;
+    new_sorted.reserve(projections.size());
+    for (const auto& p : projections) new_sorted.push_back(p.idx);
+
+    {
+        QWriteLocker lock(&m_dataLock);
+        m_sorted_indices = std::move(new_sorted);
     }
-    
-    m_sorted_indices = std::move(new_sorted);
 }
 
 void MftReader::requestMetadata(int index) {

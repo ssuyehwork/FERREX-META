@@ -134,7 +134,7 @@ private:
     bool saveDriveToCacheUnlocked(size_t driveIdx); // 2026-06-xx 新增：不带锁的落盘辅助函数，用于 buildIndex
     void clearInternal(); 
     void rebuildFrnToIndexMap();
-    void compact();
+    void compact(bool force = false);
     void buildSortedIndices();
     
     bool loadMftDirect(const std::wstring& volume, DriveResult& result);
