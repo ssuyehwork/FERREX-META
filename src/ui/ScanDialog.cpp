@@ -59,6 +59,7 @@
 #include "ScanController.h"
 #include "JustifiedView.h"
 #include "ThumbnailDelegate.h"
+#include "QuickLookWindow.h"
 #include <memory>
 #include <algorithm>
 
@@ -1186,6 +1187,28 @@ void ScanDialog::setupUi() {
     m_viewStack->setObjectName("ViewStack");
     m_viewStack->addWidget(m_resultView);
     
+    m_quickLook = new QuickLookWindow(this);
+    connect(m_quickLook, &QuickLookWindow::prevRequested, this, [this]() {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        int row = view->currentIndex().row();
+        if (row > 0) {
+            QModelIndex nextIdx = m_tableModel->index(row - 1, 0);
+            view->setCurrentIndex(nextIdx);
+            QString path = m_tableModel->data(m_tableModel->index(row - 1, 1)).toString();
+            m_quickLook->preview(path);
+        }
+    });
+    connect(m_quickLook, &QuickLookWindow::nextRequested, this, [this]() {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        int row = view->currentIndex().row();
+        if (row < m_tableModel->rowCount() - 1) {
+            QModelIndex nextIdx = m_tableModel->index(row + 1, 0);
+            view->setCurrentIndex(nextIdx);
+            QString path = m_tableModel->data(m_tableModel->index(row + 1, 1)).toString();
+            m_quickLook->preview(path);
+        }
+    });
+
     m_iconView = new JustifiedView();
     m_iconView->setModel(m_tableModel);
     m_iconView->setItemDelegate(new ThumbnailDelegate(this));
@@ -1854,6 +1877,19 @@ void ScanDialog::onCopyTriggered(bool isCut) {
 
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Space) {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        QModelIndex idx = view->currentIndex();
+        if (idx.isValid()) {
+            if (m_quickLook->isVisible()) {
+                m_quickLook->closePreview();
+            } else {
+                QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                m_quickLook->preview(path);
+            }
+        }
+        return;
+    }
     if (event->key() == Qt::Key_F2) {
         onRenameTriggered();
         return;
