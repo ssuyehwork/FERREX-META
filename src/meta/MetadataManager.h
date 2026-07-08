@@ -42,8 +42,11 @@ class MetadataManager : public QObject {
 public:
     static MetadataManager& instance();
 
-    void initFromDatabase();
-    void initFromJsonMode();
+    /**
+     * @brief 2026-06-xx 架构重构：轻量化异步加载所有元数据 (废弃原 initFromDatabase)
+     */
+    void loadAllMetaAsync();
+
     RuntimeMeta getMeta(const std::wstring& path);
 
     /**

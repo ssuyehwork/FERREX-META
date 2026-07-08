@@ -19,8 +19,6 @@
 #include "ui/UiHelper.h"
 #include "ui/ScanDialog.h"
 #include "ui/TrayController.h"
-#include "db/Database.h"
-#include "db/SyncEngine.h"
 #include "meta/MetadataManager.h"
 #include "mft/MftReader.h"
 #include "core/CoreController.h"
@@ -39,9 +37,8 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
     // 2026-07-07 根本修复：将日志移出监控盘符，放入 AppData 目录以杜绝 USN 监控无限循环
     static QString logPath;
     if (logPath.isEmpty()) {
-        QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        QDir().mkpath(appData);
-        logPath = QDir(appData).filePath("FERREX_debug.log");
+        // 2026-06-xx 调试优化：优先在程序当前目录生成日志，方便用户直接查看
+        logPath = QDir(QCoreApplication::applicationDirPath()).filePath("FERREX_debug.log");
     }
 
     const QString logFileName = logPath;
@@ -70,6 +67,11 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
         QString line = QString("[%1][%2] %3\n").arg(timeStr, level, msg);
         textStream << line;
         textStream.flush();
+
+        // 同时输出到 stderr 确保在控制台可见
+        fprintf(stderr, "%s", line.toLocal8Bit().constData());
+        fflush(stderr);
+
         g_currentLogSize += line.toUtf8().size(); // 累加内存计数
         logFile.close();
 
@@ -114,16 +116,8 @@ int main(int argc, char *argv[]) {
     a.setApplicationName("FERREX");
     a.setOrganizationName("FERREXTeam");
 
-    // 2026-05-27 物理修复：在主线程预热元数据管理器单例
-    // 确保其内部的 QTimer 等对象归属于主线程，避免跨线程创建导致的行为不确定性
+    // 2026-06-xx 架构重构：彻底移除 DB 模块。系统采用纯轻量化 MFT + JSON 元数据架构。
     FERREX::MetadataManager::instance();
-
-    // 2. 初始化数据库 (仅核心表结构，必须同步完成)
-    std::wstring dbPath = L"FERREX.db";
-    if (!FERREX::Database::instance().init(dbPath)) {
-        QMessageBox::critical(nullptr, "错误", "无法初始化数据库，程序即将退出。");
-        return -1;
-    }
 
     // 3. 简化启动：直接显示 ScanDialog (Plan-136)
     // 彻底移除 MainWindow，仅保留 ScanDialog 作为唯一主界面
