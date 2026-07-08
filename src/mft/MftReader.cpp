@@ -35,7 +35,7 @@
 
 namespace FERREX {
 
-性能优化：实现扩展名预拆分。
+// 性能优化：实现扩展名预拆分。
 // 规则：取最后一个 "." 之后的字符串并转小写；若无 "." 或 "." 为首字符，则 ext 为空。
 static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
     outExt.clear();
@@ -47,7 +47,7 @@ static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
 }
 
 static int64_t filetimeToUnixMs(int64_t filetime) {
-    物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
+    // 物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
     // 116444736000000000LL 是 1601 到 1970 的 100纳秒数
     // 如果时间戳小于 1970 或等于 0，则返回 0 以便 UI 能够正确忽略或显示占位符
     if (filetime <= 116444736000000000LL) return 0;
@@ -85,7 +85,7 @@ MftReader::MftReader() {
     m_metadataPool = new QThreadPool(this);
     m_metadataPool->setMaxThreadCount(2); // 限制补全线程数，避免对磁盘造成地毯式寻址冲击
     m_notifyTimer = new QTimer(this);
-    m_notifyTimer->setInterval(150); // 150ms 聚合通知
+    m_notifyTimer->setInterval(150); // 150ms // 聚合通知
     connect(m_notifyTimer, &QTimer::timeout, this, [this]() {
         emit entriesChangedBatch();
     });
@@ -128,7 +128,7 @@ void MftReader::clearInternal() {
 }
 
 void MftReader::clear() {
-    生命周期强化：立即设置停止位，解除所有长循环阻塞
+    // 生命周期强化：立即设置停止位，解除所有长循环阻塞
     m_isStopping.store(true);
 
     if (m_metadataPool) {
@@ -159,7 +159,7 @@ void MftReader::clear() {
 }
 
 void MftReader::updateActiveDrives(const QStringList& activeDrives) {
-    核心修正：使用原子掩码替代 QWriteLocker，消除 UI 线程同步死锁风险
+    // 核心修正：使用原子掩码替代 QWriteLocker，消除 UI 线程同步死锁风险
     uint32_t mask = 0;
     int newActiveCount = 0;
     QReadLocker lock(&m_dataLock);
@@ -226,7 +226,7 @@ void MftReader::buildIndex(const QStringList& drives) {
         bool success = false;
     };
     std::vector<ScannedDrive> scannedResults(toScan.size());
-    性能策略：使用 QtConcurrent 索引映射实现多驱动器并行扫描
+    // 性能策略：使用 QtConcurrent 索引映射实现多驱动器并行扫描
     // 理由：避免 blockingMap 内部嵌套循环查找，将对齐复杂度由 O(N^2) 降至 O(N)
     std::vector<int> taskIndices((int)toScan.size());
     std::iota(taskIndices.begin(), taskIndices.end(), 0);
@@ -311,7 +311,7 @@ bool MftReader::loadFromCache() {
             if (ScchCache::load(path_base, records, lastUsn) == ScchResult::Ok) {
                 std::wstring driveName = QString::fromStdString(stem + ":").toStdWString();
                 
-                优化：记录解析循环移出写锁范围
+                // 优化：记录解析循环移出写锁范围
                 struct PreparedData {
                     std::vector<uint64_t> frns;
                     std::vector<uint64_t> parent_frns;
@@ -413,7 +413,7 @@ bool MftReader::loadFromCache() {
     // 理由：确保系统在从快照恢复后，能通过 USN 锚点自动追平离线期间的磁盘变动，并开始实时监听。
     std::vector<UsnWatcher*> newWatchers;
     for (const auto& drive : m_drive_list) {
-        if (m_watcher_map.count(drive)) continue; 物理防御：防止重复启动监听
+        if (m_watcher_map.count(drive)) continue; // 物理防御：防止重复启动监听
         uint64_t lastUsn = m_next_usns.count(drive) ? m_next_usns[drive] : 0;
         auto* w = new UsnWatcher(drive, lastUsn, nullptr);
         m_watcher_map[drive] = w;
@@ -446,7 +446,7 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
 
     if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
 
-    优化：记录解析循环移出写锁范围
+    // 优化：记录解析循环移出写锁范围
     struct PreparedData {
         std::vector<uint64_t> frns;
         std::vector<uint64_t> parent_frns;
@@ -637,7 +637,7 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
         lastUsn = m_next_usns[volume];
 
         std::lock_guard<std::mutex> dLock(m_dirtyLock);
-        任务一修复：isFullSave 判断必须按盘符独立维护，不再依赖全局 m_dirty_indices
+        // 任务一修复：isFullSave 判断必须按盘符独立维护，不再依赖全局 m_dirty_indices
         // 方案 A：查 m_drive_ever_saved 标记。
         isFullSave = !m_drive_ever_saved[driveIdx];
         
@@ -684,12 +684,12 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
                 }
             }
         }
-    } // [LOCK RELEASE POINT] - 锁已释放
+    } // [LOCK RELEASE POINT] - // 锁已释放
 
     // [I/O START POINT] - 执行磁盘操作，杜绝假死
     std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
     
-    任务一修复：追加模式下若文件不存在，强制转为全量保存
+    // 任务一修复：追加模式下若文件不存在，强制转为全量保存
     if (!isFullSave) {
         if (!std::filesystem::exists(path_base + ".bin")) {
             isFullSave = true;
@@ -909,7 +909,7 @@ QString MftReader::getFullPath(int index) const {
 }
 
 std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
-    核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
+    // 核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
     uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
 
     {
@@ -927,13 +927,13 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 
     uint32_t curIdx = idxIt->second;
 
-    性能优化：限制回溯深度，并使用更轻量的循环检测。
+    // 性能优化：限制回溯深度，并使用更轻量的循环检测。
     // 避免在大规模目录树中因循环引用导致的死循环，同时减少内存分配开销。
     int depth = 0;
     while (curIdx != 0xFFFFFFFF && depth < 64) {
         const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[curIdx]);
         
-        性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
+        // 性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
         segments.push_back(QString::fromUtf8(p).toStdWString());
 
         uint64_t parentFrn = m_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
@@ -951,7 +951,7 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 
     {
         std::lock_guard<std::mutex> lock(m_pathCacheMutex);
-        if (m_path_cache.size() > 200000) { 扩容路径缓存以提升深度目录渲染性能
+        if (m_path_cache.size() > 200000) { // 扩容路径缓存以提升深度目录渲染性能
             auto it_clear = m_path_cache.begin();
             for (int i = 0; i < 2000; ++i) it_clear = m_path_cache.erase(it_clear);
         }
@@ -997,7 +997,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<uint64_t> finalRes;
     finalRes.reserve(m_frns.size() / 16);
 
-    性能优化：动态任务平衡。
+    // 性能优化：动态任务平衡。
     // 将分块粒度改为 (总数 / 核心数 / 4)，消除由于数据分布不均（如 C 盘文件密度极高）产生的单核长尾阻塞。
     // 物理加固：处理 hardware_concurrency 返回 0 的极端情况。
     unsigned int nThreads = std::thread::hardware_concurrency();
@@ -1047,7 +1047,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         std::vector<size_t> chunks(numChunks);
         std::iota(chunks.begin(), chunks.end(), 0);
 
-        性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
+        // 性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
         qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
         QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
@@ -1361,7 +1361,7 @@ void MftReader::compact(bool force) {
 
     m_generation.fetch_add(1, std::memory_order_relaxed);
     
-    优化：将 O(total) 的数据搬运过程移出写锁
+    // 优化：将 O(total) 的数据搬运过程移出写锁
     // 1. 投影准备 (持有读锁拷贝必要状态)
     struct CompactSnapshot {
         std::vector<uint64_t> frns;
@@ -1498,7 +1498,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
         return false;
     }
 
-    获取根目录句柄作为 Hint，这对于 OpenFileById 的稳定性至关重要
+    // 获取根目录句柄作为 Hint，这对于 OpenFileById 的稳定性至关重要
     std::wstring rootPath = volume + L"\\";
     // 修正：赋予 FILE_READ_ATTRIBUTES 权限
     HANDLE hHint = CreateFileW(rootPath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
@@ -1574,7 +1574,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                 p += header->RecordLength; continue;
             }
 
-            全链路“零分配”扫描逻辑：
+            // 全链路“零分配”扫描逻辑：
             // 直接将文件名从 MFT 缓冲区通过 WideCharToMultiByte 泵入本地字符串池。
             // 理由：彻底杜绝 QString 和 std::string 构造产生的 O(N) 内存碎块。
             MftReader::RawEntry e; 
@@ -1598,11 +1598,11 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
             result.entries.push_back(e);
             recordCount++;
 
-            中途强制落盘机制 (Checkpointing)
+            // 中途强制落盘机制 (Checkpointing)
             // 理由：C 盘扫描时间长，引入 10 万记录级别的中途检查点。
-            物理安全性修复：通过构造深拷贝的增量 DataPackage 序列实现线程安全的异步落盘。
+            // 物理安全性修复：通过构造深拷贝的增量 DataPackage 序列实现线程安全的异步落盘。
             if (recordCount - lastSavedCount >= 100000) {
-                物理安全性加固：显式执行深拷贝，杜绝 UAF 风险。
+                // 物理安全性加固：显式执行深拷贝，杜绝 UAF 风险。
                 std::vector<ScchDataPackage> delta;
                 delta.reserve(recordCount - lastSavedCount);
                 
@@ -1628,7 +1628,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                 std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
                 uint64_t currentUsn = ed.StartFileReferenceNumber;
 
-                性能策略：异步追加。
+                // 性能策略：异步追加。
                 // 理由：delta 包含完全独立所有权的 std::string 副本，后台线程访问是绝对安全的。
                 (void)QtConcurrent::run([path_base, delta, currentUsn]() {
                     ScchCache::appendEntries(path_base, delta, currentUsn);
@@ -1662,7 +1662,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_frns.push_back(e.frn);
         m_parent_frns.push_back((static_cast<uint64_t>(driveIdx) << 48) | (e.parentFrn & 0x0000FFFFFFFFFFFFull));
         m_parent_indices.push_back(0xFFFFFFFF); // 初始为无效下标，待 rebuild 补齐
-        m_sizes.push_back(e.size); 修正：将扫描到的大小压入 SoA
+        m_sizes.push_back(e.size); // 修正：将扫描到的大小压入 SoA
         m_timestamps.push_back(e.modifyTime); m_attributes.push_back(e.attributes);
         m_metadata_fetched.push_back(0);
         
