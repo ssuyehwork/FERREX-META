@@ -67,6 +67,8 @@ set(SOURCES
     src/ui/FramelessDialog.h
     src/ui/JustifiedView.cpp
     src/ui/JustifiedView.h
+    src/ui/QuickLookWindow.cpp
+    src/ui/QuickLookWindow.h
     src/ui/ThumbnailDelegate.cpp
     src/ui/ThumbnailDelegate.h
     src/ui/TrayController.cpp

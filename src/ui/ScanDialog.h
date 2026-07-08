@@ -36,6 +36,7 @@ namespace FERREX {
 
 class JustifiedView;
 class ThumbnailDelegate;
+class QuickLookWindow;
 
 struct ScanConfig {
     QSet<QString> activeDrives;
@@ -185,6 +186,7 @@ private:
     JustifiedView* m_iconView = nullptr;
     QStackedWidget* m_viewStack = nullptr;
     ScanTableModel* m_tableModel = nullptr;
+    QuickLookWindow* m_quickLook = nullptr;
 
     ScanController* m_controller = nullptr;
 

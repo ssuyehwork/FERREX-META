@@ -59,6 +59,7 @@
 #include "ScanController.h"
 #include "JustifiedView.h"
 #include "ThumbnailDelegate.h"
+#include "QuickLookWindow.h"
 #include <memory>
 #include <algorithm>
 
@@ -458,7 +459,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
-        m_displayCount = (std::min<int>)(newSize, 100); 
+        m_displayCount = newSize;
         m_requestedThumbs.clear();
         m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
         endResetModel();
@@ -484,18 +485,12 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
 }
 
 bool ScanTableModel::canFetchMore(const QModelIndex& parent) const {
-    if (parent.isValid()) return false;
-    return m_displayCount < (int)m_currentResultSet->keys.size();
+    Q_UNUSED(parent);
+    return false;
 }
 
 void ScanTableModel::fetchMore(const QModelIndex& parent) {
-    if (parent.isValid()) return;
-    int remainder = static_cast<int>(m_currentResultSet->keys.size()) - m_displayCount;
-    int itemsToFetch = (std::min<int>)(remainder, 100);
-    
-    beginInsertRows(QModelIndex(), m_displayCount, m_displayCount + itemsToFetch - 1);
-    m_displayCount += itemsToFetch;
-    endInsertRows();
+    Q_UNUSED(parent);
 }
 
 void ScanTableModel::setVisibleRange(int top, int bottom) {
@@ -1152,6 +1147,8 @@ void ScanDialog::setupUi() {
     m_resultView->setColumnWidth(2, 100); 
     m_resultView->setColumnWidth(3, 140); 
     
+    m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+
     m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
     m_resultView->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
@@ -1192,6 +1189,28 @@ void ScanDialog::setupUi() {
     m_viewStack->setObjectName("ViewStack");
     m_viewStack->addWidget(m_resultView);
     
+    m_quickLook = new QuickLookWindow(this);
+    connect(m_quickLook, &QuickLookWindow::prevRequested, this, [this]() {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        int row = view->currentIndex().row();
+        if (row > 0) {
+            QModelIndex nextIdx = m_tableModel->index(row - 1, 0);
+            view->setCurrentIndex(nextIdx);
+            QString path = m_tableModel->data(m_tableModel->index(row - 1, 1)).toString();
+            m_quickLook->preview(path);
+        }
+    });
+    connect(m_quickLook, &QuickLookWindow::nextRequested, this, [this]() {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        int row = view->currentIndex().row();
+        if (row < m_tableModel->rowCount() - 1) {
+            QModelIndex nextIdx = m_tableModel->index(row + 1, 0);
+            view->setCurrentIndex(nextIdx);
+            QString path = m_tableModel->data(m_tableModel->index(row + 1, 1)).toString();
+            m_quickLook->preview(path);
+        }
+    });
+
     m_iconView = new JustifiedView();
     m_iconView->setModel(m_tableModel);
     m_iconView->setItemDelegate(new ThumbnailDelegate(this));
@@ -1202,6 +1221,7 @@ void ScanDialog::setupUi() {
     
     // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
+    m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
 
     // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
@@ -1860,6 +1880,19 @@ void ScanDialog::onCopyTriggered(bool isCut) {
 
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Space) {
+        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        QModelIndex idx = view->currentIndex();
+        if (idx.isValid()) {
+            if (m_quickLook->isVisible()) {
+                m_quickLook->closePreview();
+            } else {
+                QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                m_quickLook->preview(path);
+            }
+        }
+        return;
+    }
     if (event->key() == Qt::Key_F2) {
         onRenameTriggered();
         return;
@@ -1973,6 +2006,22 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
+        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Space) {
+            auto* view = qobject_cast<QAbstractItemView*>(watched);
+            QModelIndex idx = view->currentIndex();
+            if (idx.isValid()) {
+                if (m_quickLook->isVisible()) {
+                    m_quickLook->closePreview();
+                } else {
+                    QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                    m_quickLook->preview(path);
+                }
+            }
+            return true; // 拦截事件，防止 TableView 处理空格导致滚动
+        }
+    }
     if (watched == m_sizeSlider && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
