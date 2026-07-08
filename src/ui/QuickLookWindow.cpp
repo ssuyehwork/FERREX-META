@@ -6,8 +6,9 @@
 #include <QApplication>
 #include <QPainter>
 #include <QFile>
-#include <QTextCodec>
+#include <QStringDecoder>
 #include <QScrollBar>
+#include <algorithm>
 #include <QSvgRenderer>
 #include <QtConcurrent>
 #include <QPointer>
@@ -182,7 +183,9 @@ void QuickLookWindow::renderText(const QString& path) {
     QByteArray data = file.read(128 * 1024);
     file.close();
 
-    if (isBinary(data)) {
+    // 检查是否为二进制文件。如果是 UTF-16，虽然含有 null，但不应视为二进制
+    bool potentialUtf16 = data.startsWith("\xFF\xFE") || data.startsWith("\xFE\xFF");
+    if (!potentialUtf16 && isBinary(data)) {
         m_textEdit->hide();
         m_imageLabel->show();
         m_imageLabel->setText("二进制文件，无法预览。");
@@ -190,24 +193,40 @@ void QuickLookWindow::renderText(const QString& path) {
         return;
     }
 
-    QString encoding = detectEncoding(data);
-    QTextCodec* codec = QTextCodec::codecForName(encoding.toLatin1());
-    QString text = codec->toUnicode(data);
+    QString encodingName = detectEncoding(data);
+    QString text;
+
+    if (encodingName == "UTF-8") {
+        text = QString::fromUtf8(data);
+    } else if (encodingName == "UTF-16LE") {
+        text = QString::fromWCharArray(reinterpret_cast<const wchar_t*>(data.constData()), data.size() / 2);
+    } else if (encodingName == "UTF-16BE") {
+        auto decoder = QStringDecoder(QStringDecoder::Utf16BE);
+        text = decoder(data);
+    } else {
+        // GBK / Local8Bit
+        text = QString::fromLocal8Bit(data);
+    }
 
     m_textEdit->setPlainText(text);
     m_textEdit->verticalScrollBar()->setValue(0);
-    m_infoLabel->setText(QString("编码: %1 | 大小: %2 KB | %3").arg(encoding).arg(QFileInfo(path).size() / 1024.0, 0, 'f', 1).arg(path));
+    m_infoLabel->setText(QString("编码: %1 | 大小: %2 KB | %3").arg(encodingName).arg(QFileInfo(path).size() / 1024.0, 0, 'f', 1).arg(path));
 }
 
 bool QuickLookWindow::isBinary(const QByteArray& data) {
     if (data.isEmpty()) return false;
     // 检查前 1KB
     int checkLen = std::min<int>(data.size(), 1024);
-    int nullCount = 0;
+    int continuousNull = 0;
     for (int i = 0; i < checkLen; ++i) {
-        if (data[i] == '\0') nullCount++;
+        if (data[i] == '\0') {
+            continuousNull++;
+            if (continuousNull > 2) return true; // 连续 3 个 null 基本确定是二进制
+        } else {
+            continuousNull = 0;
+        }
     }
-    return nullCount > 0;
+    return false;
 }
 
 QString QuickLookWindow::detectEncoding(const QByteArray& data) {
