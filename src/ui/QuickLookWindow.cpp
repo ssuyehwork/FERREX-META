@@ -180,12 +180,12 @@ void QuickLookWindow::renderText(const QString& path) {
     }
 
     // 限制读取 128KB
-    QByteArray data = file.read(128 * 1024);
+    QByteArray fileData = file.read(128 * 1024);
     file.close();
 
     // 检查是否为二进制文件。如果是 UTF-16，虽然含有 null，但不应视为二进制
-    bool potentialUtf16 = data.startsWith("\xFF\xFE") || data.startsWith("\xFE\xFF");
-    if (!potentialUtf16 && isBinary(data)) {
+    bool potentialUtf16 = fileData.startsWith("\xFF\xFE") || fileData.startsWith("\xFE\xFF");
+    if (!potentialUtf16 && isBinary(fileData)) {
         m_textEdit->hide();
         m_imageLabel->show();
         m_imageLabel->setText("二进制文件，无法预览。");
@@ -193,19 +193,19 @@ void QuickLookWindow::renderText(const QString& path) {
         return;
     }
 
-    QString encodingName = detectEncoding(data);
+    QString encodingName = detectEncoding(fileData);
     QString text;
 
     if (encodingName == "UTF-8") {
-        text = QString::fromUtf8(data);
+        text = QString::fromUtf8(fileData);
     } else if (encodingName == "UTF-16LE") {
-        text = QString::fromWCharArray(reinterpret_cast<const wchar_t*>(data.constData()), data.size() / 2);
+        text = QString::fromWCharArray(reinterpret_cast<const wchar_t*>(fileData.constData()), fileData.size() / 2);
     } else if (encodingName == "UTF-16BE") {
         auto decoder = QStringDecoder(QStringDecoder::Utf16BE);
-        text = decoder(data);
+        text = decoder(fileData);
     } else {
         // GBK / Local8Bit
-        text = QString::fromLocal8Bit(data);
+        text = QString::fromLocal8Bit(fileData);
     }
 
     m_textEdit->setPlainText(text);
@@ -213,13 +213,13 @@ void QuickLookWindow::renderText(const QString& path) {
     m_infoLabel->setText(QString("编码: %1 | 大小: %2 KB | %3").arg(encodingName).arg(QFileInfo(path).size() / 1024.0, 0, 'f', 1).arg(path));
 }
 
-bool QuickLookWindow::isBinary(const QByteArray& data) {
-    if (data.isEmpty()) return false;
+bool QuickLookWindow::isBinary(const QByteArray& fileData) {
+    if (fileData.isEmpty()) return false;
     // 检查前 1KB
-    int checkLen = std::min<int>(data.size(), 1024);
+    int checkLen = std::min<int>(fileData.size(), 1024);
     int continuousNull = 0;
     for (int i = 0; i < checkLen; ++i) {
-        if (data[i] == '\0') {
+        if (fileData[i] == '\0') {
             continuousNull++;
             if (continuousNull > 2) return true; // 连续 3 个 null 基本确定是二进制
         } else {
@@ -229,20 +229,20 @@ bool QuickLookWindow::isBinary(const QByteArray& data) {
     return false;
 }
 
-QString QuickLookWindow::detectEncoding(const QByteArray& data) {
-    if (data.startsWith("\xEF\xBB\xBF")) return "UTF-8";
-    if (data.startsWith("\xFF\xFE")) return "UTF-16LE";
-    if (data.startsWith("\xFE\xFF")) return "UTF-16BE";
+QString QuickLookWindow::detectEncoding(const QByteArray& fileData) {
+    if (fileData.startsWith("\xEF\xBB\xBF")) return "UTF-8";
+    if (fileData.startsWith("\xFF\xFE")) return "UTF-16LE";
+    if (fileData.startsWith("\xFE\xFF")) return "UTF-16BE";
 
     // 简单检测 UTF-8 特征
     int utf8Count = 0;
-    for (int i = 0; i < data.size() - 2; ++i) {
-        unsigned char c = (unsigned char)data[i];
+    for (int i = 0; i < fileData.size() - 2; ++i) {
+        unsigned char c = (unsigned char)fileData[i];
         if (c >= 0xC0 && c <= 0xDF) {
-            if ((unsigned char)data[i+1] >= 0x80 && (unsigned char)data[i+1] <= 0xBF) { utf8Count++; i++; }
+            if ((unsigned char)fileData[i+1] >= 0x80 && (unsigned char)fileData[i+1] <= 0xBF) { utf8Count++; i++; }
         } else if (c >= 0xE0 && c <= 0xEF) {
-            if ((unsigned char)data[i+1] >= 0x80 && (unsigned char)data[i+1] <= 0xBF &&
-                (unsigned char)data[i+2] >= 0x80 && (unsigned char)data[i+2] <= 0xBF) { utf8Count += 2; i += 2; }
+            if ((unsigned char)fileData[i+1] >= 0x80 && (unsigned char)fileData[i+1] <= 0xBF &&
+                (unsigned char)fileData[i+2] >= 0x80 && (unsigned char)fileData[i+2] <= 0xBF) { utf8Count += 2; i += 2; }
         }
     }
 
