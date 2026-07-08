@@ -45,7 +45,7 @@ MetadataManager& MetadataManager::instance() {
 }
 
 MetadataManager::MetadataManager(QObject* parent) : QObject(parent) {
-    // 2026-06-xx 极致精简重构：彻底废弃所有外部持久化逻辑，回归纯内存管理。
+    // 极致精简重构：彻底废弃所有外部持久化逻辑，回归纯内存管理。
     // loadAllMetaAsync 现在仅作为架构预留或加载必要的全局驱动器配置。
     loadAllMetaAsync();
 }

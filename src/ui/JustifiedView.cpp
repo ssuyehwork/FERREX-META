@@ -21,7 +21,7 @@ JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
     horizontalScrollBar()->setRange(0, 0);
     verticalScrollBar()->setSingleStep(20);
     
-    // 2026-06-xx 物理加固：彻底消除背景穿透。
+    // 物理加固：彻底消除背景穿透。
     setAutoFillBackground(true);
     viewport()->setAutoFillBackground(true);
     viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
@@ -188,7 +188,7 @@ QRegion JustifiedView::visualRegionForSelection(const QItemSelection& selection)
 }
 
 void JustifiedView::mousePressEvent(QMouseEvent* event) {
-    // 2026-06-xx 物理拨乱反正：仅在按下 Shift 时执行自定义“视觉顺序”选择逻辑
+    // 物理拨乱反正：仅在按下 Shift 时执行自定义“视觉顺序”选择逻辑
     // 其余所有情况（普通单击、Ctrl、空白处）均退避并转发给基类处理，防止破坏 Model/View 原生多选状态
     if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier)) {
         QModelIndex clicked = indexAt(event->pos());
@@ -232,7 +232,7 @@ void JustifiedView::mouseDoubleClickEvent(QMouseEvent* event) {
         return;
     }
 
-    // 2026-06-16 工业级纠偏：与 doLayout 及 ThumbnailDelegate::calculateMetrics 保持 100% 同步
+    // 工业级纠偏：与 doLayout 及 ThumbnailDelegate::calculateMetrics 保持 100% 同步
     const int textHeight   = 36;
     const int ratingHeight = 20;
     const int gap          = 4;
@@ -255,7 +255,7 @@ void JustifiedView::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void JustifiedView::paintEvent(QPaintEvent*) {
     QPainter painter(viewport());
-    // 2026-06-xx 物理修复：在开启 TranslucentBackground 时手动填充坚实背景，防止透明穿透
+    // 物理修复：在开启 TranslucentBackground 时手动填充坚实背景，防止透明穿透
     painter.fillRect(viewport()->rect(), QColor("#1E1E1E"));
     
     painter.translate(0, -verticalScrollBar()->value());
@@ -275,7 +275,7 @@ void JustifiedView::paintEvent(QPaintEvent*) {
         if (currentIndex() == idx)
             option.state |= QStyle::State_HasFocus;
 
-        // 2026-05-20 物理适配：使用接口推荐的 itemDelegateForIndex
+        // 物理适配：使用接口推荐的 itemDelegateForIndex
         itemDelegateForIndex(idx)->paint(&painter, option, idx);
     }
 }
@@ -345,7 +345,7 @@ void JustifiedView::doLayout() {
             rowAspectRatioSum += ar;
             
             int numInRow = (int)aspectRatios.size();
-            // 2026-06-xx 物理修正：考虑 ThumbnailDelegate 的内边距 (左右各 3px = 6px)
+            // 物理修正：考虑 ThumbnailDelegate 的内边距 (左右各 3px = 6px)
             // 预估宽度 = (宽高比总和 * 目标高度) + (内边距补偿 6px * 数量) + (项间距 * 间距数量)
             double estimatedWidth = (rowAspectRatioSum * m_targetRowHeight) + (6 * numInRow) + (spacing * (numInRow - 1));
             if (estimatedWidth > containerWidth) {
@@ -367,7 +367,7 @@ void JustifiedView::doLayout() {
 
         int actualHeight = m_targetRowHeight;
         bool isLastRow = (i == count);
-        bool rowIsJustified = !isLastRow; // 2026-06-16 物理修正：非最后一行始终填满，杜绝空隙
+        bool rowIsJustified = !isLastRow; // 物理修正：非最后一行始终填满，杜绝空隙
 
         int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
 

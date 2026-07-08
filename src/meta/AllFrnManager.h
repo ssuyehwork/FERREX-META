@@ -8,7 +8,7 @@ namespace FERREX {
 
 /**
  * @brief 全局 FRN 与 am_meta.json 映射管理器
- * 2026-05-17 按照用户要求：用于在项目根目录记录与同步所有 .am_meta.json 的 FRN，实现分布式 JSON 内存对账
+ * 按照用户要求：用于在项目根目录记录与同步所有 .am_meta.json 的 FRN，实现分布式 JSON 内存对账
  */
 class AllFrnManager {
 public:
