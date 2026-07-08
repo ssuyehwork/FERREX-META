@@ -10,7 +10,7 @@
 
 namespace FERREX {
 
-// 2026-05-09 按照用户要求：实现高效缓存机制，参考 FERREX 的 FIDX 格式
+// 按照用户要求：实现高效缓存机制，参考 FERREX 的 FIDX 格式
 struct CacheHeader {
     char magic[4];          // "SCCH" (ScanCache)
     uint32_t version;       // 版本号 (当前为 2)

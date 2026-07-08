@@ -70,7 +70,7 @@ signals:
     void searchStarted();
     void searchFinished(int count, int64_t elapsedMs);
     
-    // 2026-06-xx 响应式信号 (携带原子快照，确保 Model 同步绝对安全)
+    // 响应式信号 (携带原子快照，确保 Model 同步绝对安全)
     void resultsSwapped(std::shared_ptr<ResultSet> newSet);
 
 private slots:
@@ -89,7 +89,7 @@ private:
     int m_currentSortOrder = 0;
 
     std::shared_ptr<ResultSet> m_resultSet;
-    std::shared_ptr<ResultSet> m_sortBaseSnap; // 2026-06-xx 新增：记录重排序任务的基准快照，防止数据过期覆盖
+    std::shared_ptr<ResultSet> m_sortBaseSnap; // 新增：记录重排序任务的基准快照，防止数据过期覆盖
     mutable std::mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;

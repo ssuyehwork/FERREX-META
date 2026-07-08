@@ -40,7 +40,7 @@ class UsnWatcher;
  */
 class MftReader : public QObject {
     Q_OBJECT
-    friend class ScanController; // 2026-06-xx 极致架构：允许控制器直接访问 SoA，消除锁竞争开销
+    friend class ScanController;  // 极致架构：允许控制器直接访问 SoA，消除锁竞争开销
 public:
     static MftReader& instance();
 
@@ -49,8 +49,8 @@ public:
 
 signals:
     void dataChanged(int index = -1);
-    void entriesChangedBatch();        // 2026-06-xx 新增：批量变动信号，解决信号风暴
-    void driveLoaded(const QString& drive, int count, int total); // 2026-05-14 新增：驱动器就绪信号
+    void entriesChangedBatch();         新增：批量变动信号，解决信号风暴
+    void driveLoaded(const QString& drive, int count, int total);  新增：驱动器就绪信号
 
 public:
     // 生命周期管理
@@ -67,7 +67,7 @@ public:
     bool isDriveIndexed(const QString& drive);
 
     // 查询接口 (支持驱动器掩码隔离)
-    // 2026-06-xx 物理重构：返回稳定的复合 FRN 主键而非数组下标，杜绝跨线程索引漂移
+     物理重构：返回稳定的复合 FRN 主键而非数组下标，杜绝跨线程索引漂移
     std::vector<uint64_t> search(const QString& query, bool useRegex = false, bool caseSensitive = false, 
                                  const QStringList& extensionList = QStringList(), 
                                  bool includeHidden = true, bool includeSystem = true,
@@ -80,8 +80,8 @@ public:
     int      getIndexByKey(uint64_t compositeKey) const;
     uint64_t getKeyByIndex(int index) const;
     QString  getName(int index) const;
-    const char* getExt(int index) const; // 2026-06-xx 新增：获取预拆分的扩展名 C-String
-    QString     getExtQString(int index) const; // 2026-06-xx 新增：获取预拆分的扩展名 QString (线程安全)
+    const char* getExt(int index) const;  新增：获取预拆分的扩展名 C-String
+    QString     getExtQString(int index) const;  新增：获取预拆分的扩展名 QString (线程安全)
     int64_t getSize(int index) const;
     int64_t getModifyTime(int index) const;
     uint32_t getAttributes(int index) const;
@@ -119,19 +119,19 @@ private:
     struct RawEntry {
         uint64_t frn;
         uint64_t parentFrn;
-        uint64_t size; // 2026-05-14 补全：文件大小字段
+        uint64_t size;  补全：文件大小字段
         uint32_t attributes;
         int64_t  modifyTime;
-        uint32_t nameOffset; // 2026-06-xx 极致优化：使用偏移量替代 std::string，实现零分配扫描
+        uint32_t nameOffset;  // 极致优化：使用偏移量替代 std::string，实现零分配扫描
     };
     struct DriveResult {
         std::vector<RawEntry> entries;
-        std::vector<uint8_t>  string_pool; // 2026-06-xx 极致优化：本地字符串池
+        std::vector<uint8_t>  string_pool;  // 极致优化：本地字符串池
         uint64_t nextUsn;
     };
 
     bool saveDriveToCacheInternal(size_t driveIdx); 
-    bool saveDriveToCacheUnlocked(size_t driveIdx); // 2026-06-xx 新增：不带锁的落盘辅助函数，用于 buildIndex
+    bool saveDriveToCacheUnlocked(size_t driveIdx);  新增：不带锁的落盘辅助函数，用于 buildIndex
     void clearInternal(); 
     void rebuildFrnToIndexMap();
     void compact(bool force = false);
@@ -143,41 +143,43 @@ private:
     // SoA 主数据
     std::vector<uint64_t>  m_frns;
     std::vector<uint64_t>  m_parent_frns;  // 高 16 位存储盘符索引
-    std::vector<uint32_t>  m_parent_indices; // 2026-06-xx 新增：父节点在 SoA 中的下标，加速路径回溯
+    std::vector<uint32_t>  m_parent_indices;  新增：父节点在 SoA 中的下标，加速路径回溯
     std::vector<int64_t>   m_sizes;
     std::vector<int64_t>   m_timestamps;   
     std::vector<uint32_t>  m_name_offsets;
-    std::vector<uint32_t>  m_ext_offsets;    // 2026-06-xx 新增：扩展名在字符串池中的偏移，实现零解析搜索
+    std::vector<uint32_t>  m_ext_offsets;     新增：扩展名在字符串池中的偏移，实现零解析搜索
     std::vector<uint32_t>  m_attributes;
     std::vector<uint8_t>   m_metadata_fetched; // 0: 未获取, 1: 获取中, 2: 已完成
     std::vector<uint8_t>   m_string_pool;
 
     std::vector<std::wstring> m_drive_list;
     std::atomic<uint32_t>     m_drive_active_mask{0}; // 驱动器过滤掩码 (位图)
+    std::atomic<int>          m_active_count{0};       // 极致优化：原子化激活计数
+    std::vector<int>          m_drive_counts;          // 极致优化：分盘符计数存储
     std::atomic<uint64_t>     m_generation{0};        // 数据代数，用于检测 compact
 
     std::unordered_map<uint64_t, uint32_t>              m_frn_to_idx;
-    std::unordered_map<size_t, bool>                    m_drive_ever_saved; // 2026-06-xx 按盘符独立维护全量保存状态
+    std::unordered_map<size_t, bool>                    m_drive_ever_saved;  按盘符独立维护全量保存状态
 
     mutable std::unordered_map<uint64_t, std::wstring>  m_path_cache;
     mutable std::mutex m_pathCacheMutex;
 
     std::unordered_map<std::wstring, uint64_t>          m_next_usns;
-    std::unordered_map<std::wstring, UsnWatcher*>      m_watcher_map; // 2026-07-07 物理重构：使用 Map 管理监听器以支持按盘符卸载
+    std::unordered_map<std::wstring, UsnWatcher*>      m_watcher_map;  物理重构：使用 Map 管理监听器以支持按盘符卸载
 
     mutable QReadWriteLock m_dataLock;
-    QThreadPool*           m_metadataPool = nullptr; // 2026-06-xx 新增：物理属性补全专用线程池
+    QThreadPool*           m_metadataPool = nullptr;  新增：物理属性补全专用线程池
     mutable QReadWriteLock m_iconCacheLock;
     QHash<QString, QIcon>  m_icon_cache;
 
     bool m_isInitialized = false;
-    std::atomic<bool> m_isStopping{false}; // 2026-06-xx 新增：全局退出/中断令牌
+    std::atomic<bool> m_isStopping{false};  新增：全局退出/中断令牌
     uint32_t m_dirty_count = 0;
-    std::unordered_set<uint32_t> m_dirty_indices; // 2026-06-xx 新增：记录变动的 SoA 下标
-    std::unordered_map<uint32_t, uint64_t> m_dead_frns; // 2026-06-xx 新增：记录已删除项的原始 FRN 用于落盘
-    std::mutex   m_dirtyLock; // 2026-06-xx 新增：保护脏数据追踪容器
+    std::unordered_set<uint32_t> m_dirty_indices;  新增：记录变动的 SoA 下标
+    std::unordered_map<uint32_t, uint64_t> m_dead_frns;  新增：记录已删除项的原始 FRN 用于落盘
+    std::mutex   m_dirtyLock;  新增：保护脏数据追踪容器
     
-    // 2026-06-xx 新增：合并期间的缓冲机制
+     新增：合并期间的缓冲机制
     std::unordered_map<size_t, bool> m_is_compacting; 
     std::unordered_map<size_t, std::vector<ScchDataPackage>> m_compaction_buffer;
 

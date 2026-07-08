@@ -132,7 +132,7 @@ public:
 
     static QString getSvgDataUrl(const QString& key, const QColor& color = QColor("#3498db")) {
         // [PHYSICAL COMPATIBILITY] 转换为 PNG Base64 以确保 QSS 100% 渲染成功
-        // 2026-06-xx 物理修正：使用 20x20 尺寸以匹配 QTreeView 默认分支宽度
+        // 物理修正：使用 20x20 尺寸以匹配 QTreeView 默认分支宽度
         QPixmap pix = renderIcon(key, QSize(20, 20), color);
         if (pix.isNull()) return QString();
         
@@ -147,7 +147,7 @@ public:
         QPixmap pix = renderIcon(key, QSize(20, 20), color);
         if (pix.isNull()) return QString();
 
-        // 2026-06-xx 物理修复：在路径中加入 V3 标识并强制覆盖。
+        // 物理修复：在路径中加入 V3 标识并强制覆盖。
         // 核心修正：Qt QSS 必须使用正斜杠 (/)，反斜杠会被转义导致加载失败。强制转换为正斜杠。
         QString tmpPath = QDir::temp().filePath(
             QString("FERREX_%1_%2_v3.png").arg(key).arg(color.name().mid(1))
@@ -157,7 +157,7 @@ public:
     }
 
     static bool isGraphicsFile(const QString& ext) {
-        // 2026-06-xx 工业级扩容：只要 Windows 能显示预览图，就允许进入解析流程
+        // 工业级扩容：只要 Windows 能显示预览图，就允许进入解析流程
         static const QStringList graphicsExts = {
             "png", "jpg", "jpeg", "bmp", "gif", "webp", "ico", "tiff", "tif",
             "psd", "psb", "ai", "eps", "pdf", "svg", "cdr",
@@ -182,7 +182,7 @@ public:
         Q_UNUSED(size);
         
         QFileInfo info(filePath);
-        // 2026-06-xx 架构修正：磁盘根目录图标应独立缓存，防止其覆盖通用文件夹图标
+        // 架构修正：磁盘根目录图标应独立缓存，防止其覆盖通用文件夹图标
         QString key = info.isDir() ? (info.isRoot() ? filePath : "folder") : info.suffix().toLower();
         if (key.length() > 128) key = "unknown";
         
@@ -194,7 +194,7 @@ public:
         QFileIconProvider provider;
         QIcon icon;
         if (info.isDir()) {
-            // 2026-06-xx 架构修正：判断是否为磁盘根目录
+            // 架构修正：判断是否为磁盘根目录
             if (info.isRoot()) {
                 // 若是磁盘根目录，必须获取其盘符图标而非通用文件夹图标
                 icon = provider.icon(info);
@@ -222,7 +222,7 @@ public:
 
     static void applyMenuStyle(QWidget* menu) {
         if (!menu) return;
-        // 2026-06-xx 物理修复：开启透明背景属性，消除圆角外的直角溢出
+        // 物理修复：开启透明背景属性，消除圆角外的直角溢出
         menu->setAttribute(Qt::WA_TranslucentBackground);
         menu->setWindowFlag(Qt::FramelessWindowHint);
         menu->setStyleSheet(
@@ -288,7 +288,7 @@ public:
 
     /**
      * @brief 从图像中提取调色盘 (工业级优化版)
-     * 2026-06-xx 架构重构：彻底弃用外部工具链 (ImageMagick/Ghostscript)，全面转向原生 Shell 引擎
+     * 架构重构：彻底弃用外部工具链 (ImageMagick/Ghostscript)，全面转向原生 Shell 引擎
      */
     static QVector<QPair<QColor, float>> extractPalette(const QString& targetFile) {
 #ifdef Q_OS_WIN
@@ -409,7 +409,7 @@ public:
         QDir().mkpath(cacheDir);
 
         QFileInfo fi(path);
-        // 2026-06-xx 物理修复：在 hashKey 中加入 v13 标识，强制失效旧缓存
+        // 物理修复：在 hashKey 中加入 v13 标识，强制失效旧缓存
         QString hashKey = QString("%1_%2_%3_%4_v13").arg(path).arg(fi.size()).arg(fi.lastModified().toMSecsSinceEpoch()).arg(size);
         QString safeName = QString::number(qHash(hashKey), 16) + ".png";
         QString cachePath = cacheDir + safeName;

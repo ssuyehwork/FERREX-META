@@ -44,7 +44,7 @@ void CoreController::startSystem() {
 
 QStringList CoreController::performSearch(const QString& keyword) {
     if (keyword.isEmpty()) return {};
-    // 2026-06-xx 架构重构：全局搜索已由 ScanController + MftReader 承载
+    // 架构重构：全局搜索已由 ScanController + MftReader 承载
     return {}; 
 }
 

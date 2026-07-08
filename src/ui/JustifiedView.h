@@ -41,7 +41,7 @@ protected:
     void updateGeometries() override;
 
 protected slots:
-    // 2026-06-xx 性能优化：布局节流槽
+    // 性能优化：布局节流槽
     void onLayoutTimerTimeout();
 
 private:
@@ -58,7 +58,7 @@ private:
     bool m_layoutDirty = false;
     int m_targetRowHeight = 128;
     int m_aspectRatioRole = Qt::UserRole + 2;
-    int m_anchorRow = -1; // 2026-06-16 物理锚点：锁定 Shift 多选起始行
+    int m_anchorRow = -1; // 物理锚点：锁定 Shift 多选起始行
 };
 
 } // namespace FERREX
