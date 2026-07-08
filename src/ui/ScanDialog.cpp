@@ -1951,6 +1951,11 @@ void ScanDialog::triggerWarmup() {
             } 
  
             // 2. 提前让该线程触发一次 Shell 引擎调用 
+            // 2026-07-22 物理预热补丁：预热 getCachedIcon (QFileIconProvider)
+            // 理由：消除首次搜索结果渲染时因 Shell 图标子系统冷启动导致的 UI 线程同步阻塞。
+            MftReader::instance().getCachedIcon("txt", false); // 文件图标预热
+            MftReader::instance().getCachedIcon("", true);    // 文件夹图标预热
+
             int total = MftReader::instance().totalCount(); 
             if (total > 0) { 
                 for (int i = 0; i < std::min(total, 5000); ++i) { 
