@@ -458,7 +458,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
-        m_displayCount = (std::min<int>)(newSize, 100); 
+        m_displayCount = newSize;
         m_requestedThumbs.clear();
         m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
         endResetModel();
@@ -484,18 +484,12 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
 }
 
 bool ScanTableModel::canFetchMore(const QModelIndex& parent) const {
-    if (parent.isValid()) return false;
-    return m_displayCount < (int)m_currentResultSet->keys.size();
+    Q_UNUSED(parent);
+    return false;
 }
 
 void ScanTableModel::fetchMore(const QModelIndex& parent) {
-    if (parent.isValid()) return;
-    int remainder = static_cast<int>(m_currentResultSet->keys.size()) - m_displayCount;
-    int itemsToFetch = (std::min<int>)(remainder, 100);
-    
-    beginInsertRows(QModelIndex(), m_displayCount, m_displayCount + itemsToFetch - 1);
-    m_displayCount += itemsToFetch;
-    endInsertRows();
+    Q_UNUSED(parent);
 }
 
 void ScanTableModel::setVisibleRange(int top, int bottom) {
