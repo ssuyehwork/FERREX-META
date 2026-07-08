@@ -27,7 +27,7 @@ struct RuntimeMeta {
 
     /**
      * @brief 判定是否有用户操作过的信息，作为“已录入/受控”状态的感应逻辑
-     * 2026-06-xx 按照用户要求：只要有任何元数据修改，即视为数据库已录入项
+     * 按照用户要求：只要有任何元数据修改，即视为数据库已录入项
      */
     bool hasUserOperations() const {
         return rating > 0 || !color.empty() || !tags.isEmpty() || !note.empty() || pinned || encrypted;
@@ -43,14 +43,14 @@ public:
     static MetadataManager& instance();
 
     /**
-     * @brief 2026-06-xx 架构重构：轻量化异步加载所有元数据 (废弃原 initFromDatabase)
+     * @brief 架构重构：轻量化异步加载所有元数据 (废弃原 initFromDatabase)
      */
     void loadAllMetaAsync();
 
     RuntimeMeta getMeta(const std::wstring& path);
 
     /**
-     * @brief 2026-06-xx 按照用户要求：在 JSON 内存模式下执行多维搜索
+     * @brief 按照用户要求：在 JSON 内存模式下执行多维搜索
      * @param keyword 关键词
      * @return 匹配的物理路径列表
      */
@@ -70,13 +70,13 @@ public:
 
     /**
      * @brief 物理同步元数据
-     * 2026-06-xx 按照用户要求：支持主动触发物理元数据（File ID 等）的获取与保存
+     * 按照用户要求：支持主动触发物理元数据（File ID 等）的获取与保存
      */
     void syncPhysicalMetadata(const std::wstring& path);
 
     /**
      * @brief 同步获取文件的 128-bit File ID (或 Fallback ID)
-     * 2026-06-15 物理加固：确保在建立分类关联前指纹已就绪
+     * 物理加固：确保在建立分类关联前指纹已就绪
      */
     std::string getFileIdSync(const std::wstring& path);
 
@@ -107,13 +107,13 @@ public:
 
     /**
      * @brief 内部辅助：通过 WinAPI 获取 File ID 和基础元数据
-     * 2026-06-xx 物理修复：已升级为公开静态成员，支持跨模块同步入库
-     * 2026-06-xx 物理补完：增加 outFrn 参数以获取物理索引，彻底杜绝数据库主键冲突
+     * 物理修复：已升级为公开静态成员，支持跨模块同步入库
+     * 物理补完：增加 outFrn 参数以获取物理索引，彻底杜绝数据库主键冲突
      */
     static bool fetchWinApiMetadataDirect(const std::wstring& path, std::string& outId128, std::wstring* outFrn = nullptr, long long* outSize = nullptr, std::wstring* outType = nullptr, long long* outCtime = nullptr, long long* outMtime = nullptr, long long* outAtime = nullptr);
 
 signals:
-    // 2026-05-27 物理修复：信号参数由 std::wstring 改为 QString
+    // 物理修复：信号参数由 std::wstring 改为 QString
     // 理由：std::wstring 未注册为元类型，导致跨线程发射时（如数据库预热阶段）触发 QueuedConnection 失败从而引起崩溃。
     void metaChanged(const QString& path);
 
@@ -130,7 +130,7 @@ private:
     std::unordered_map<std::wstring, RuntimeMeta> m_cache;
     mutable std::shared_mutex m_mutex;
     
-    // 2026-05-25 按照用户要求：改用单例计时器与脏路径集，彻底解决计时器风暴
+    // 按照用户要求：改用单例计时器与脏路径集，彻底解决计时器风暴
     QTimer* m_batchTimer = nullptr;
     std::unordered_set<std::wstring, std::hash<std::wstring>> m_dirtyPaths;
 

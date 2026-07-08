@@ -35,7 +35,7 @@
 
 namespace FERREX {
 
-// 2026-06-xx 性能优化：实现扩展名预拆分。
+性能优化：实现扩展名预拆分。
 // 规则：取最后一个 "." 之后的字符串并转小写；若无 "." 或 "." 为首字符，则 ext 为空。
 static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
     outExt.clear();
@@ -47,7 +47,7 @@ static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
 }
 
 static int64_t filetimeToUnixMs(int64_t filetime) {
-    // 2026-05-14 物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
+    物理对标 Windows FILETIME 标准 (1601 Epoch to 1970 Unix)
     // 116444736000000000LL 是 1601 到 1970 的 100纳秒数
     // 如果时间戳小于 1970 或等于 0，则返回 0 以便 UI 能够正确忽略或显示占位符
     if (filetime <= 116444736000000000LL) return 0;
@@ -108,6 +108,8 @@ void MftReader::clearInternal() {
     m_string_pool.clear();
     m_drive_list.clear();
     m_drive_active_mask = 0;
+    m_active_count = 0;
+    m_drive_counts.clear();
     m_frn_to_idx.clear();
     m_sorted_indices.clear();
     {
@@ -126,7 +128,7 @@ void MftReader::clearInternal() {
 }
 
 void MftReader::clear() {
-    // 2026-06-xx 生命周期强化：立即设置停止位，解除所有长循环阻塞
+    生命周期强化：立即设置停止位，解除所有长循环阻塞
     m_isStopping.store(true);
 
     if (m_metadataPool) {
@@ -157,8 +159,9 @@ void MftReader::clear() {
 }
 
 void MftReader::updateActiveDrives(const QStringList& activeDrives) {
-    // 2026-05-14 核心修正：使用原子掩码替代 QWriteLocker，消除 UI 线程同步死锁风险
+    核心修正：使用原子掩码替代 QWriteLocker，消除 UI 线程同步死锁风险
     uint32_t mask = 0;
+    int newActiveCount = 0;
     QReadLocker lock(&m_dataLock);
     for (const QString& d : activeDrives) {
         std::wstring vol = d.toStdWString();
@@ -166,11 +169,15 @@ void MftReader::updateActiveDrives(const QStringList& activeDrives) {
         for (size_t i = 0; i < m_drive_list.size(); ++i) {
             if (_wcsicmp(m_drive_list[i].c_str(), vol.c_str()) == 0) {
                 mask |= (1 << i);
+                if (i < m_drive_counts.size()) {
+                    newActiveCount += m_drive_counts[i];
+                }
                 break;
             }
         }
     }
     m_drive_active_mask.store(mask, std::memory_order_relaxed);
+    m_active_count.store(newActiveCount, std::memory_order_relaxed);
 }
 
 bool MftReader::isDriveIndexed(const QString& drive) {
@@ -219,7 +226,7 @@ void MftReader::buildIndex(const QStringList& drives) {
         bool success = false;
     };
     std::vector<ScannedDrive> scannedResults(toScan.size());
-    // 2026-06-xx 性能策略：使用 QtConcurrent 索引映射实现多驱动器并行扫描
+    性能策略：使用 QtConcurrent 索引映射实现多驱动器并行扫描
     // 理由：避免 blockingMap 内部嵌套循环查找，将对齐复杂度由 O(N^2) 降至 O(N)
     std::vector<int> taskIndices((int)toScan.size());
     std::iota(taskIndices.begin(), taskIndices.end(), 0);
@@ -240,7 +247,7 @@ void MftReader::buildIndex(const QStringList& drives) {
             continue;
         }
         
-        // 2026-07-07 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
+        // 物理修复：优先复用空置槽位 (Analysis_Modification_Plan-154.md)
         size_t dIdx = (size_t)-1;
         for (size_t i = 0; i < m_drive_list.size(); ++i) {
             if (m_drive_list[i].empty()) { dIdx = i; m_drive_list[i] = sr.volume; break; }
@@ -248,12 +255,17 @@ void MftReader::buildIndex(const QStringList& drives) {
         if (dIdx == (size_t)-1) {
             dIdx = m_drive_list.size();
             m_drive_list.push_back(sr.volume);
+            m_drive_counts.push_back(0);
         }
 
-        if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
+        if (dIdx < 32) {
+            m_drive_active_mask.fetch_or(1 << dIdx);
+            m_drive_counts[dIdx] = (int)sr.res.entries.size();
+            m_active_count.fetch_add(m_drive_counts[dIdx]);
+        }
         m_next_usns[sr.volume] = sr.res.nextUsn;
         mergeDriveResult(sr.volume, sr.res, dIdx);
-        // 2026-06-xx 物理修复：在持有写锁时调用 Unlocked 版本，解除递归锁自杀式死锁
+        // 物理修复：在持有写锁时调用 Unlocked 版本，解除递归锁自杀式死锁
         saveDriveToCacheUnlocked(dIdx);
         
         auto* w = new UsnWatcher(sr.volume, sr.res.nextUsn, nullptr);
@@ -261,7 +273,7 @@ void MftReader::buildIndex(const QStringList& drives) {
         newWatchers.push_back(w);
     }
 
-    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    // 极致修复：锁内仅执行增量映射补全
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_parent_indices[i] != 0xFFFFFFFF) continue;
         uint64_t encodedPf = m_parent_frns[i];
@@ -281,7 +293,7 @@ bool MftReader::loadFromCache() {
     std::filesystem::path cacheDir = "FERREX/cache";
     if (!std::filesystem::exists(cacheDir)) return false;
 
-    // 2026-06-xx 物理修复：载入缓存前必须执行全量清理（含停止旧监听器），杜绝资源泄露与逻辑重叠
+    // 物理修复：载入缓存前必须执行全量清理（含停止旧监听器），杜绝资源泄露与逻辑重叠
     clear(); 
 
     std::unordered_set<std::string> loadedBases;
@@ -299,7 +311,7 @@ bool MftReader::loadFromCache() {
             if (ScchCache::load(path_base, records, lastUsn) == ScchResult::Ok) {
                 std::wstring driveName = QString::fromStdString(stem + ":").toStdWString();
                 
-                // 2026-07-28 优化：记录解析循环移出写锁范围
+                优化：记录解析循环移出写锁范围
                 struct PreparedData {
                     std::vector<uint64_t> frns;
                     std::vector<uint64_t> parent_frns;
@@ -346,6 +358,7 @@ bool MftReader::loadFromCache() {
                     QWriteLocker lock(&m_dataLock);
                     dIdx = m_drive_list.size();
                     m_drive_list.push_back(driveName);
+                    m_drive_counts.push_back((int)records.size());
                     m_next_usns[driveName] = lastUsn;
 
                     uint32_t poolBase = (uint32_t)m_string_pool.size();
@@ -382,7 +395,7 @@ bool MftReader::loadFromCache() {
     QWriteLocker lock(&m_dataLock);
     if (m_frns.empty()) return false;
     
-    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    // 极致修复：锁内仅执行增量映射补全
     for (size_t i = 0; i < m_frns.size(); ++i) {
         if (m_parent_indices[i] != 0xFFFFFFFF) continue;
         uint64_t encodedPf = m_parent_frns[i];
@@ -396,11 +409,11 @@ bool MftReader::loadFromCache() {
     compact(); 
     buildSortedIndices();
 
-    // 2026-06-xx 核心修复：加载缓存后立即启动 USN 监听器
+    // 核心修复：加载缓存后立即启动 USN 监听器
     // 理由：确保系统在从快照恢复后，能通过 USN 锚点自动追平离线期间的磁盘变动，并开始实时监听。
     std::vector<UsnWatcher*> newWatchers;
     for (const auto& drive : m_drive_list) {
-        if (m_watcher_map.count(drive)) continue; // 2026-07-07 物理防御：防止重复启动监听
+        if (m_watcher_map.count(drive)) continue; 物理防御：防止重复启动监听
         uint64_t lastUsn = m_next_usns.count(drive) ? m_next_usns[drive] : 0;
         auto* w = new UsnWatcher(drive, lastUsn, nullptr);
         m_watcher_map[drive] = w;
@@ -433,7 +446,7 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
 
     if (ScchCache::load(path_base, records, lastUsn) != ScchResult::Ok) return false;
 
-    // 2026-07-28 优化：记录解析循环移出写锁范围
+    优化：记录解析循环移出写锁范围
     struct PreparedData {
         std::vector<uint64_t> frns;
         std::vector<uint64_t> parent_frns;
@@ -482,9 +495,14 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     if (dIdx == (size_t)-1) {
         dIdx = m_drive_list.size();
         m_drive_list.push_back(vol);
+        m_drive_counts.push_back(0);
     }
 
-    if (dIdx < 32) m_drive_active_mask.fetch_or(1 << dIdx);
+    if (dIdx < 32) {
+        m_drive_active_mask.fetch_or(1 << dIdx);
+        m_drive_counts[dIdx] = (int)pd.frns.size();
+        m_active_count.fetch_add(m_drive_counts[dIdx]);
+    }
     m_next_usns[vol] = lastUsn;
 
     // 锁内仅进行高效的数据追加 (O(delta) 内存拷贝)
@@ -515,7 +533,7 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     }
     m_string_pool.insert(m_string_pool.end(), pd.string_pool.begin(), pd.string_pool.end());
 
-    // 2026-07-28 极致修复：锁内仅执行增量映射补全
+    // 极致修复：锁内仅执行增量映射补全
     for (size_t i = startIdx; i < m_frns.size(); ++i) {
         uint64_t encodedPf = m_parent_frns[i];
         auto itP = m_frn_to_idx.find(encodedPf);
@@ -527,7 +545,7 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     m_watcher_map[vol] = w;
     lock.unlock();
 
-    // 2026-07-28 修复：加载完成后锁外按序执行计算
+    // 修复：加载完成后锁外按序执行计算
     compact(); 
     buildSortedIndices();
     w->start();
@@ -558,7 +576,7 @@ void MftReader::unloadDrive(const QString& drive) {
             m_watcher_map.erase(itW);
         }
 
-        // 2026-07-07 物理补齐：按盘符卸载时清理路径缓存与 USN 锚点
+        // 物理补齐：按盘符卸载时清理路径缓存与 USN 锚点
         m_next_usns.erase(vol);
         {
             std::lock_guard<std::mutex> pathLock(m_pathCacheMutex);
@@ -569,9 +587,13 @@ void MftReader::unloadDrive(const QString& drive) {
             }
         }
 
-        // 2026-07-28 核心修复：卸载数据时禁止在锁内遍历 SoA。
+        // 核心修复：卸载数据时禁止在锁内遍历 SoA。
         // 策略：仅清空盘符名称并更新掩码。物理剔除任务交给随后的锁外 compact()。
         m_drive_list[dIdx] = L"";
+        if (dIdx < m_drive_counts.size()) {
+            m_active_count.fetch_sub(m_drive_counts[dIdx]);
+            m_drive_counts[dIdx] = 0;
+        }
 
         m_drive_ever_saved.erase(dIdx);
         m_is_compacting.erase(dIdx);
@@ -582,7 +604,7 @@ void MftReader::unloadDrive(const QString& drive) {
         m_drive_active_mask.store(mask);
     }
 
-    // 2026-07-28 修复：卸载后必须强制 compact 以物理回收该盘占用的所有内存。
+    // 修复：卸载后必须强制 compact 以物理回收该盘占用的所有内存。
     // compact 内部已实现去锁化。
     compact(true); 
 
@@ -597,12 +619,12 @@ bool MftReader::saveToCache() {
 }
 
 bool MftReader::saveDriveToCache(size_t driveIdx) {
-    // 2026-06-xx 物理修复：saveDriveToCache 不再持有全局锁，改为内部精细化锁管理
+    // 物理修复：saveDriveToCache 不再持有全局锁，改为内部精细化锁管理
     return saveDriveToCacheInternal(driveIdx);
 }
 
 bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
-    // 2026-06-xx 极致架构优化：通过延迟 I/O 彻底剥离锁内磁盘操作
+    // 极致架构优化：通过延迟 I/O 彻底剥离锁内磁盘操作
     std::vector<ScchDataPackage> dirtyData;
     uint64_t lastUsn = 0;
     bool isFullSave = false;
@@ -615,7 +637,7 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
         lastUsn = m_next_usns[volume];
 
         std::lock_guard<std::mutex> dLock(m_dirtyLock);
-        // 2026-06-xx 任务一修复：isFullSave 判断必须按盘符独立维护，不再依赖全局 m_dirty_indices
+        任务一修复：isFullSave 判断必须按盘符独立维护，不再依赖全局 m_dirty_indices
         // 方案 A：查 m_drive_ever_saved 标记。
         isFullSave = !m_drive_ever_saved[driveIdx];
         
@@ -667,7 +689,7 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
     // [I/O START POINT] - 执行磁盘操作，杜绝假死
     std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
     
-    // 2026-06-xx 任务一修复：追加模式下若文件不存在，强制转为全量保存
+    任务一修复：追加模式下若文件不存在，强制转为全量保存
     if (!isFullSave) {
         if (!std::filesystem::exists(path_base + ".bin")) {
             isFullSave = true;
@@ -726,7 +748,7 @@ bool MftReader::saveDriveToCacheInternal(size_t driveIdx) {
 }
 
 bool MftReader::saveDriveToCacheUnlocked(size_t driveIdx) {
-    // 2026-06-xx 物理修复：在持有写锁时执行的“无锁版”落盘辅助。
+    // 物理修复：在持有写锁时执行的“无锁版”落盘辅助。
     // 为了符合“锁外 I/O”规范，我们将 I/O 逻辑异步化。
     // 理由：buildIndex 内部持有 QWriteLocker，此时若执行同步 I/O 会导致所有 UI 读线程挂起。
     QThreadPool::globalInstance()->start([this, driveIdx]() {
@@ -802,21 +824,8 @@ int MftReader::totalCount() const {
 }
 
 int MftReader::activeCount() const {
-    QReadLocker lock(&m_dataLock);
-    
-    uint32_t activeMask = m_drive_active_mask.load(std::memory_order_relaxed);
-    int count = 0;
-    
-    // SoA 内存连续，在 400 万量级下此遍历通常在 2ms 内完成，效率极高 (Analysis_Modification_Plan-154.md)
-    for (size_t i = 0; i < m_frns.size(); ++i) {
-        if (m_frns[i] == 0) continue; // 排除标记为已删除的死亡条目
-        
-        size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
-        if (dIdx < 32 && (activeMask & (1 << dIdx))) {
-            count++;
-        }
-    }
-    return count;
+    // 极致优化：直接返回原子计数值，杜绝 UI 线程 O(N) 遍历
+    return m_active_count.load(std::memory_order_relaxed);
 }
 
 int MftReader::getIndexByKey(uint64_t compositeKey) const {
@@ -847,7 +856,7 @@ bool MftReader::matchEntry(int i, const QString& query, bool useRegex, bool case
 
     if (query.isEmpty() && extensionList.isEmpty()) return true;
 
-    // 2026-06-xx 极致性能重构：基于 SoA 预拆分字段的零解析后缀比较
+    // 极致性能重构：基于 SoA 预拆分字段的零解析后缀比较
     if (!extensionList.isEmpty()) {
         bool extMatch = false;
         const char* ext = reinterpret_cast<const char*>(m_string_pool.data() + m_ext_offsets[i]);
@@ -867,7 +876,7 @@ bool MftReader::matchEntry(int i, const QString& query, bool useRegex, bool case
 
     if (query.isEmpty()) return true;
 
-    // 内容过滤 (2026-06-xx 极致性能重构：去分配化/低频分配路径)
+    // 内容过滤 (极致性能重构：去分配化/低频分配路径)
     if (useRegex) {
         // 正则表达式暂时无法避免 QString 构造，但在 matchEntry 中通常用于二次细分过滤，频次受控
         return QRegularExpression(query, caseSensitive ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption)
@@ -900,7 +909,7 @@ QString MftReader::getFullPath(int index) const {
 }
 
 std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
-    // 2026-05-16 核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
+    核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
     uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
 
     {
@@ -911,20 +920,20 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 
     std::vector<std::wstring> segments;
     
-    // 2026-06-xx 极致架构优化：采用 SoA 直连下标进行路径回溯。
+    // 极致架构优化：采用 SoA 直连下标进行路径回溯。
     // 理由：getPathFast 常在 UI 渲染的热点路径被调用，消除 Map 查找是实现百万级数据“瞬间回溯”的关键。
     auto idxIt = m_frn_to_idx.find(compositeKey);
     if (idxIt == m_frn_to_idx.end()) return L"";
 
     uint32_t curIdx = idxIt->second;
 
-    // 2026-06-xx 性能优化：限制回溯深度，并使用更轻量的循环检测。
+    性能优化：限制回溯深度，并使用更轻量的循环检测。
     // 避免在大规模目录树中因循环引用导致的死循环，同时减少内存分配开销。
     int depth = 0;
     while (curIdx != 0xFFFFFFFF && depth < 64) {
         const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[curIdx]);
         
-        // 2026-06-xx 性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
+        性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
         segments.push_back(QString::fromUtf8(p).toStdWString());
 
         uint64_t parentFrn = m_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
@@ -942,7 +951,7 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
 
     {
         std::lock_guard<std::mutex> lock(m_pathCacheMutex);
-        if (m_path_cache.size() > 200000) { // 2026-05-16 扩容路径缓存以提升深度目录渲染性能
+        if (m_path_cache.size() > 200000) { 扩容路径缓存以提升深度目录渲染性能
             auto it_clear = m_path_cache.begin();
             for (int i = 0; i < 2000; ++i) it_clear = m_path_cache.erase(it_clear);
         }
@@ -988,15 +997,15 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     std::vector<uint64_t> finalRes;
     finalRes.reserve(m_frns.size() / 16);
 
-    // 2026-06-xx 性能优化：动态任务平衡。
+    性能优化：动态任务平衡。
     // 将分块粒度改为 (总数 / 核心数 / 4)，消除由于数据分布不均（如 C 盘文件密度极高）产生的单核长尾阻塞。
-    // 2026-06-xx 物理加固：处理 hardware_concurrency 返回 0 的极端情况。
+    // 物理加固：处理 hardware_concurrency 返回 0 的极端情况。
     unsigned int nThreads = std::thread::hardware_concurrency();
     if (nThreads == 0) nThreads = 2; 
     const size_t idealGrain = (m_frns.size() / (nThreads * 4));
     const size_t grainSize = (std::max)(static_cast<size_t>(10000), idealGrain); 
 
-    // 2026-06-xx 极致算法重构：去锁化/大跨度锁搜索
+    // 极致算法重构：去锁化/大跨度锁搜索
     if (hasQuery && !useRegex && !caseSensitive && !hasExt) {
         // 1. 前缀搜索分支：采用单次大跨度读锁保护，彻底消除二分查找中的锁震荡
         qInfo() << "[MftReader] 进入前缀搜索分支 (Fast Path)";
@@ -1038,7 +1047,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         std::vector<size_t> chunks(numChunks);
         std::iota(chunks.begin(), chunks.end(), 0);
 
-        // 2026-06-xx 性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
+        性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
         qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
         QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
@@ -1103,7 +1112,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     LARGE_INTEGER timestamp;
     WORD fileNameLength, fileNameOffset;
 
-    // 2026-05-28 物理修复：针对 USN V3 (ReFS/最新Win11) 进行原子化布局匹配
+    // 物理修复：针对 USN V3 (ReFS/最新Win11) 进行原子化布局匹配
     // V3 采用 128位 FRN，且 USN 字段偏移量 (40) 与 V2 (24) 截然不同。
     if (header->MajorVersion == 2) {
         frn = record->FileReferenceNumber;
@@ -1125,7 +1134,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         fileNameOffset = v3->FileNameOffset;
     } else return;
 
-    // 2026-06-xx 极致架构优化：彻底剥离 USN 处理路径中的同步磁盘 I/O。
+    // 极致架构优化：彻底剥离 USN 处理路径中的同步磁盘 I/O。
     // 理由：OpenFileById 在高频 USN 冲击下会导致监听线程严重阻塞，引发 Journal 溢出风险。
     uint64_t fileSize = 0; // 物理大小暂时设为 0，由 requestMetadata 异步补全
     int64_t finalModifyTime = filetimeToUnixMs(timestamp.QuadPart);
@@ -1134,7 +1143,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     QWriteLocker lock(&m_dataLock);
     QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
     
-    // 2026-05-28 物理修复：采用不区分大小写的盘符匹配，确保多盘符环境下 dIdx 绝对对齐
+    // 物理修复：采用不区分大小写的盘符匹配，确保多盘符环境下 dIdx 绝对对齐
     int dIdx = -1;
     for (size_t i = 0; i < m_drive_list.size(); ++i) { 
         if (_wcsicmp(m_drive_list[i].c_str(), volume.c_str()) == 0) { 
@@ -1157,7 +1166,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         finalIdx = it->second;
         m_parent_frns[finalIdx] = encodedPf;
         
-        // 2026-06-xx 物理补齐：在更新路径同步维护父节点下标，确保路径回溯不漂移
+        // 物理补齐：在更新路径同步维护父节点下标，确保路径回溯不漂移
         auto itParent = m_frn_to_idx.find(encodedPf);
         m_parent_indices[finalIdx] = (itParent != m_frn_to_idx.end()) ? itParent->second : 0xFFFFFFFF;
 
@@ -1196,10 +1205,16 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     } else {
         finalIdx = (uint32_t)m_frns.size();
         isNew = true;
+        if (dIdx >= 0 && (size_t)dIdx < m_drive_counts.size()) {
+            m_drive_counts[dIdx]++;
+            if (m_drive_active_mask.load() & (1 << dIdx)) {
+                m_active_count.fetch_add(1);
+            }
+        }
         m_frns.push_back(frn);
         m_parent_frns.push_back(encodedPf);
         
-        // 2026-06-xx 物理补齐：实时更新父节点索引，确保路径回溯流水线不中断
+        // 物理补齐：实时更新父节点索引，确保路径回溯流水线不中断
         auto itParent = m_frn_to_idx.find(encodedPf);
         m_parent_indices.push_back(itParent != m_frn_to_idx.end() ? itParent->second : 0xFFFFFFFF);
 
@@ -1229,7 +1244,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
         m_dirty_indices.insert(finalIdx);
     }
     
-    // 2026-05-14 工业级内存加固：实时监控内存碎片率
+    // 工业级内存加固：实时监控内存碎片率
     // 当浪费的字符串空间超过 20MB 或死亡条目过多时，强制执行 compact 碎片整理
     if (m_wasted_string_bytes > 20 * 1024 * 1024 || m_dead_count > 100000) {
         lock.unlock();
@@ -1249,7 +1264,7 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     lock.unlock(); 
 
     if (shouldSave) {
-        // 2026-06-xx 物理分离：将耗时 I/O 移出写锁范围，杜绝 UI 挂起
+        // 物理分离：将耗时 I/O 移出写锁范围，杜绝 UI 挂起
         QThreadPool::globalInstance()->start([this, dIdx]() {
             saveDriveToCache(dIdx);
         });
@@ -1275,7 +1290,7 @@ std::vector<MftReader::ChangeEvent> MftReader::pullChangeJournal() {
 void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
     QWriteLocker lock(&m_dataLock);
     
-    // 2026-05-28 物理修复：采用不区分大小写的盘符匹配
+    // 物理修复：采用不区分大小写的盘符匹配
     int dIdx = -1;
     for (size_t i = 0; i < m_drive_list.size(); ++i) { 
         if (_wcsicmp(m_drive_list[i].c_str(), volume.c_str()) == 0) { 
@@ -1291,7 +1306,7 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
     if (it != m_frn_to_idx.end()) {
         uint32_t idx = it->second;
 
-        // 2026-06-xx 物理修复：在磁盘层面追加 tombstone 记录
+        // 物理修复：在磁盘层面追加 tombstone 记录
         {
             std::lock_guard<std::mutex> dLock(m_dirtyLock);
             m_dirty_indices.insert(idx); 
@@ -1303,7 +1318,14 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
         m_dead_count++;
         m_dirty_count++;
 
-        // 2026-05-28 物理修复：立即从排序索引中移除已删除项的引用
+        if (dIdx >= 0 && (size_t)dIdx < m_drive_counts.size()) {
+            m_drive_counts[dIdx]--;
+            if (m_drive_active_mask.load() & (1 << dIdx)) {
+                m_active_count.fetch_sub(1);
+            }
+        }
+
+        // 物理修复：立即从排序索引中移除已删除项的引用
         // 理由：如果不移除，二分搜索可能会撞上这个 frn=0 的死亡条目，导致提前 break 从而漏掉有效结果。
         auto itSorted = std::find(m_sorted_indices.begin(), m_sorted_indices.end(), idx);
         if (itSorted != m_sorted_indices.end()) {
@@ -1334,12 +1356,12 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
 }
 
 void MftReader::compact(bool force) {
-    // 2026-07-28 修复：恢复条件触发，禁止无条件全量重建
+    // 修复：恢复条件触发，禁止无条件全量重建
     if (!force && m_dead_count == 0 && m_wasted_string_bytes < 1024 * 1024) return;
 
     m_generation.fetch_add(1, std::memory_order_relaxed);
     
-    // 2026-07-28 优化：将 O(total) 的数据搬运过程移出写锁
+    优化：将 O(total) 的数据搬运过程移出写锁
     // 1. 投影准备 (持有读锁拷贝必要状态)
     struct CompactSnapshot {
         std::vector<uint64_t> frns;
@@ -1398,7 +1420,7 @@ void MftReader::compact(bool force) {
         if (snap.frns[i] == 0) continue;
         
         size_t dIdx = static_cast<size_t>(snap.parent_frns[i] >> 48);
-        // 2026-07-28 极致优化：如果盘符已在 unloadDrive 中被置空，则该记录物理剔除
+        // 极致优化：如果盘符已在 unloadDrive 中被置空，则该记录物理剔除
         if (dIdx >= snap.drive_list.size() || snap.drive_list[dIdx].empty()) continue;
 
         uint32_t newIdx = (uint32_t)new_frns.size();
@@ -1438,6 +1460,22 @@ void MftReader::compact(bool force) {
 
         m_dead_count = 0;
         m_wasted_string_bytes = 0;
+
+        // 重新计算分盘符计数与总激活计数
+        std::fill(m_drive_counts.begin(), m_drive_counts.end(), 0);
+        for (size_t i = 0; i < m_frns.size(); ++i) {
+            size_t dIdx = static_cast<size_t>(m_parent_frns[i] >> 48);
+            if (dIdx < m_drive_counts.size()) {
+                m_drive_counts[dIdx]++;
+            }
+        }
+
+        uint32_t mask = m_drive_active_mask.load();
+        int newActiveCount = 0;
+        for (size_t i = 0; i < m_drive_counts.size(); ++i) {
+            if (mask & (1 << i)) newActiveCount += m_drive_counts[i];
+        }
+        m_active_count.store(newActiveCount);
         
         // 在锁内快速完成映射补全，避免状态不一致
         m_parent_indices.assign(m_frns.size(), 0xFFFFFFFF);
@@ -1448,7 +1486,7 @@ void MftReader::compact(bool force) {
         }
     }
     
-    // 2026-07-28 修复：不再在 compact 内部自动触发排序，该职责移交至调用者以确保锁一致性
+    // 修复：不再在 compact 内部自动触发排序，该职责移交至调用者以确保锁一致性
     // buildSortedIndices();
 }
 
@@ -1460,7 +1498,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
         return false;
     }
 
-    // 2026-05-14 获取根目录句柄作为 Hint，这对于 OpenFileById 的稳定性至关重要
+    获取根目录句柄作为 Hint，这对于 OpenFileById 的稳定性至关重要
     std::wstring rootPath = volume + L"\\";
     // 修正：赋予 FILE_READ_ATTRIBUTES 权限
     HANDLE hHint = CreateFileW(rootPath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
@@ -1478,14 +1516,14 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
     int lastSavedCount = 0;
     int consecutiveErrors = 0;
 
-    // 2026-06-xx 极致容错与零分配重构
+    // 极致容错与零分配重构
     while (true) {
         BOOL ok = DeviceIoControl(h, FSCTL_ENUM_USN_DATA, &ed, sizeof(ed), buf.data(), (DWORD)buf.size(), &cb, NULL);
         if (!ok) {
             DWORD err = GetLastError();
             if (err == ERROR_HANDLE_EOF) break;
             
-            // 2026-06-xx 物理加固：遇到受限条目（如 System Volume Information 内部 I/O 冲突）
+            // 物理加固：遇到受限条目（如 System Volume Information 内部 I/O 冲突）
             // 采用“死不回头”策略，记录并尝试继续。
             qDebug() << "[MFT] Enumeration encountered non-fatal error:" << err << "on volume" << QString::fromStdWString(volume);
             
@@ -1536,7 +1574,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                 p += header->RecordLength; continue;
             }
 
-            // 2026-06-xx 全链路“零分配”扫描逻辑：
+            全链路“零分配”扫描逻辑：
             // 直接将文件名从 MFT 缓冲区通过 WideCharToMultiByte 泵入本地字符串池。
             // 理由：彻底杜绝 QString 和 std::string 构造产生的 O(N) 内存碎块。
             MftReader::RawEntry e; 
@@ -1560,11 +1598,11 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
             result.entries.push_back(e);
             recordCount++;
 
-            // 2026-06-xx 中途强制落盘机制 (Checkpointing)
+            中途强制落盘机制 (Checkpointing)
             // 理由：C 盘扫描时间长，引入 10 万记录级别的中途检查点。
-            // 2026-06-xx 物理安全性修复：通过构造深拷贝的增量 DataPackage 序列实现线程安全的异步落盘。
+            物理安全性修复：通过构造深拷贝的增量 DataPackage 序列实现线程安全的异步落盘。
             if (recordCount - lastSavedCount >= 100000) {
-                // 2026-06-xx 物理安全性加固：显式执行深拷贝，杜绝 UAF 风险。
+                物理安全性加固：显式执行深拷贝，杜绝 UAF 风险。
                 std::vector<ScchDataPackage> delta;
                 delta.reserve(recordCount - lastSavedCount);
                 
@@ -1590,7 +1628,7 @@ bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult
                 std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
                 uint64_t currentUsn = ed.StartFileReferenceNumber;
 
-                // 2026-06-xx 性能策略：异步追加。
+                性能策略：异步追加。
                 // 理由：delta 包含完全独立所有权的 std::string 副本，后台线程访问是绝对安全的。
                 (void)QtConcurrent::run([path_base, delta, currentUsn]() {
                     ScchCache::appendEntries(path_base, delta, currentUsn);
@@ -1624,7 +1662,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_frns.push_back(e.frn);
         m_parent_frns.push_back((static_cast<uint64_t>(driveIdx) << 48) | (e.parentFrn & 0x0000FFFFFFFFFFFFull));
         m_parent_indices.push_back(0xFFFFFFFF); // 初始为无效下标，待 rebuild 补齐
-        m_sizes.push_back(e.size); // 2026-05-14 修正：将扫描到的大小压入 SoA
+        m_sizes.push_back(e.size); 修正：将扫描到的大小压入 SoA
         m_timestamps.push_back(e.modifyTime); m_attributes.push_back(e.attributes);
         m_metadata_fetched.push_back(0);
         
@@ -1632,7 +1670,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
         m_string_pool.insert(m_string_pool.end(), namePtr, namePtr + strlen(namePtr) + 1);
 
-        // 2026-06-xx 物理对标：全量扫描时同步预拆分扩展名
+        // 物理对标：全量扫描时同步预拆分扩展名
         std::string extStr;
         splitNameAndExt(namePtr, extStr);
         m_ext_offsets.push_back((uint32_t)m_string_pool.size());
@@ -1642,7 +1680,7 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
 }
 
 void MftReader::rebuildFrnToIndexMap() {
-    // 2026-07-07 极致去重重构：利用 Map 覆盖特性实现物理级去重 (Analysis_Modification_Plan-154.md)
+    // 极致去重重构：利用 Map 覆盖特性实现物理级去重 (Analysis_Modification_Plan-154.md)
     m_frn_to_idx.clear();
     
     // 第一遍：构建索引地图（增量记录会自动覆盖旧的下标，保留最后出现的即最新的记录）
@@ -1677,45 +1715,54 @@ void MftReader::rebuildFrnToIndexMap() {
 }
 
 void MftReader::buildSortedIndices() {
-    // 2026-07-28 极致修复：真正的去锁化双缓冲排序
-    // 理由：std::sort 是 O(N log N) 操作，必须完全移出写锁范围。
+    // 极致修复：零拷贝投影排序。
+    // 理由：拷贝 std::string 在百万级数据下会产生显著内存压力。
+    // 方案：持有读锁执行排序，防止写操作（如 compact）导致内存重新分配（UAF）。
+    // 同时由于是读锁，UI 线程的读取操作不会被阻塞，实现了真正的“无感”排序。
     
-    // 1. 投影准备 (持有读锁，快速拷贝文件名指针)
-    struct NameProjection {
+    QReadLocker readLock(&m_dataLock);
+    uint64_t currentGen = m_generation.load(std::memory_order_relaxed);
+    
+    // 1. 投影阶段
+    struct SortProxy {
         uint32_t idx;
-        std::string name; // 必须拷贝字符串以实现完全脱离 m_string_pool 的生命周期，确保锁外安全
+        const char* name;
     };
-    std::vector<NameProjection> projections;
+    std::vector<SortProxy> projections;
     
-    {
-        QReadLocker lock(&m_dataLock);
-        size_t count = m_frns.size();
-        projections.reserve(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            if (m_frns[i] == 0) continue;
-            const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i]);
-            projections.push_back({(uint32_t)i, p});
+    size_t count = m_frns.size();
+    projections.reserve(count);
+    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
+        if (m_frns[i] != 0) {
+            projections.push_back({i, reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[i])});
         }
     }
 
-    // 2. 排序阶段 (代码行号证据：1560-1562，此处完全不持有 m_dataLock)
-    std::sort(projections.begin(), projections.end(), [](const NameProjection& a, const NameProjection& b) {
-        return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+    // 2. 排序阶段
+    // 物理铁律：排序期间仅操作局部变量 projections，读锁确保 m_string_pool 物理地址稳定
+    std::sort(projections.begin(), projections.end(), [](const SortProxy& a, const SortProxy& b) {
+        return _stricmp(a.name, b.name) < 0;
     });
 
-    // 3. 回写结果 (短写锁进行交换)
-    std::vector<uint32_t> new_sorted;
-    new_sorted.reserve(projections.size());
-    for (const auto& p : projections) new_sorted.push_back(p.idx);
-
+    // 3. 提交阶段 (校验代数并升级为写锁)
+    readLock.unlock();
     {
-        QWriteLocker lock(&m_dataLock);
-        m_sorted_indices = std::move(new_sorted);
+        QWriteLocker writeLock(&m_dataLock);
+        // 如果排序期间由于某种原因代数发生了变化，则废弃本次排序结果
+        if (m_generation.load(std::memory_order_relaxed) != currentGen) {
+            return;
+        }
+        
+        m_sorted_indices.clear();
+        m_sorted_indices.reserve(projections.size());
+        for (const auto& p : projections) {
+            m_sorted_indices.push_back(p.idx);
+        }
     }
 }
 
 void MftReader::requestMetadata(int index) {
-    // 2026-05-14 工业级异步补全架构：仅在 UI 可见区域按需拉取物理属性
+    // 工业级异步补全架构：仅在 UI 可见区域按需拉取物理属性
     QWriteLocker writeLock(&m_dataLock);
     if (index < 0 || index >= (int)m_frns.size() || m_frns[index] == 0) return;
     
@@ -1733,7 +1780,7 @@ void MftReader::requestMetadata(int index) {
     writeLock.unlock();
 
     (void)QtConcurrent::run(m_metadataPool, [this, index, frn, volume]() {
-        // 2026-05-14 极致性能重构：对标 Rust 原版，采用 API 分级拉取策略
+        // 极致性能重构：对标 Rust 原版，采用 API 分级拉取策略
         // 1. 优先使用 GetFileAttributesExW (不涉及文件句柄，非侵入式，性能极高)
         QString fullPath = getFullPath(index);
         WIN32_FILE_ATTRIBUTE_DATA attrData;

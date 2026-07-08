@@ -10,7 +10,7 @@ TrayController::TrayController(QWidget* mainWindow)
     : QObject(mainWindow), m_mainWindow(mainWindow) {
     m_trayIcon = new QSystemTrayIcon(this);
     
-    // 2026-04-14 物理加固：锁定图标来源为 Qt 资源系统中的标准 ico
+    // 物理加固：锁定图标来源为 Qt 资源系统中的标准 ico
     m_trayIcon->setIcon(QIcon(":/app_icon.ico"));
     m_trayIcon->setToolTip("FERREX");
 
@@ -63,7 +63,7 @@ void TrayController::onShowMainWindow() {
 }
 
 void TrayController::onQuitApp() {
-    // 2026-05-11 物理加固退出逻辑：在退出前显式隐藏托盘并释放核心引擎，确保 USN 线程安全停止
+    // 物理加固退出逻辑：在退出前显式隐藏托盘并释放核心引擎，确保 USN 线程安全停止
     if (m_trayIcon) m_trayIcon->hide();
     MftReader::instance().clear(); 
     QApplication::quit();

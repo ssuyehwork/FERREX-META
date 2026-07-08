@@ -101,7 +101,7 @@ void ScanConfig::load() {
         QJsonArray eArr = obj["extHistory"].toArray();
         for (const auto& v : eArr) extHistory.append(v.toString());
         
-        // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
+        持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
         if (obj.contains("sortColumn")) sortColumn = obj["sortColumn"].toInt();
@@ -141,7 +141,7 @@ void ScanConfig::save() {
         QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
         obj["extHistory"] = eArr;
         
-        // 2026-05-16 持久化存盘
+        持久化存盘
         obj["viewMode"] = viewMode;
         obj["iconSize"] = iconSize;
         obj["sortColumn"] = sortColumn;
@@ -170,12 +170,12 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     // 建立隔离的缩略图任务专用线程池，避免与主后台任务竞争资源
     m_thumbPool = new QThreadPool(this);
     
-    // 2026-06-xx 任务三：磁盘类型感知的线程调度
+    任务三：磁盘类型感知的线程调度
     // 默认保守策略：若无法获取配置或存在 HDD，则使用串行模式 (1) 保护寻道性能
     bool allSSD = true;
     ScanDialog* dlg = qobject_cast<ScanDialog*>(parent);
     if (dlg) {
-        // 2026-06-xx 物理修复：使用 ShellHelper::isSolidStateDrive 统一探测
+        // 物理修复：使用 ShellHelper::isSolidStateDrive 统一探测
         for (const QString& d : dlg->m_config.activeDrives) {
             if (!ShellHelper::isSolidStateDrive(d)) {
                 allSSD = false;
@@ -204,7 +204,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     connect(m_metadataTimer, &QTimer::timeout, this, [this]() {
         if (m_visibleTop < 0 || m_visibleBottom < 0) return;
         
-        // 2026-06-xx 物理修复：视口扫描异步化。
+        // 物理修复：视口扫描异步化。
         // 理由：虽然 requestMetadata 是异步的，但其内部会触发 MftReader 的读写锁申请。
         // 在 220万数据下，如果 UI 线程密集触发 lock 申请，会造成明显的微卡顿甚至假死。
         auto snap = m_currentResultSet;
@@ -244,7 +244,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
                 j++;
             }
             
-            // 2026-06-xx 物理加固：在发射 dataChanged 前强制核对行号边界，防止越界触发断言
+            // 物理加固：在发射 dataChanged 前强制核对行号边界，防止越界触发断言
             if (startRow >= 0 && endRow < m_displayCount) {
                 emit dataChanged(index(startRow, 0), index(endRow, 3));
             }
@@ -252,7 +252,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         }
     });
 
-    // 2026-06-xx 架构重构：切换至 Controller 驱动的原子快照更新 (使用信号携带的快照，绝对安全)
+    // 架构重构：切换至 Controller 驱动的原子快照更新 (使用信号携带的快照，绝对安全)
     connect(m_controller, &ScanController::resultsSwapped, this, [this](std::shared_ptr<ResultSet> newSet) {
         updateResults(newSet);
     });
@@ -280,7 +280,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
 
-    // 2026-06-xx 极致性能重构：行内计算缓存。
+    // 极致性能重构：行内计算缓存。
     // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
     // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
     thread_local static int lastRow = -1;
@@ -319,12 +319,12 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             }
         }
     } else if (role == Qt::DecorationRole && index.column() == 0) {
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
+        性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
         QString ext = reader.getExtQString(actualIndex);
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
+            // 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
             int64_t size = reader.getSize(actualIndex);
             int64_t mtime = reader.getModifyTime(actualIndex);
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
@@ -337,30 +337,30 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 
-                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
+                // 极致架构：加入并行批处理队列，废除“单请求单线程”模式
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
-        // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
+        // 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
         if (it != m_currentResultSet->metadata.end()) {
             return it->second.color;
         }
 
-        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
+        兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
         QString qPath = getPath();
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         if (!meta.color.empty()) {
             QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
             if (tagC.isValid()) return tagC;
         }
-        // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
+        按照用户要求：名称列（第0列）强制显示为蓝色
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
-        // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
+        // 极致性能重构：消除 ToolTipRole 中的重复路径回溯
         QString qPath = getPath();
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         QString tip = QString::fromUtf8("路径: ") + qPath;
@@ -376,7 +376,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return key;
     } else if (role == Qt::UserRole + 1) {
         // 返回缩略图状态：0=不支持, 1=就绪, 2=加载中 (用于 Delegate 实施“缩略图优先”绘制)
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分字段
+        性能优化：对接 MftReader 预拆分字段
         QString ext = reader.getExtQString(actualIndex);
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
@@ -398,7 +398,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
 Qt::ItemFlags ScanTableModel::flags(const QModelIndex& index) const {
     Qt::ItemFlags f = QAbstractTableModel::flags(index);
     if (index.isValid() && index.column() == 0) {
-        // 2026-05-16 物理对标：仅名称列允许行内编辑
+        // 物理对标：仅名称列允许行内编辑
         f |= Qt::ItemIsEditable;
     }
     return f;
@@ -424,7 +424,7 @@ bool ScanTableModel::setData(const QModelIndex& index, const QVariant& value, in
     QString newPath = fi.absolutePath() + QLatin1String("/") + newName;
     
     if (QFile::rename(oldPath, newPath)) {
-        // 2026-05-16 交互加固：物理重命名后，USN 监听器会捕获事件并自动更新模型。
+        交互加固：物理重命名后，USN 监听器会捕获事件并自动更新模型。
         // 我们在此处不需要手动修改内存池，等待系统级同步最为稳健。
         return true;
     } else {
@@ -447,40 +447,18 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
 
 void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     auto newSet = nextSet ? nextSet : m_controller->snapshot();
-    int oldSize = (int)m_currentResultSet->keys.size();
-    int newSize = (int)newSet->keys.size();
-
-    // 2026-06-xx 极致性能重构：Diffing 局部刷新。
-    // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
-    // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
-    // 如果变动巨大或初始加载，回退到 Reset 模式
-    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
-        beginResetModel();
-        m_currentResultSet = newSet;
-        m_displayCount = (std::min<int>)(newSize, 100); 
-        m_requestedThumbs.clear();
-        m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
-        endResetModel();
-        return;
-    }
-
-    if (newSize > oldSize) {
-        beginInsertRows(QModelIndex(), oldSize, newSize - 1);
-        m_currentResultSet = newSet;
-        m_displayCount = newSize; 
-        endInsertRows();
-    } else if (newSize < oldSize) {
-        beginRemoveRows(QModelIndex(), newSize, oldSize - 1);
-        m_currentResultSet = newSet;
-        m_displayCount = newSize;
-        endRemoveRows();
-    } else if (newSize > 0) {
-        m_currentResultSet = newSet;
-        emit dataChanged(index(0, 0), index(newSize - 1, 3));
-    } else {
-        m_currentResultSet = newSet;
-    }
+    // 极致性能重构：Model Reset 策略。
+    // 针对搜索结果的替换，直接执行 beginResetModel() 是确保 UI 渲染与数据状态绝对同步的最稳健方案。
+    // 理由：增量信号在百万级数据频繁变动下容易产生漂移，导致列表空白或显示旧数据。
+    
+    beginResetModel();
+    m_currentResultSet = newSet;
+    int total = (int)m_currentResultSet->keys.size();
+    m_displayCount = (std::min<int>)(total, 100); 
+    m_requestedThumbs.clear();
+    m_pendingRows.clear(); 
+    endResetModel();
 }
 
 bool ScanTableModel::canFetchMore(const QModelIndex& parent) const {
@@ -516,7 +494,7 @@ void ScanTableModel::forceFetchAll() {
 void ScanTableModel::processThumbQueue() {
     if (m_thumbTaskQueue.isEmpty()) return;
 
-    // 2026-06-xx 任务 4.3：LIFO 优先级调度。
+    任务 4.3：LIFO 优先级调度。
     // 理由：用户通常关注滚动停止后的可视区域，后加入队列的请求往往更具时效性。
     auto currentTasks = std::move(m_thumbTaskQueue);
     std::reverse(currentTasks.begin(), currentTasks.end());
@@ -574,7 +552,7 @@ void ScanTableModel::processThumbQueue() {
 }
 
 void ScanTableModel::sort(int column, Qt::SortOrder order) {
-    // 2026-06-xx 逻辑剥离：Model 不再拥有排序权，仅向 Controller 发起异步请求
+    逻辑剥离：Model 不再拥有排序权，仅向 Controller 发起异步请求
     m_controller->sort(column, static_cast<int>(order));
 }
 
@@ -766,8 +744,8 @@ ScanDialog::ScanDialog(QWidget* parent)
 
     setupUi();
 
-    // --- 2026-06-xx 架构级 QSS：实现样式沙箱与物理隔离 ---
-    // 2026-06-xx 物理修正：将标题栏品牌标签样式移入此处，确保优先级并严格锁定 1px 边距 (+4px Spacing = 5px Gap)
+    // --- 架构级 QSS：实现样式沙箱与物理隔离 ---
+    // 物理修正：将标题栏品牌标签样式移入此处，确保优先级并严格锁定 1px 边距 (+4px Spacing = 5px Gap)
     this->setStyleSheet(this->styleSheet() + R"(
         #TitleBrandLabel {
             background: transparent; 
@@ -893,7 +871,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         }
     )");
 
-    // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
+    // --- 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
         m_resultView->verticalHeader()->setDefaultSectionSize(32);
@@ -908,15 +886,15 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_resultView->horizontalHeader()->setSortIndicator(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
     m_tableModel->sort(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
 
-    // 2026-06-xx 物理对标：监听引擎加载信号，实现“更新数据中...”的体感同步
+    // 物理对标：监听引擎加载信号，实现“更新数据中...”的体感同步
     connect(&MftReader::instance(), &MftReader::driveLoaded, this, [this](const QString& drive, int count, int total) {
         updateStatus(QString("正在加载快照 %1 (%2)...").arg(drive).arg(formatNumber(count)), true, total);
     });
 
-    // 2026-05-28 核心补丁：监听引擎增量信号，实现标题栏计数实时更新
+    核心补丁：监听引擎增量信号，实现标题栏计数实时更新
     connect(&MftReader::instance(), &MftReader::entriesChangedBatch, this, [this]() { updateStatus("就绪"); });
 
-    // 2026-05-16 物理重载：断开基类 Qt 置顶逻辑，改用 Win32 原生 SetWindowPos 以实现无损切换
+    物理重载：断开基类 Qt 置顶逻辑，改用 Win32 原生 SetWindowPos 以实现无损切换
     if (m_pinBtn) {
         disconnect(m_pinBtn, &QPushButton::toggled, nullptr, nullptr);
         connect(m_pinBtn, &QPushButton::toggled, this, [this](bool checked) {
@@ -936,7 +914,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QPointer<ScanDialog> weakThis(this);
         (void)(QtConcurrent::run)([weakThis]() {
             if (!weakThis) return;
-            // 2026-07-07 架构重构：按需加载。启动时仅加载默认盘符。
+            // 架构重构：按需加载。启动时仅加载默认盘符。
             bool anyLoaded = false;
             QStringList toLoad;
             for (const QString& d : weakThis->m_config.defaultDrives) toLoad << d;
@@ -965,7 +943,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 weakThis->refreshDriveList(true); // 后台探测硬件
                 if (weakThis->m_config.autoDisplay) weakThis->onFilterOptionChanged();
                 
-                // 2026-07-07 物理修复：调用封装后的预热函数 (Analysis_Modification_Plan-154.md)
+                // 物理修复：调用封装后的预热函数 (Analysis_Modification_Plan-154.md)
                 weakThis->triggerWarmup();
             });
         });
@@ -973,7 +951,7 @@ ScanDialog::ScanDialog(QWidget* parent)
 }
 
 ScanDialog::~ScanDialog() {
-    // 2026-06-xx 内存优化专项：按照用户要求实现“按需加载、及时卸载”。
+    // 内存优化专项：按照用户要求实现“按需加载、及时卸载”。
     // 关闭搜索窗口时物理卸载 MFT 索引，释放可能高达数百 MB 的内存占用。
     MftReader::instance().clear();
 }
@@ -987,7 +965,7 @@ void ScanDialog::closeEvent(QCloseEvent* event) {
 
 void ScanDialog::setupUi() {
     auto* mainLayout = new QVBoxLayout(m_contentArea);
-    // 2026-06-xx 按照建议：将 mainLayout 的 spacing 设置为 10，给组件之间留出物理切割的空隙
+    按照建议：将 mainLayout 的 spacing 设置为 10，给组件之间留出物理切割的空隙
     // 按照用户要求：底部边距设为 0，确保状态栏紧贴底边且高度严格受控
     mainLayout->setContentsMargins(10, 10, 10, 0);
     mainLayout->setSpacing(10);
@@ -1002,7 +980,7 @@ void ScanDialog::setupUi() {
     m_driveContainer->setObjectName("DriveContainer");
     m_driveContainer->setAttribute(Qt::WA_StyledBackground, true);
     m_driveLayout = new QHBoxLayout(m_driveContainer);
-    // 2026-06-xx 按照建议：盘符起始坐标向右偏移 5 像素 (5 -> 10)
+    按照建议：盘符起始坐标向右偏移 5 像素 (5 -> 10)
     m_driveLayout->setContentsMargins(10, 0, 5, 0);
     m_driveLayout->setSpacing(10);
     driveScroll->setWidget(m_driveContainer);
@@ -1077,7 +1055,7 @@ void ScanDialog::setupUi() {
     m_extEdit->setClearButtonEnabled(true);
     m_extEdit->installEventFilter(this);
     connect(m_extEdit, &QLineEdit::textChanged, this, [this](const QString&) {
-        // 2026-06-xx 性能优化：仅同步过滤状态，使用防抖触发搜索，避免输入后缀时发生假死
+        性能优化：仅同步过滤状态，使用防抖触发搜索，避免输入后缀时发生假死
         ScanFilterState state;
         state.useRegex = m_checkRegex->isChecked();
         state.caseSensitive = m_checkCase->isChecked();
@@ -1123,8 +1101,8 @@ void ScanDialog::setupUi() {
     m_resultView->setModel(m_tableModel);
     m_resultView->setContextMenuPolicy(Qt::CustomContextMenu);
     
-    // 2026-05-14视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
-    // 2026-06-xx 按照用户要求：设置左侧 10px 间距，确保坐标校准，同时修正表头首列偏移
+    视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
+    按照用户要求：设置左侧 10px 间距，确保坐标校准，同时修正表头首列偏移
     m_resultView->setStyleSheet(
         "QTableView { "
         "background-color: #1E1E1E; "
@@ -1145,7 +1123,7 @@ void ScanDialog::setupUi() {
     
     m_resultView->horizontalHeader()->setStretchLastSection(false); 
     m_resultView->horizontalHeader()->setMinimumSectionSize(60);
-    // 2026-05-14 物理修正：强制列标题水平居中对齐
+    // 物理修正：强制列标题水平居中对齐
     m_resultView->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
     
     m_resultView->setColumnWidth(0, 260); 
@@ -1170,7 +1148,7 @@ void ScanDialog::setupUi() {
     m_resultView->setSelectionMode(QAbstractItemView::ExtendedSelection); // 显式启用多选
     m_resultView->setEditTriggers(QAbstractItemView::NoEditTriggers);
     
-    // 2026-06-xx 按照用户要求：开启 TableView 拖拽导出功能
+    按照用户要求：开启 TableView 拖拽导出功能
     m_resultView->setDragEnabled(true);
     m_resultView->setDragDropMode(QAbstractItemView::DragOnly);
     m_resultView->setDefaultDropAction(Qt::CopyAction);
@@ -1182,12 +1160,12 @@ void ScanDialog::setupUi() {
     connect(m_resultView, &QTableView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
     connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
     
-    // 2026-05-16 交互优化：开启行内编辑触发器 (双击或按F2)
+    交互优化：开启行内编辑触发器 (双击或按F2)
     m_resultView->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
     
     // 虚拟化加载已由 QAbstractItemModel::fetchMore 处理，无需手动 loadMore
     
-    // --- 2026-05-16 多态视图重构：引入 QStackedWidget 与 QListView (IconMode) ---
+    // --- 多态视图重构：引入 QStackedWidget 与 QListView (IconMode) ---
     m_viewStack = new QStackedWidget();
     m_viewStack->setObjectName("ViewStack");
     m_viewStack->addWidget(m_resultView);
@@ -1200,10 +1178,10 @@ void ScanDialog::setupUi() {
     m_iconView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_iconView->setEditTriggers(QAbstractItemView::EditKeyPressed);
     
-    // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
+    按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
 
-    // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
+    按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
         "background-color: #1E1E1E; border: 1px solid #333; color: #D4D4D4; outline: none;"
     );
@@ -1233,7 +1211,7 @@ void ScanDialog::setupUi() {
     statusContainer->setFixedHeight(20);
     statusContainer->setStyleSheet("QWidget#StatusContainer { background: transparent; border: none; }");
     auto* statusBar = new QHBoxLayout(statusContainer);
-    // 2026-06-xx 按照用户要求：显式设置垂直居中对齐，并向上偏移 10px (通过底部边距实现)
+    按照用户要求：显式设置垂直居中对齐，并向上偏移 10px (通过底部边距实现)
     statusBar->setAlignment(Qt::AlignVCenter);
     statusBar->setContentsMargins(16, 0, 16, 10);
     statusBar->setSpacing(0);
@@ -1299,7 +1277,7 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
         return;
     }
 
-    // 2026-06-xx 按照用户要求：加载盘符数据（.scch）之前，先显示占位提示
+    按照用户要求：加载盘符数据（.scch）之前，先显示占位提示
     showDriveLoading();
 
     QPointer<ScanDialog> weakThis(this);
@@ -1326,7 +1304,7 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     info.isNtfs = false;
                 }
 
-                // 2026-06-xx 极致性能对标与 C 盘加固：
+                // 极致性能对标与 C 盘加固：
                 // 只要探测到 C 盘，无论其文件系统报告如何，强制视为 NTFS 以允许进入 MFT 扫描引擎。
                 // 理由：系统盘可能因为权限竞争导致 fsName 获取为空，但物理上必然存在 MFT。
                 if (letter == "C:") {
@@ -1394,12 +1372,12 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                     
                     weakThis->updateDriveButtonStyles();
 
-                    // 2026-05-14 核心同步：显式同步盘符状态至搜索引擎掩码，防止视图过滤失效
+                    核心同步：显式同步盘符状态至搜索引擎掩码，防止视图过滤失效
                     QStringList activeList;
                     for (const QString& d : weakThis->m_config.activeDrives) activeList << d;
                     MftReader::instance().updateActiveDrives(activeList);
 
-                    // 2026-07-07 核心修正：左键仅筛选，严禁加载数据库 (Analysis_Modification_Plan-154.md)
+                    核心修正：左键仅筛选，严禁加载数据库 (Analysis_Modification_Plan-154.md)
                     if (isSelected && !MftReader::instance().isDriveIndexed(letter)) {
                         weakThis->updateStatus("请先通过右键菜单‘加载数据’");
                         weakThis->m_config.activeDrives.remove(letter);
@@ -1506,7 +1484,7 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
 void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     QAbstractItemView* activeView = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
     
-    // 2026-05-16 空间感知修正：优先探测点击位置
+    空间感知修正：优先探测点击位置
     QModelIndex indexAtPos = activeView->indexAt(pos);
     QModelIndexList selectedRows;
 
@@ -1594,7 +1572,7 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
         menu.addSeparator();
     }
 
-    // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
+    // --- 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
     QActionGroup* viewGroup = new QActionGroup(this);
@@ -1739,7 +1717,7 @@ void ScanDialog::onTriggerSearch() {
 }
 
 void ScanDialog::onFilterOptionChanged() {
-    // 2026-06-xx 性能优化：移除这里的 config.save() 和频繁的驱动器同步。
+    性能优化：移除这里的 config.save() 和频繁的驱动器同步。
     // 只有在明确需要重新搜索时才触发。驱动器同步已移至 onStartScan 或 onTriggerSearch。
     
     m_config.useRegex = m_checkRegex->isChecked();
@@ -1760,14 +1738,14 @@ void ScanDialog::onFilterOptionChanged() {
     if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
     
     m_controller->setFilterState(state);
-    // 2026-06-xx 物理对标：配置变更（如勾选开关）时触发立即搜索，以响应“自动显示”等开关状态
+    // 物理对标：配置变更（如勾选开关）时触发立即搜索，以响应“自动显示”等开关状态
     m_controller->triggerSearch(true);
 }
 
 void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalCount) {
     Q_UNUSED(text);
     if (m_titleStatusLabel) {
-        // 2026-07-07 物理修正：标题栏仅展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
+        // 物理修正：标题栏仅展示激活盘符的文件总数 (Analysis_Modification_Plan-154.md)
         int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().activeCount();
         m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(total)));
         m_titleStatusLabel->setStyleSheet(scanning ? "color: #FF8C00; font-size: 10px; font-weight: bold;" : "color: #46B478; font-size: 10px; font-weight: bold;");
@@ -1786,7 +1764,7 @@ void ScanDialog::updateStatusBar() {
     for (const auto& info : m_cachedDriveInfos) {
         if (MftReader::instance().isDriveIndexed(info.letter)) loadedDrives++;
     }
-    // 2026-07-07 物理修正：更新状态栏文案 (Analysis_Modification_Plan-154.md)
+    // 物理修正：更新状态栏文案 (Analysis_Modification_Plan-154.md)
     m_statLabelMain->setText(QString("当前仅在 %1 个已加载盘符范围内搜索 (匹配: %2)").arg(loadedDrives).arg(formatNumber(totalMatch)));
     m_statLabelTime->setText(QString("耗时 %1 ms").arg(m_lastSearchMs));
 
@@ -1810,7 +1788,7 @@ void ScanDialog::updateStatusBar() {
     
     int64_t dbTotal = MftReader::instance().totalCount();
     double memoryMb = (dbTotal * 184.0) / 1024.0 / 1024.0;
-    // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
+    架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
 
 }
@@ -1836,7 +1814,7 @@ void ScanDialog::onRenameTriggered() {
     auto selection = view->selectionModel()->selectedRows();
     if (selection.isEmpty()) return;
     
-    // 2026-05-16 交互进化：触发行内编辑
+    交互进化：触发行内编辑
     view->edit(selection.first());
 }
 
@@ -1848,7 +1826,7 @@ void ScanDialog::onCopyTriggered(bool isCut) {
     QMimeData* mimeData = m_tableModel->mimeData(selectedIndexes);
     if (!mimeData) return;
 
-    // 2026-07-07 物理修复：通过 Preferred DropEffect 区分复制与剪切
+    // 物理修复：通过 Preferred DropEffect 区分复制与剪切
     QByteArray effectData;
     QDataStream stream(&effectData, QIODevice::WriteOnly);
     stream.setByteOrder(QDataStream::LittleEndian);
@@ -1869,7 +1847,7 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_A && event->modifiers() == Qt::ControlModifier) { 
-        // 2026-07-07 物理修复：调用全量选择逻辑，杜绝虚拟化加载导致的“漏选”
+        // 物理修复：调用全量选择逻辑，杜绝虚拟化加载导致的“漏选”
         selectAllResults();
         return; 
     }
@@ -1882,7 +1860,7 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_V && event->modifiers() == Qt::ControlModifier) {
-        // 2026-07-07 物理清理：移除粘贴功能，仅保留提示 (Analysis_Modification_Plan-154.md)
+        物理清理：移除粘贴功能，仅保留提示 (Analysis_Modification_Plan-154.md)
         updateStatus("当前视图不支持粘贴");
         return;
     }
@@ -1901,7 +1879,7 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
 }
 
 void ScanDialog::selectAllResults() {
-    // 2026-07-07 核心修复：不依赖 QAbstractItemView::selectAll()，因为它依赖视图内部几何状态（可能因虚拟化而未就绪）
+    // 核心修复：不依赖 QAbstractItemView::selectAll()，因为它依赖视图内部几何状态（可能因虚拟化而未就绪）
     m_tableModel->forceFetchAll();
     int total = m_tableModel->rowCount();
     if (total <= 0) return;
@@ -1921,9 +1899,9 @@ void ScanDialog::selectAllResults() {
     updateStatusBar();
 }
 
-// 2026-05-16 快捷键核心处理逻辑：支持评分、置顶、标签等深度管理快捷键
+快捷键核心处理逻辑：支持评分、置顶、标签等深度管理快捷键
 void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
-    // 2026-06-xx 任务：移除深度管理功能，停用对应的快捷键分发逻辑。
+    任务：移除深度管理功能，停用对应的快捷键分发逻辑。
     Q_UNUSED(event);
 }
 
@@ -1931,36 +1909,40 @@ void ScanDialog::triggerWarmup() {
     // 极致体感：流水线异步预热 
     QPointer<ScanDialog> weakThis(this);
      
-    // 我们不使用全局 QtConcurrent，而是直接针对 m_thumbPool 进行定向精准预热 
     if (!weakThis || !weakThis->m_tableModel || !weakThis->m_tableModel->m_thumbPool) { 
         return; 
     } 
+
+    // 1. 路径预热：异步拼接前三级目录路径并注入缓存
+    (void)QtConcurrent::run([]() {
+        auto& reader = MftReader::instance();
+        int total = reader.totalCount();
+        for (int i = 0; i < std::min(total, 2000); ++i) {
+            reader.getFullPath(i); // 触发路径计算并存入缓存
+        }
+    });
  
+    // 2. Shell 引擎预热
     auto* pool = weakThis->m_tableModel->m_thumbPool; 
-    int maxThreads = pool->maxThreadCount(); // 获取当前线程池的最大并发线程数（SSD 模式下可能为 2~4，HDD 模式下为 1） 
+    int maxThreads = pool->maxThreadCount(); 
  
-    // 物理预热：让线程池里的每一个工作线程都至少执行一次初始化 
     for (int t = 0; t < maxThreads; ++t) { 
         pool->start([weakThis]() { 
             if (!weakThis) return; 
  
-            // 1. 确保每个线程的 COM 环境基础（ScopedComInit）在这里完成首次物理初始化 
             static QThreadStorage<ScopedComInit> comStorage; 
             if (!comStorage.hasLocalData()) { 
                 comStorage.setLocalData(ScopedComInit()); 
             } 
  
-            // 2. 提前让该线程触发一次 Shell 引擎调用 
             int total = MftReader::instance().totalCount(); 
             if (total > 0) { 
                 for (int i = 0; i < std::min(total, 5000); ++i) { 
                     if (!MftReader::instance().isDirectory(i)) { 
                         QString ext = MftReader::instance().getExtQString(i); 
-                        // 仅寻找一个图片类型文件执行首次 getShellThumbnail 模拟调用 
                         if (UiHelper::isGraphicsFile(ext)) { 
                             QString dummyPath = MftReader::instance().getFullPath(i); 
                             if (!dummyPath.isEmpty()) { 
-                                // 此时 Shell32、WIC、套间等一次性初始化成本在此工作线程内瞬间被消化掉 
                                 UiHelper::getShellThumbnail(dummyPath, 64); 
                             } 
                             break;  
