@@ -351,41 +351,19 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             }
         }
 
-        // 🌟 方案 1 + 方案 2 复合架构：无锁异步扩展名图标提取
-        static QHash<QString, QIcon> s_asyncIconCache;
-        static QSet<QString> s_requestedIconExts;
-
-        auto it = s_asyncIconCache.find(ext);
-        if (it != s_asyncIconCache.end()) {
+        // 🌟 方案 1 本地轻量化扩展名缓存：
+        // 针对常规文件类型建立 UI 线程级 O(1) 静态哈希，保证同一扩展名在整个生命周期内仅向底层查询一次，
+        //彻底避免检索出成千上万同类型文件时，频繁触发底层的跨套间阻塞和锁竞争。
+        static QHash<QString, QIcon> s_localIconCache;
+        auto it = s_localIconCache.find(ext);
+        if (it != s_localIconCache.end()) {
             return *it;
+        } else {
+            // 仅在首次遇到该扩展名时，去加载一次并写入静态缓存
+            QIcon icon = reader.getCachedIcon(ext, false);
+            s_localIconCache.insert(ext, icon);
+            return icon;
         }
-
-        if (!s_requestedIconExts.contains(ext)) {
-            s_requestedIconExts.insert(ext);
-            // 🚨 物理避坑：导出非 const 指针以调用 index() 和 emit dataChanged()
-            auto* nonConstThis = const_cast<ScanTableModel*>(this);
-            m_thumbPool->start([nonConstThis, ext]() {
-                static QThreadStorage<ScopedComInit> comStorage;
-                if (!comStorage.hasLocalData()) comStorage.setLocalData(ScopedComInit());
-
-                // 在异步线程中提取真实图标，避免主线程阻塞
-                QIcon icon = MftReader::instance().getCachedIcon(ext, false);
-
-                QMetaObject::invokeMethod(nonConstThis, [nonConstThis, ext, icon]() {
-                    s_asyncIconCache.insert(ext, icon);
-                    // 仅刷新当前可视区域，触发图标替换
-                    int top = nonConstThis->m_visibleTop;
-                    int bottom = nonConstThis->m_visibleBottom;
-                    if (top >= 0 && bottom >= top && bottom < nonConstThis->m_displayCount) {
-                        emit nonConstThis->dataChanged(nonConstThis->index(top, 0), nonConstThis->index(bottom, 0));
-                    }
-                }, Qt::QueuedConnection);
-            });
-        }
-
-        // 异步提取期间，立即返回静态占位图标，确保 60FPS 滚动
-        static QIcon dummyFileIcon = QFileIconProvider().icon(QFileIconProvider::File);
-        return dummyFileIcon;
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
@@ -1310,11 +1288,9 @@ void ScanDialog::setupUi() {
 
     connect(m_controller, &ScanController::searchFinished, this, [this](int count, int64_t elapsedMs) {
         Q_UNUSED(count);
-        QElapsedTimer uiTimer; uiTimer.start();
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
         updateStatus("就绪");
-        qDebug() << "[PERF] UI 刷新与状态更新耗时:" << uiTimer.elapsed() << "ms";
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
@@ -1973,12 +1949,6 @@ void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
 }
 
 void ScanDialog::triggerWarmup() {
-    // 2026-06-xx 复合架构：UI 主线程冷启动同步预加载
-    static QIcon s_dummyFolder = QFileIconProvider().icon(QFileIconProvider::Folder);
-    static QIcon s_dummyFile = QFileIconProvider().icon(QFileIconProvider::File);
-    Q_UNUSED(s_dummyFolder);
-    Q_UNUSED(s_dummyFile);
-
     // 极致体感：流水线异步预热 
     QPointer<ScanDialog> weakThis(this);
      

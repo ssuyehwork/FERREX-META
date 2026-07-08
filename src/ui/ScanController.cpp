@@ -109,14 +109,16 @@ void ScanController::performSearch() {
         return;
     }
 
-    auto future = QtConcurrent::run([this, text, state, timer]() {
+    auto future = QtConcurrent::run([this, text, state]() {
         QElapsedTimer subTimer;
         subTimer.start();
         
         std::vector<uint64_t> keys;
+        // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
             keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
-        } else {
+        }
+        else {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
         }
 
@@ -125,59 +127,45 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // 🌟 物理优化点 1：搜索结束后立即推送结果给 UI 展现，不再等待装饰过程
-        int64_t readyToPushTime = timer.elapsed();
-        QMetaObject::invokeMethod(this, [this, rs, searchMs, readyToPushTime, timer]() {
-            int64_t uiReceiveTime = timer.elapsed();
-            { std::lock_guard<std::mutex> lock(m_resultsMutex); m_resultSet = rs; }
-            emit resultsSwapped(rs);
-
-            qDebug() << "[PERF] 匹配 -> 显示 全链路追踪:";
-            qDebug() << "  - 1. 引擎纯匹配耗时:" << searchMs << "ms";
-            qDebug() << "  - 2. 结果预处理 (Map构建):" << (readyToPushTime - searchMs) << "ms";
-            qDebug() << "  - 3. UI 线程排队/调度时延:" << (uiReceiveTime - readyToPushTime) << "ms";
-            qDebug() << "  - 🌟 总计 (从匹配开始到显示):" << uiReceiveTime << "ms";
-
-            emit searchFinished(static_cast<int>(rs->keys.size()), searchMs);
-        }, Qt::BlockingQueuedConnection);
-
-        // 🌟 物理优化点 2：元数据装饰渐进式执行，不再阻塞首次展现
-        // 理由：FullPath 和 Metadata 请求涉及 MFT 读锁，是导致首次显示卡顿的元凶。
+        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
+        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
         subTimer.restart();
-        size_t totalDecor = std::min(rs->keys.size(), static_cast<size_t>(2000));
-        const size_t batchSize = 100;
+        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000));
+        for (size_t i = 0; i < decorCount; ++i) {
+            uint64_t k = rs->keys[i];
+            auto& reader = MftReader::instance();
+            int idx = reader.getIndexByKey(k);
+            if (idx == -1) continue;
+            QString path = reader.getFullPath(idx);
+            if (path.isEmpty()) continue;
 
-        for (size_t start = 0; start < totalDecor; start += batchSize) {
-            size_t end = std::min(start + batchSize, totalDecor);
-
-            for (size_t i = start; i < end; ++i) {
-                uint64_t k = rs->keys[i];
-                auto& reader = MftReader::instance();
-                int idx = reader.getIndexByKey(k);
-                if (idx == -1) continue;
-
-                // 此时调用 getFullPath 会触发 getPathFast 内部的迭代路径缓存
-                QString path = reader.getFullPath(idx);
-                if (path.isEmpty()) continue;
-
-                auto meta = MetadataManager::instance().getMeta(path.toStdWString());
-                if (!meta.color.empty()) {
-                    QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-                    if (c.isValid()) rs->metadata[k] = RenderMeta(c);
-                }
+            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
+            if (!meta.color.empty()) {
+                QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
+                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
             }
-
-            // 每装饰完一批，局部通知一次 UI 刷新视觉状态
-            QMetaObject::invokeMethod(this, [this, rs]() {
-                emit resultsSwapped(rs);
-            }, Qt::QueuedConnection);
         }
+        int64_t decorMs = subTimer.elapsed();
 
-        qInfo() << "[ScanController] 异步搜索与装饰链条完成. 搜索耗时:" << searchMs << "ms, 装饰总耗时:" << subTimer.elapsed() << "ms";
+        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
+
         return rs;
     });
 
     disconnect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, nullptr);
+    connect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, [this, timer]() {
+        if (m_watcher.isCanceled()) return;
+
+        std::shared_ptr<ResultSet> newSet = m_watcher.result();
+
+        {
+            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            m_resultSet = newSet;
+        }
+        emit resultsSwapped(newSet);
+        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
+    });
+
     m_watcher.setFuture(future);
 }
 
