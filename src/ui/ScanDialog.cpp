@@ -7,7 +7,6 @@
 #include <QPainter>
 #include <QTimer>
 #include <QIcon>
-#include <QFileIconProvider>
 #include "../mft/MftReader.h"
 #include "UiHelper.h"
 #include "../util/ShellHelper.h"
@@ -319,73 +318,31 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 return QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
             }
         }
-    } else if (role == Qt::DecorationRole && index.column() == 0) { 
-        bool isDir = reader.isDirectory(actualIndex); 
-        if (isDir) { 
-            // 🌟 方案 1 物理拦截：文件夹直接使用静态预加载图标，杜绝主线程发起任何磁盘/Shell 探测 
-            static QIcon folderIcon = QFileIconProvider().icon(QFileIconProvider::Folder); 
-            return folderIcon; 
-        } 
- 
-        // 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析 
-        QString ext = reader.getExtQString(actualIndex); 
-         
-        static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"}; 
-        if (thumbExts.contains(ext)) { 
-            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey 
-            int64_t size = reader.getSize(actualIndex); 
-            int64_t mtime = reader.getModifyTime(actualIndex); 
-            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime); 
- 
-            QPixmap* cached = m_thumbCache.object(cacheKey); 
-            if (cached) return *cached; 
- 
-            if (!m_requestedThumbs.contains(key)) { 
-                m_requestedThumbs.insert(key); 
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent()); 
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64); 
-                 
-                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式 
-                m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey}); 
-                if (!m_thumbTimer->isActive()) m_thumbTimer->start(); 
-            } 
-        } 
- 
-        // 🌟 方案 1 + 方案 2 复合架构：无锁异步扩展名图标提取 
-        static QHash<QString, QIcon> s_asyncIconCache; 
-        static QSet<QString> s_requestedIconExts; 
- 
-        auto it = s_asyncIconCache.find(ext); 
-        if (it != s_asyncIconCache.end()) { 
-            return *it; 
-        } 
- 
-        if (!s_requestedIconExts.contains(ext)) { 
-            s_requestedIconExts.insert(ext); 
-            // 🚨 物理避坑：导出非 const 指针以调用 index() 和 emit dataChanged() 
-            auto* nonConstThis = const_cast<ScanTableModel*>(this); 
-            m_thumbPool->start([nonConstThis, ext]() { 
-                static QThreadStorage<ScopedComInit> comStorage; 
-                if (!comStorage.hasLocalData()) comStorage.setLocalData(ScopedComInit()); 
- 
-                // 在异步线程中提取真实图标，避免主线程阻塞 
-                QIcon icon = MftReader::instance().getCachedIcon(ext, false); 
- 
-                QMetaObject::invokeMethod(nonConstThis, [nonConstThis, ext, icon]() { 
-                    s_asyncIconCache.insert(ext, icon); 
-                    // 仅刷新当前可视区域，触发图标替换 
-                    int top = nonConstThis->m_visibleTop; 
-                    int bottom = nonConstThis->m_visibleBottom; 
-                    if (top >= 0 && bottom >= top && bottom < nonConstThis->m_displayCount) { 
-                        emit nonConstThis->dataChanged(nonConstThis->index(top, 0), nonConstThis->index(bottom, 0)); 
-                    } 
-                }, Qt::QueuedConnection); 
-            }); 
-        } 
- 
-        // 异步提取期间，立即返回静态占位图标，确保 60FPS 滚动 
-        static QIcon dummyFileIcon = QFileIconProvider().icon(QFileIconProvider::File); 
-        return dummyFileIcon; 
+    } else if (role == Qt::DecorationRole && index.column() == 0) {
+        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
+        QString ext = reader.getExtQString(actualIndex);
+        
+        static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
+        if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
+            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
+            int64_t size = reader.getSize(actualIndex);
+            int64_t mtime = reader.getModifyTime(actualIndex);
+            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+
+            QPixmap* cached = m_thumbCache.object(cacheKey);
+            if (cached) return *cached;
+
+            if (!m_requestedThumbs.contains(key)) {
+                m_requestedThumbs.insert(key);
+                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                
+                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
+                m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
+                if (!m_thumbTimer->isActive()) m_thumbTimer->start();
+            }
+        }
+        return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
@@ -1310,11 +1267,9 @@ void ScanDialog::setupUi() {
 
     connect(m_controller, &ScanController::searchFinished, this, [this](int count, int64_t elapsedMs) {
         Q_UNUSED(count);
-        QElapsedTimer uiTimer; uiTimer.start();
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
         updateStatus("就绪");
-        qDebug() << "[PERF] UI 刷新与状态更新耗时:" << uiTimer.elapsed() << "ms";
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
@@ -1831,12 +1786,9 @@ void ScanDialog::updateStatusBar() {
     for (const auto& info : m_cachedDriveInfos) {
         if (MftReader::instance().isDriveIndexed(info.letter)) loadedDrives++;
     }
-    // 2026-07-07 物理修正：更新状态栏文案
+    // 2026-07-07 物理修正：更新状态栏文案 (Analysis_Modification_Plan-154.md)
     m_statLabelMain->setText(QString("当前仅在 %1 个已加载盘符范围内搜索 (匹配: %2)").arg(loadedDrives).arg(formatNumber(totalMatch)));
-    
-    // 🌟 物理优化显示：明确区分引擎耗时与 UI 响应总耗时
-    // 理由：让用户感知到性能优化成果，并辅助开发者定位瓶颈环节
-    m_statLabelTime->setText(QString("感知耗时: %1 ms").arg(m_lastSearchMs));
+    m_statLabelTime->setText(QString("耗时 %1 ms").arg(m_lastSearchMs));
 
     if (!selectedRows.isEmpty()) {
         m_selectionLabel->show();
@@ -1976,12 +1928,6 @@ void ScanDialog::handleMetadataShortcut(QKeyEvent* event) {
 }
 
 void ScanDialog::triggerWarmup() {
-    // 2026-06-xx 复合架构：UI 主线程冷启动同步预加载 
-    static QIcon s_dummyFolder = QFileIconProvider().icon(QFileIconProvider::Folder);
-    static QIcon s_dummyFile = QFileIconProvider().icon(QFileIconProvider::File);
-    Q_UNUSED(s_dummyFolder);
-    Q_UNUSED(s_dummyFile);
-
     // 极致体感：流水线异步预热 
     QPointer<ScanDialog> weakThis(this);
      
