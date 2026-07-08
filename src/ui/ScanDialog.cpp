@@ -353,7 +353,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
 
         // 🌟 方案 1 本地轻量化扩展名缓存：
         // 针对常规文件类型建立 UI 线程级 O(1) 静态哈希，保证同一扩展名在整个生命周期内仅向底层查询一次，
-        //彻底避免检索出成千上万同类型文件时，频繁触发底层的跨套间阻塞和锁竞争。
+        // 彻底避免检索出成千上万同类型文件时，频繁触发底层的跨套间阻塞和锁竞争。
         static QHash<QString, QIcon> s_localIconCache;
         auto it = s_localIconCache.find(ext);
         if (it != s_localIconCache.end()) {
@@ -371,14 +371,9 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             return it->second.color;
         }
 
-        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
-        QString qPath = getPath();
-        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        if (!meta.color.empty()) {
-            QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-            if (tagC.isValid()) return tagC;
-        }
-        // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
+        // 🌟 零 I/O 极速绘制：彻底去除主线程同步 getMeta 调用，杜绝磁盘 IO 导致的假死
+        // 理由：元数据装饰已在 ScanController 异步线程预取。若此处尚未命中，则直接返回品牌蓝，
+        // 绝对不在渲染循环内发起任何可能阻塞的磁盘检索。
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯

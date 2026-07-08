@@ -32,6 +32,7 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
         std::shared_ptr<ResultSet> newSet = m_sortWatcher.result();
         if (!newSet || newSet->keys.empty()) return;
 
+        std::shared_ptr<ResultSet> oldSet;
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
             // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
@@ -40,8 +41,19 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
                 qDebug() << "[ScanController] 舍弃过时的重排序结果";
                 return;
             }
+            oldSet = m_resultSet;
             m_resultSet = newSet;
         }
+
+        // 🌟 终极根治方案：异步析构旧数据集
+        // 理由：旧数据集可能包含 200万个 Key-Pos 节点，在 UI 线程析构会导致明显的“卡死”。
+        // 将其捕获进 lambda 并投递给 global pool，让 UI 线程瞬间脱离泥潭。
+        if (oldSet) {
+            QtConcurrent::run([oldSet]() {
+                // 此时 oldSet 离开作用域，将在后台线程触发析构，耗时约 50-150ms。
+            });
+        }
+
         emit resultsSwapped(newSet);
     });
 }
@@ -157,11 +169,21 @@ void ScanController::performSearch() {
         if (m_watcher.isCanceled()) return;
 
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
+        std::shared_ptr<ResultSet> oldSet;
 
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
+            oldSet = m_resultSet;
             m_resultSet = newSet;
         }
+
+        // 🌟 终极根治方案：异步析构旧数据集
+        if (oldSet) {
+            QtConcurrent::run([oldSet]() {
+                // Background destruction...
+            });
+        }
+
         emit resultsSwapped(newSet);
         emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
     });
