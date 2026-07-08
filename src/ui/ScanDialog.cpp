@@ -1147,6 +1147,8 @@ void ScanDialog::setupUi() {
     m_resultView->setColumnWidth(2, 100); 
     m_resultView->setColumnWidth(3, 140); 
     
+    m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+
     m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
     m_resultView->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
@@ -1219,6 +1221,7 @@ void ScanDialog::setupUi() {
     
     // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
+    m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
 
     // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
@@ -2003,6 +2006,22 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
+        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Space) {
+            auto* view = qobject_cast<QAbstractItemView*>(watched);
+            QModelIndex idx = view->currentIndex();
+            if (idx.isValid()) {
+                if (m_quickLook->isVisible()) {
+                    m_quickLook->closePreview();
+                } else {
+                    QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                    m_quickLook->preview(path);
+                }
+            }
+            return true; // 拦截事件，防止 TableView 处理空格导致滚动
+        }
+    }
     if (watched == m_sizeSlider && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
