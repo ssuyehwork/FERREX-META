@@ -109,16 +109,14 @@ void ScanController::performSearch() {
         return;
     }
 
-    auto future = QtConcurrent::run([this, text, state]() {
+    auto future = QtConcurrent::run([this, text, state, timer]() {
         QElapsedTimer subTimer;
         subTimer.start();
         
         std::vector<uint64_t> keys;
-        // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
             keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
-        }
-        else {
+        } else {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
         }
 
@@ -127,15 +125,37 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
-        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
+        // 🌟 物理优化点 1：搜索结束后立即推送结果给 UI 展现，不再等待装饰过程
+        int64_t readyToPushTime = timer.elapsed();
+        QMetaObject::invokeMethod(this, [this, rs, searchMs, readyToPushTime, timer]() {
+            int64_t uiReceiveTime = timer.elapsed();
+            { std::lock_guard<std::mutex> lock(m_resultsMutex); m_resultSet = rs; }
+            
+            // 物理修复：在首次展现前执行一次轻量级排版同步，但严禁触发 beginResetModel
+            emit resultsSwapped(rs);
+            
+            qDebug() << "[PERF] 匹配 -> 首次显示 (Time-to-First-Draw) 全链路:";
+            qDebug() << "  - 1. 引擎匹配 (Search):" << searchMs << "ms";
+            qDebug() << "  - 2. 数据封送 (Map build):" << (readyToPushTime - searchMs) << "ms";
+            qDebug() << "  - 3. UI 调度 (Event Loop):" << (uiReceiveTime - readyToPushTime) << "ms";
+            qDebug() << "  - 🌟 总计:" << uiReceiveTime << "ms";
+            
+            emit searchFinished(static_cast<int>(rs->keys.size()), uiReceiveTime);
+        }, Qt::QueuedConnection);
+
+        // 🌟 物理优化点 2：元数据装饰链条
+        // 理由：FullPath 解析涉及 MFT 树爬取，虽然有了缓存，但在 2000 项量级下依然有毫秒级开销。
+        // 我们将其完全移至后台，且装饰完成后仅执行“静默更新”，不再触发 Model 重置。
         subTimer.restart();
-        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000)); 
-        for (size_t i = 0; i < decorCount; ++i) {
+        size_t totalDecor = std::min(rs->keys.size(), static_cast<size_t>(2000));
+        
+        for (size_t i = 0; i < totalDecor; ++i) {
             uint64_t k = rs->keys[i];
             auto& reader = MftReader::instance();
             int idx = reader.getIndexByKey(k);
             if (idx == -1) continue;
+            
+            // 触发 MftReader 内部的迭代式路径缓存
             QString path = reader.getFullPath(idx);
             if (path.isEmpty()) continue;
 
@@ -147,25 +167,15 @@ void ScanController::performSearch() {
         }
         int64_t decorMs = subTimer.elapsed();
 
-        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
-
+        // 装饰完成后，通过一个低优先级的信号通知 UI 更新那些已经可见的行（颜色/路径提示）
+        QMetaObject::invokeMethod(this, [this, rs, decorMs]() {
+            qDebug() << "[PERF] 元数据装饰后台任务完成. 耗时:" << decorMs << "ms (此过程不阻塞交互)";
+            emit resultsSwapped(rs); 
+        }, Qt::QueuedConnection);
         return rs;
     });
 
     disconnect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, nullptr);
-    connect(&m_watcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, [this, timer]() {
-        if (m_watcher.isCanceled()) return;
-        
-        std::shared_ptr<ResultSet> newSet = m_watcher.result();
-
-        {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
-            m_resultSet = newSet;
-        }
-        emit resultsSwapped(newSet);
-        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
-    });
-
     m_watcher.setFuture(future);
 }
 

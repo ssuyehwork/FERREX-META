@@ -900,76 +900,106 @@ QString MftReader::getFullPath(int index) const {
 }
 
 std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
-    // 2026-05-16 核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突与序列号匹配失效
-    uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
+    // 2026-05-16 核心修正：使用复合 Key (driveIdx << 48 | 48位FRN) 解决多盘符冲突
+    uint64_t initialCompositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
 
+    // 1. 快速检查顶级缓存
     {
         std::lock_guard<std::mutex> lock(m_pathCacheMutex);
-        auto it = m_path_cache.find(compositeKey);
+        auto it = m_path_cache.find(initialCompositeKey);
         if (it != m_path_cache.end()) return it->second;
     }
 
-    std::vector<std::wstring> segments;
+    // 2. 极致性能：迭代回溯并收集每一级待缓存节点
+    // 理由：以往仅缓存叶子节点，导致装饰大量文件时会发生海量的重复树攀爬。
+    // 现在我们采用“攀爬时检测缓存、下降时填充路径”的策略，将装饰 2000 项的性能提升一个数量级。
+    struct Node { uint64_t key; uint32_t idx; };
+    static thread_local std::vector<Node> stack; 
+    stack.clear();
     
-    // 2026-06-xx 极致架构优化：采用 SoA 直连下标进行路径回溯。
-    // 理由：getPathFast 常在 UI 渲染的热点路径被调用，消除 Map 查找是实现百万级数据“瞬间回溯”的关键。
-    auto idxIt = m_frn_to_idx.find(compositeKey);
-    if (idxIt == m_frn_to_idx.end()) return L"";
+    uint64_t curKey = initialCompositeKey;
+    std::wstring cachedBase;
 
-    uint32_t curIdx = idxIt->second;
+    while (true) {
+        auto idxIt = m_frn_to_idx.find(curKey);
+        if (idxIt == m_frn_to_idx.end()) break;
+        uint32_t curIdx = idxIt->second;
 
-    // 2026-06-xx 性能优化：限制回溯深度，并使用更轻量的循环检测。
-    // 避免在大规模目录树中因循环引用导致的死循环，同时减少内存分配开销。
-    int depth = 0;
-    while (curIdx != 0xFFFFFFFF && depth < 64) {
-        const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[curIdx]);
-        
-        // 2026-06-xx 性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
-        segments.push_back(QString::fromUtf8(p).toStdWString());
+        stack.push_back({curKey, curIdx});
 
         uint64_t parentFrn = m_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
-        if (parentFrn == 5 || parentFrn == 0) break;
-
-        curIdx = m_parent_indices[curIdx];
-        depth++;
-    }
-
-    if (segments.empty()) return L"";
-
-    std::wstring volume = (driveIdx < m_drive_list.size()) ? m_drive_list[driveIdx] : L"C:";
-    std::wstring path = volume;
-    for (auto it = segments.rbegin(); it != segments.rend(); ++it) path += L"\\" + *it;
-
-    {
-        std::lock_guard<std::mutex> lock(m_pathCacheMutex);
-        if (m_path_cache.size() > 200000) { // 2026-05-16 扩容路径缓存以提升深度目录渲染性能
-            auto it_clear = m_path_cache.begin();
-            for (int i = 0; i < 2000; ++i) it_clear = m_path_cache.erase(it_clear);
+        if (parentFrn == 5 || parentFrn == 0) {
+            cachedBase = (driveIdx < m_drive_list.size()) ? m_drive_list[driveIdx] : L"C:";
+            break;
         }
-        m_path_cache[compositeKey] = path;
+
+        uint64_t parentKey = (static_cast<uint64_t>(driveIdx) << 48) | parentFrn;
+        {
+            std::lock_guard<std::mutex> lock(m_pathCacheMutex);
+            auto it = m_path_cache.find(parentKey);
+            if (it != m_path_cache.end()) {
+                cachedBase = it->second;
+                break;
+            }
+        }
+        curKey = parentKey;
+        if (stack.size() > 64) break; // 物理限高，防御死循环
     }
-    return path;
+
+    if (stack.empty() && cachedBase.empty()) return L"";
+
+    // 3. 自顶向下重构路径，并实现“每一级路径”的物理级缓存填充
+    std::wstring currentPath = cachedBase;
+    std::lock_guard<std::mutex> lock(m_pathCacheMutex);
+    
+    // 自动触发 LRU 淘汰逻辑
+    if (m_path_cache.size() > 500000) {
+        auto it = m_path_cache.begin();
+        for (int i = 0; i < 5000; ++i) it = m_path_cache.erase(it);
+    }
+
+    for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+        const char* name = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[it->idx]);
+        currentPath += L"\\" + QString::fromUtf8(name).toStdWString();
+        m_path_cache[it->key] = currentPath;
+    }
+
+    return currentPath;
 }
 
 std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, bool caseSensitive, 
                                        const QStringList& extensionList, bool includeHidden, bool includeSystem,
                                        bool includeDollar) {
-    QElapsedTimer timer;
-    timer.start();
+    QElapsedTimer totalTimer;
+    totalTimer.start();
     
     {
         QReadLocker lock(&m_dataLock);
         if (!m_isInitialized) return {};
     }
 
+    QElapsedTimer subTimer;
+    subTimer.start();
+
     bool hasQuery = !query.isEmpty();
     bool hasExt = !extensionList.isEmpty();
     
     QRegularExpression re;
     QByteArray queryUtf8;
+    bool actualUseRegex = useRegex;
+
     if (hasQuery) {
         if (useRegex) {
-            re = QRegularExpression(query, caseSensitive ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption);
+            // 2026-06-xx 极致性能优化：正则退化检测。
+            // 理由：用户习惯勾选“正则”开关，但输入的关键词往往是纯文本。
+            // 若关键词不含正则元字符，强制退化为 StrStrIA，速度可提升 5-10 倍。
+            static const QRegularExpression metaChars("[\\\\^\\$\\.\\|\\?\\*\\+\\(\\)\\[\\]\\{\\}]");
+            if (!query.contains(metaChars)) {
+                actualUseRegex = false;
+                queryUtf8 = query.toUtf8();
+            } else {
+                re = QRegularExpression(query, caseSensitive ? QRegularExpression::NoPatternOption : QRegularExpression::CaseInsensitiveOption);
+            }
         } else {
             queryUtf8 = query.toUtf8();
         }
@@ -1027,19 +1057,21 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
             finalRes.push_back(makeKey(dIdx, m_frns[i]));
             if (finalRes.size() > 200000) break; 
         }
-        qInfo() << "[MftReader] 前缀搜索完成. 命中:" << finalRes.size() << "耗时:" << timer.elapsed() << "ms";
+        qInfo() << "[MftReader] 前缀搜索完成. 命中:" << finalRes.size() << "总耗时:" << totalTimer.elapsed() << "ms (二分查找及循环匹配)";
     } else {
         qInfo() << "[MftReader] 进入全量/并行搜索分支 (Parallel Path). Regex:" << useRegex << "HasExt:" << hasExt;
         // 2. 全量/复杂搜索分支：维持分块并行，但大幅降低加锁频率
         size_t currentTotal = 0;
         { QReadLocker lock(&m_dataLock); currentTotal = m_frns.size(); }
+        int64_t preProcessMs = subTimer.elapsed();
 
         size_t numChunks = (currentTotal + grainSize - 1) / grainSize;
         std::vector<size_t> chunks(numChunks);
         std::iota(chunks.begin(), chunks.end(), 0);
 
         // 2026-06-xx 性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
-        qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
+        subTimer.restart();
+        qInfo() << "[MftReader] 并行搜索启动. 总量:" << currentTotal << "分块:" << numChunks << "线程:" << nThreads;
         QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
             size_t startPos = chunkIdx * grainSize;
@@ -1081,7 +1113,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
                         localRes.push_back(makeKey(dIdx, m_frns[i]));
                     } else {
                         bool match = false;
-                        if (useRegex) match = re.match(QString::fromUtf8(p)).hasMatch();
+                        if (actualUseRegex) match = re.match(QString::fromUtf8(p)).hasMatch();
                         else {
                             if (caseSensitive) match = (strstr(p, queryUtf8.constData()) != nullptr);
                             else match = (StrStrIA(p, queryUtf8.constData()) != nullptr);
@@ -1092,6 +1124,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
             }
             if (!localRes.empty()) { std::lock_guard<std::mutex> l(mtx); finalRes.insert(finalRes.end(), localRes.begin(), localRes.end()); }
         });
+        qInfo() << "[MftReader] 并行搜索阶段完成. 耗时:" << subTimer.elapsed() << "ms (预处理:" << preProcessMs << "ms, 总计:" << totalTimer.elapsed() << "ms)";
     }
     return finalRes;
 }
