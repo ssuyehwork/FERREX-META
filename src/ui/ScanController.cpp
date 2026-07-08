@@ -49,7 +49,8 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
         // 理由：旧数据集可能包含 200万个 Key-Pos 节点，在 UI 线程析构会导致明显的“卡死”。
         // 将其捕获进 lambda 并投递给 global pool，让 UI 线程瞬间脱离泥潭。
         if (oldSet) {
-            QtConcurrent::run([oldSet]() {
+            // 2026-06-xx 极致性能：使用 QThreadPool 异步析构，避免 QtConcurrent::run 产生 nodiscard 警告
+            QThreadPool::globalInstance()->start([oldSet]() {
                 // 此时 oldSet 离开作用域，将在后台线程触发析构，耗时约 50-150ms。
             });
         }
@@ -179,7 +180,7 @@ void ScanController::performSearch() {
 
         // 🌟 终极根治方案：异步析构旧数据集
         if (oldSet) {
-            QtConcurrent::run([oldSet]() {
+            QThreadPool::globalInstance()->start([oldSet]() {
                 // Background destruction...
             });
         }
