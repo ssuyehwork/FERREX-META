@@ -52,20 +52,6 @@ set(SOURCES
     src/mft/UsnWatcher.h
     src/crypto/EncryptionManager.cpp
     src/crypto/EncryptionManager.h
-    src/db/CategoryRepo.cpp
-    src/db/CategoryRepo.h
-    src/db/Database.cpp
-    src/db/Database.h
-    src/db/FavoritesRepo.cpp
-    src/db/FavoritesRepo.h
-    src/db/FolderRepo.cpp
-    src/db/FolderRepo.h
-    src/db/ItemRepo.cpp
-    src/db/ItemRepo.h
-    src/db/SyncEngine.cpp
-    src/db/SyncEngine.h
-    src/meta/AmMetaJson.cpp
-    src/meta/AmMetaJson.h
     src/meta/AllFrnManager.cpp
     src/meta/AllFrnManager.h
     src/meta/BatchRenameEngine.cpp
@@ -106,7 +92,6 @@ target_link_libraries(FERREX PRIVATE
     Qt6::Gui
     Qt6::Widgets
     Qt6::Svg
-    Qt6::Sql
     Qt6::Concurrent
     ntdll
     ole32
