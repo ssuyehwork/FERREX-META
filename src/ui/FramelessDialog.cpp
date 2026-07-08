@@ -20,7 +20,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
 
     setWindowTitle(title);
 
-    // 对标规范：通过 DwmSetWindowAttribute 开启 Windows 11 原生圆角
+    // 2026-05-10 对标规范：通过 DwmSetWindowAttribute 开启 Windows 11 原生圆角
     DWORD attribute = 2; // DWMWCP_ROUND
     DwmSetWindowAttribute(reinterpret_cast<HWND>(winId()), 33, &attribute, sizeof(attribute));
 
@@ -60,7 +60,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
 
     auto createTitleBtn = [this](const QString& iconName, const QString& tooltip, const QString& hoverColor) {
         QPushButton* btn = new QPushButton();
-        // 对标 MainWindow 规范：尺寸固定为 24x24 -> 20x20，图标 18x18 -> 16x16
+        // 2026-05-16 对标 MainWindow 规范：尺寸固定为 24x24 -> 20x20，图标 18x18 -> 16x16
         btn->setFixedSize(20, 20);
         btn->setIcon(UiHelper::getIcon(iconName, QColor("#CCCCCC"), 16));
         btn->setIconSize(QSize(16, 16));
@@ -77,12 +77,12 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     };
 
     m_pinBtn = createTitleBtn("pin_tilted", "置顶", "#333333");
-    // 置顶按钮逻辑规范：移除内边距，改由全局 spacing 控制
+    // 2026-05-16 置顶按钮逻辑规范：移除内边距，改由全局 spacing 控制
     m_pinBtn->setCheckable(true);
     m_pinBtn->setStyleSheet(
         "QPushButton { background-color: transparent; border: none; border-radius: 4px; } "
         "QPushButton:hover { background-color: #333333; } "
-        "QPushButton:checked { background-color: rgba(255, 85, 28, 0.2); }" // 品牌橙高亮
+        "QPushButton:checked { background-color: rgba(255, 85, 28, 0.2); }" // 2026-05-16 品牌橙高亮
     );
     connect(m_pinBtn, &QPushButton::toggled, this, [this](bool checked) {
         m_pinBtn->setIcon(UiHelper::getIcon(checked ? "pin_vertical" : "pin_tilted", 
@@ -107,7 +107,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     });
 
     m_closeBtn = new QPushButton();
-    m_closeBtn->setFixedSize(20, 20); // 同步为 20x20
+    m_closeBtn->setFixedSize(20, 20); // 2026-05-16 同步为 20x20
     m_closeBtn->setIcon(UiHelper::getIcon("close", QColor("#FFFFFF"), 16));
     m_closeBtn->setIconSize(QSize(16, 16));
     m_closeBtn->setAutoDefault(false);
@@ -121,7 +121,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     m_closeBtn->installEventFilter(this);
     connect(m_closeBtn, &QPushButton::clicked, this, &QDialog::reject);
 
-    // 对标规范：从右到左排列 (布局顺序: pin -> min -> max -> close)
+    // 2026-05-10 对标规范：从右到左排列 (布局顺序: pin -> min -> max -> close)
     titleLayout->addWidget(m_pinBtn);
     titleLayout->addWidget(m_minBtn);
     titleLayout->addWidget(m_maxBtn);

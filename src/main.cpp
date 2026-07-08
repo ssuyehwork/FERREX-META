@@ -25,19 +25,19 @@
 
 /**
  * @brief 自定义日志处理程序，将 qDebug 消息重定向至本地 .log 文件
- * 按照用户要求：在手动运行 .exe 时，通过日志文件排查初始化挂起或信号丢失问题。
+ * 2026-03-xx 按照用户要求：在手动运行 .exe 时，通过日志文件排查初始化挂起或信号丢失问题。
  */
 static qint64 g_currentLogSize = -1; // 内存计数器，避免频繁 stat 系统调用
-static QMutex g_logMutex;            // 物理加固：保护日志写入与轮转逻辑的线程安全
+static QMutex g_logMutex;            // 2026-06-xx 物理加固：保护日志写入与轮转逻辑的线程安全
 
 void customMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg) {
     Q_UNUSED(context); 
     QMutexLocker locker(&g_logMutex);
 
-    // 根本修复：将日志移出监控盘符，放入 AppData 目录以杜绝 USN 监控无限循环
+    // 2026-07-07 根本修复：将日志移出监控盘符，放入 AppData 目录以杜绝 USN 监控无限循环
     static QString logPath;
     if (logPath.isEmpty()) {
-        // 调试优化：优先在程序当前目录生成日志，方便用户直接查看
+        // 2026-06-xx 调试优化：优先在程序当前目录生成日志，方便用户直接查看
         logPath = QDir(QCoreApplication::applicationDirPath()).filePath("FERREX_debug.log");
     }
 
@@ -109,14 +109,14 @@ int main(int argc, char *argv[]) {
 
     a.setQuitOnLastWindowClosed(false);
     
-    // 按照用户要求：物理加固图标加载逻辑
+    // 2026-04-14 按照用户要求：物理加固图标加载逻辑
     // 杜绝相对路径幻觉，强制使用 Qt 资源系统 (:/) 加载 app_icon.ico，确保托盘显示不失效
     a.setWindowIcon(QIcon(":/app_icon.ico"));
 
     a.setApplicationName("FERREX");
     a.setOrganizationName("FERREXTeam");
 
-    // 架构重构：彻底移除 DB 模块。系统采用纯轻量化 MFT + JSON 元数据架构。
+    // 2026-06-xx 架构重构：彻底移除 DB 模块。系统采用纯轻量化 MFT + JSON 元数据架构。
     FERREX::MetadataManager::instance();
 
     // 3. 简化启动：直接显示 ScanDialog (Plan-136)

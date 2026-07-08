@@ -126,7 +126,7 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
         fileName = std::wstring(reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(v3) + v3->FileNameOffset), v3->FileNameLength / 2);
     } else return;
 
-    // 物理防御：忽略 FERREX 日志文件本身的变更，防止 USN 写入触发无限循环
+    // 2026-07-07 物理防御：忽略 FERREX 日志文件本身的变更，防止 USN 写入触发无限循环
     if (fileName.find(L"FERREX_debug.log") != std::wstring::npos) {
         return;
     }
@@ -135,7 +135,7 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
         qDebug() << "[UsnWatcher] " << QString::fromStdWString(m_volume) << "记录:" << QString::fromStdWString(fileName) << "原因:" << QString::number(reason, 16);
     }
 
-    // 物理增强：监听 REASON_CLOSE。对于大文件或复制操作，CLOSE 是获取最终元数据的物理锚点
+    // 2026-05-28 物理增强：监听 REASON_CLOSE。对于大文件或复制操作，CLOSE 是获取最终元数据的物理锚点
     if (reason & (USN_REASON_FILE_CREATE | USN_REASON_DATA_OVERWRITE | USN_REASON_BASIC_INFO_CHANGE | USN_REASON_CLOSE)) {
         MftReader::instance().updateEntryFromUsn(pRecord, m_volume);
     }

@@ -107,7 +107,7 @@ public:
 
     /**
      * @brief 探测是否为固态硬盘 (SSD)
-     * 任务 4.1：物理寻道特征探测。
+     * 2026-06-xx 任务 4.1：物理寻道特征探测。
      * 理由：HDD 对多线程随机 I/O 极其敏感，磁头剧烈寻道会导致性能雪崩；SSD 则可维持较高并发。
      */
     static bool isSolidStateDrive(const QString& drivePath) {

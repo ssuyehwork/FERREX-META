@@ -80,7 +80,7 @@ static size_t serializeRecord(const ScchDataPackage& pkg, std::vector<uint8_t>& 
         memcpy(buf.data() + start + sizeof(ScchRecord), pkg.name.data(), nameLen);
     }
 
-    // 极致性能优化：采用流式分段计算 CRC，消除临时 vector 内存分配开销。
+    // 2026-06-xx 极致性能优化：采用流式分段计算 CRC，消除临时 vector 内存分配开销。
     // 覆盖范围：除 record_crc32 以外的所有字段 + 文件名内容
     uint32_t crc = 0xFFFFFFFFu;
     
@@ -175,7 +175,7 @@ bool ScchCache::appendEntries(const std::string& path_base, const std::vector<Sc
     std::string bin_path = path_base + ".bin";
     std::string idx_path = path_base + ".idx";
 
-    // 任务一修复：防御性逻辑。如果 appendEntries 被调用时发现目标 .bin 不存在，
+    // 2026-06-xx 任务一修复：防御性逻辑。如果 appendEntries 被调用时发现目标 .bin 不存在，
     // 自动改为创建新文件（执行 saveAll 逻辑），防止因为文件缺失导致持久化静默失败。
     if (!std::filesystem::exists(bin_path)) {
         return saveAll(path_base, records, last_usn);
@@ -237,7 +237,7 @@ bool ScchCache::appendEntries(const std::string& path_base, const std::vector<Sc
             head.tombstone_count += tombstone_inc;
             head.last_usn = last_usn;
             
-            // 性能优化：采用“方案 A”，废除增量追加时的全量索引读回重算 CRC。
+            // 2026-06-xx 性能优化：采用“方案 A”，废除增量追加时的全量索引读回重算 CRC。
             // 理由：单条记录已有 CRC 保护，全局 CRC 在增量追加场景下开销为 O(n)，严重拖慢实时更新。
             head.crc32 = 0xDEADC0DE; // 使用魔数标记该版本索引不再受全局 CRC 保护
 
@@ -269,7 +269,7 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
                     size_t total_count = (size_t)(head.main_index_count + head.delta_index_count);
                     std::vector<ScchIndexEntry> raw_entries(total_count);
                     if (fread(raw_entries.data(), sizeof(ScchIndexEntry), total_count, f_idx) == total_count) {
-                        // 增强：兼容全局 CRC 和 增量魔数标记
+                        // 2026-06-xx 增强：兼容全局 CRC 和 增量魔数标记
                         bool crc_pass = (head.crc32 == 0xDEADC0DE) || 
                                        (computeCrc32(reinterpret_cast<uint8_t*>(raw_entries.data()), total_count * sizeof(ScchIndexEntry)) == head.crc32);
                         
@@ -293,7 +293,7 @@ ScchResult ScchCache::load(const std::string& path_base, std::vector<ScchDataPac
         }
     }
 
-    // 极致架构优化：采用 Win32 MMAP 内存映射加速加载。
+    // 2026-06-xx 极致架构优化：采用 Win32 MMAP 内存映射加速加载。
     // 理由：废除千万级次数的 fseek/fread 系统调用，利用 OS 页面置换实现高速流式解析。
     HANDLE hFile = CreateFileA(bin_path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) return ScchResult::IoError;
@@ -419,7 +419,7 @@ bool ScchCache::needsCompaction(const std::string& path_base, uint32_t delta_thr
 bool ScchCache::compact(const std::string& path_base) {
     std::vector<ScchDataPackage> records;
     uint64_t last_usn = 0;
-    // 物理安全性：Compaction 必须读取当前全量状态并写回新文件
+    // 2026-06-xx 物理安全性：Compaction 必须读取当前全量状态并写回新文件
     if (load(path_base, records, last_usn) == ScchResult::Ok) {
         // load 逻辑内部已通过 frn_to_offset map 实现了自动去重和 tombstone 过滤
         return saveAll(path_base, records, last_usn);

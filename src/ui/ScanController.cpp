@@ -34,7 +34,7 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
 
         {
             std::lock_guard<std::mutex> lock(m_resultsMutex);
-            // 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
+            // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
             // 此时后台异步完成的增量排序结果已经失效（基于旧数据），必须舍弃，防止搜索结果被“秒消失”。
             if (m_resultSet != m_sortBaseSnap) {
                 qDebug() << "[ScanController] 舍弃过时的重排序结果";
@@ -94,7 +94,7 @@ void ScanController::performSearch() {
     QElapsedTimer timer;
     timer.start();
 
-    // 性能优化：对于明确为空且未开启自动显示的请求，直接在 UI 线程构造空结果，避免线程调度开销
+    // 2026-06-xx 性能优化：对于明确为空且未开启自动显示的请求，直接在 UI 线程构造空结果，避免线程调度开销
     const QString text = m_searchText;
     const ScanFilterState state = m_filterState;
 
@@ -127,7 +127,7 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
+        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
         // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
         subTimer.restart();
         size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000)); 
@@ -169,7 +169,7 @@ void ScanController::performSearch() {
     m_watcher.setFuture(future);
 }
 
-// 极致性能重构：排序键投影 (Key Projection) 结构体
+// 2026-06-xx 极致性能重构：排序键投影 (Key Projection) 结构体
 struct SortProxy {
     uint64_t key;
     int64_t iVal = 0;
@@ -202,7 +202,7 @@ void ScanController::sort(int column, int order) {
 
     std::shared_ptr<ResultSet> snap = snapshot();
     
-    // 极致架构优化：去锁化投影排序。
+    // 2026-06-xx 极致架构优化：去锁化投影排序。
     // 理由：通过物理拷贝文件名/数值至投影结构，彻底杜绝排序过程中的锁竞争与野指针风险。
     auto future = QtConcurrent::run([this, snap, column, order]() {
         auto newSet = std::make_shared<ResultSet>();
@@ -271,7 +271,7 @@ void ScanController::processBatchUpdates() {
     auto events = MftReader::instance().pullChangeJournal();
     if (events.empty()) return;
 
-    // 极致性能重构：将增量变动处理与重排序移至后台线程，彻底解决 200万+ 数据下的 UI 假死
+    // 2026-06-xx 极致性能重构：将增量变动处理与重排序移至后台线程，彻底解决 200万+ 数据下的 UI 假死
     if (m_sortWatcher.isRunning()) {
         // 如果当前正在执行重排序，则暂缓处理，等待下一次聚合通知（Debounce 效应）
         return;
@@ -286,7 +286,7 @@ void ScanController::processBatchUpdates() {
     std::shared_ptr<ResultSet> snap = snapshot();
     auto future = QtConcurrent::run([this, snap, events, text = m_searchText, state = m_filterState, 
                                      column = m_currentSortColumn, order = m_currentSortOrder]() {
-        // 极致性能优化：延迟拷贝。
+        // 2026-06-xx 极致性能优化：延迟拷贝。
         // 理由：直接对 snap 进行 * 解引用拷贝会克隆整个 unordered_map (200万项)，
         // 这在 UI 线程频繁触发时会导致严重的亚秒级停顿（假死）。
         std::shared_ptr<ResultSet> newSet;
@@ -366,12 +366,12 @@ void ScanController::processBatchUpdates() {
             return newSet;
         }
         
-        // 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
+        // 2026-06-xx 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
         // 理由：sortWatcher 的结果会直接替换 m_resultSet，防止 UI 突然清空
         return std::make_shared<ResultSet>(*snap);
     });
 
-    // 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果
+    // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果
     m_sortBaseSnap = snap;
     m_sortWatcher.setFuture(future);
 }

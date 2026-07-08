@@ -45,10 +45,10 @@ ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptio
     int zoom = option.decorationSize.width(); // 物理缩放级别
 
     m.starSize = 18;
-    m.starSpacing = -2; // 优化：默认间距稍微拉开，提升呼吸感
+    m.starSpacing = -2; // 2026-06-08 优化：默认间距稍微拉开，提升呼吸感
     int banW = 14;
 
-    // 按照调试增强版 V2 优化：实现“动态比例星级”
+    // 2026-06-08 按照调试增强版 V2 优化：实现“动态比例星级”
     // 虽然底限是 96，但在接近极限 (100) 时提前缩小星级，确保视觉呼吸感
     if (zoom < 100) {
         m.starSize = 14; 
@@ -70,7 +70,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     Metrics m = calculateMetrics(option);
     bool isSelected = (option.state & QStyle::State_Selected);
 
-    // 状态机驱动渲染：0=不支持缩略图, 1=缩略图就绪, 2=加载中 (占位状态)
+    // 2026-06-xx 状态机驱动渲染：0=不支持缩略图, 1=缩略图就绪, 2=加载中 (占位状态)
     int thumbStatus = index.data(m_hasThumbnailRole).toInt();
     QVariant decoData = index.data(Qt::DecorationRole);
     QPixmap thumb;
@@ -151,7 +151,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (ext.isEmpty()) ext = "FILE";
         QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-        // 物理优化：针对非就绪状态应用半透明角标，减少视觉冲击
+        // 2026-06-xx 物理优化：针对非就绪状态应用半透明角标，减少视觉冲击
         if (thumbStatus != 1) {
             badgeColor.setAlpha(160);
         }
@@ -171,7 +171,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         int rating = index.data(m_ratingRole).toInt();
         QString colorStr = (m_colorRole != -1) ? index.data(m_colorRole).toString() : "";
         
-        // 逻辑重构：彩色胶囊背景独立于星级显示
+        // 2026-06-xx 逻辑重构：彩色胶囊背景独立于星级显示
         if (!colorStr.isEmpty()) {
             QColor bgColor = UiHelper::parseColorName(colorStr);
             if (bgColor.isValid()) {
@@ -205,7 +205,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     QString name = index.data(Qt::DisplayRole).toString();
     painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
 
-    // 物理同步：针对未录入项目应用半透明效果
+    // 2026-06-xx 物理同步：针对未录入项目应用半透明效果
     if (m_managedRole != -1 && !isSelected && !index.data(m_managedRole).toBool()) {
         painter->setPen(QColor(238, 238, 238, 120));
     }
@@ -230,7 +230,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing);
             painter->setPen(QPen(QColor("#41F2F2"), 1, Qt::DashLine));
-            painter->setBrush(Qt::NoBrush); // 物理优化：确保空文件夹标记为全透明
+            painter->setBrush(Qt::NoBrush); // 2026-06-xx 物理优化：确保空文件夹标记为全透明
             painter->drawRoundedRect(m.cardRect, 6, 6);
             painter->restore();
         }
@@ -269,7 +269,7 @@ void ThumbnailDelegate::setEditorData(QWidget* editor, const QModelIndex& index)
     QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor); 
     if (lineEdit) {
         lineEdit->setText(value); 
-        // 物理对标：重命名时仅选中主文件名，不含后缀
+        // 2026-06-xx 物理对标：重命名时仅选中主文件名，不含后缀
         int lastDot = value.lastIndexOf('.'); 
         if (lastDot > 0) { 
             lineEdit->setSelection(0, lastDot); 
@@ -308,14 +308,14 @@ bool ThumbnailDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, co
             QAbstractItemView* view = qobject_cast<QAbstractItemView*>(const_cast<QWidget*>(option.widget));
 
             // 物理加固：未选中项严禁直接通过 Delegate 修改元数据
-            // 稳健性增强：通过 View 获取实时的选中状态
+            // 2026-06-xx 稳健性增强：通过 View 获取实时的选中状态
             bool isSelected = (option.state & QStyle::State_Selected);
             if (view && view->selectionModel()) {
                 isSelected = view->selectionModel()->isSelected(index);
             }
             if (!isSelected) return false;
 
-            // 物理对齐：补全 decorationSize，确保计算出的星级区域与绘制时完全对齐
+            // 2026-06-xx 物理对齐：补全 decorationSize，确保计算出的星级区域与绘制时完全对齐
             QStyleOptionViewItem opt = option;
             if (opt.decorationSize.width() <= 0 && view) opt.decorationSize = view->iconSize();
             Metrics m = calculateMetrics(opt);
@@ -335,7 +335,7 @@ bool ThumbnailDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, co
                 model->setData(index, isBanHit ? 0 : hitStar, m_ratingRole);
 
                 // 3. 物理修复：直接执行禁用逻辑，杜绝 Lambda 嵌套导致的编译错误
-                // 按照用户报错纠偏：改用更稳健的类型获取方式
+                // 2026-06-xx 按照用户报错纠偏：改用更稳健的类型获取方式
                 if (view) {
                     QAbstractItemView::EditTriggers currentTriggers = view->editTriggers();
                     view->setEditTriggers(QAbstractItemView::NoEditTriggers);

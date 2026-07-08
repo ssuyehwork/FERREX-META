@@ -57,7 +57,7 @@ bool BatchRenameEngine::execute(const std::vector<std::wstring>& originalPaths, 
         std::filesystem::path newP = oldP.parent_path() / newNames[i];
         try {
             std::filesystem::rename(oldP, newP);
-            // 按照用户要求：彻底移除 JSON 逻辑，仅需更新数据库路径索引
+            // 2026-05-24 按照用户要求：彻底移除 JSON 逻辑，仅需更新数据库路径索引
             MetadataManager::instance().renameItem(oldP.wstring(), newP.wstring());
         } catch (...) {
             return false;

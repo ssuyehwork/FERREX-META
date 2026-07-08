@@ -24,7 +24,7 @@ namespace FERREX {
 std::vector<uint32_t> CacheManager::s_crcTable;
 bool CacheManager::s_crcTableInitialized = false;
 
-// 按照用户要求：实现高效缓存管理器，参考 FERREX 的 FIDX 格式
+// 2026-05-09 按照用户要求：实现高效缓存管理器，参考 FERREX 的 FIDX 格式
 CacheManager::CacheManager() {
     // 初始化缓存目录 - 修改为程序根目录下的Cache文件夹
     QString appDir = QCoreApplication::applicationDirPath();
@@ -50,7 +50,7 @@ CacheValidationResult CacheManager::validateCache(const QString& drivePath) {
     qint64 fileSize = file.size();
     if (fileSize < (qint64)sizeof(CacheHeader)) return CacheValidationResult::InvalidFormat;
 
-    // 极致性能：使用 Mmap 进行验证，避免全量读取到 QByteArray
+    // 2026-05-09 极致性能：使用 Mmap 进行验证，避免全量读取到 QByteArray
     uchar* data = file.map(0, fileSize);
     if (!data) return CacheValidationResult::InvalidFormat;
 
@@ -147,7 +147,7 @@ bool CacheManager::loadFromCache(const QString& drivePath, QList<IndexedEntry>& 
     if (!file.open(QIODevice::ReadOnly)) return false;
     qint64 fileSize = file.size();
     
-    // 极致性能：使用 Mmap 零拷贝加载
+    // 2026-05-09 极致性能：使用 Mmap 零拷贝加载
     uchar* data = file.map(0, fileSize);
     if (!data) return false;
 
