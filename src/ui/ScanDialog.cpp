@@ -214,8 +214,8 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         (void)QtConcurrent::run([snap, top, bottom]() {
             auto& reader = MftReader::instance();
             for (int i = top; i <= bottom; ++i) {
-                if (i >= (int)snap->keys.size()) break;
-                uint64_t key = snap->keys[i];
+                if (i >= (int)snap->records.size()) break;
+                uint64_t key = snap->records[i].key;
                 int idx = reader.getIndexByKey(key);
                 if (idx != -1 && !reader.isMetadataFetched(idx)) {
                     const_cast<MftReader&>(reader).requestMetadata(idx);
@@ -335,13 +335,13 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole + 1) {
         // 返回缩略图状态：0=不支持, 1=就绪, 2=加载中 (用于 Delegate 实施“缩略图优先”绘制)
         // 2026-06-xx 性能优化：对接 MftReader 预拆分字段
-        QString ext = reader.getExtQString(actualIndex);
+        QString ext = rec.extension;
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
-        if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
+        if (!thumbExts.contains(ext) || rec.isDirectory) return 0;
 
-        int64_t size = reader.getSize(actualIndex);
-        int64_t mtime = reader.getModifyTime(actualIndex);
+        int64_t size = rec.size;
+        int64_t mtime = rec.mtime;
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
         if (m_thumbCache.contains(cacheKey)) return 1;
@@ -366,9 +366,9 @@ bool ScanTableModel::setData(const QModelIndex& index, const QVariant& value, in
     if (!index.isValid() || role != Qt::EditRole || index.column() != 0) return false;
     
     int row = index.row();
-    if (row < 0 || row >= (int)m_currentResultSet->keys.size()) return false;
+    if (row < 0 || row >= (int)m_currentResultSet->records.size()) return false;
     
-    uint64_t key = m_currentResultSet->keys[row];
+    uint64_t key = m_currentResultSet->records[row].key;
     auto& reader = MftReader::instance();
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return false;
