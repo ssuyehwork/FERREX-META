@@ -39,9 +39,8 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
     // 2026-07-07 根本修复：将日志移出监控盘符，放入 AppData 目录以杜绝 USN 监控无限循环
     static QString logPath;
     if (logPath.isEmpty()) {
-        QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-        QDir().mkpath(appData);
-        logPath = QDir(appData).filePath("FERREX_debug.log");
+        // 2026-06-xx 调试优化：优先在程序当前目录生成日志，方便用户直接查看
+        logPath = QDir(QCoreApplication::applicationDirPath()).filePath("FERREX_debug.log");
     }
 
     const QString logFileName = logPath;
@@ -70,6 +69,11 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context, con
         QString line = QString("[%1][%2] %3\n").arg(timeStr, level, msg);
         textStream << line;
         textStream.flush();
+
+        // 同时输出到 stderr 确保在控制台可见
+        fprintf(stderr, "%s", line.toLocal8Bit().constData());
+        fflush(stderr);
+
         g_currentLogSize += line.toUtf8().size(); // 累加内存计数
         logFile.close();
 

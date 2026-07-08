@@ -907,7 +907,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
     // 2026-06-xx 极致算法重构：去锁化/大跨度锁搜索
     if (hasQuery && !useRegex && !caseSensitive && !hasExt) {
         // 1. 前缀搜索分支：采用单次大跨度读锁保护，彻底消除二分查找中的锁震荡
-        qDebug() << "[MftReader] 进入前缀搜索分支 (Fast Path)";
+        qInfo() << "[MftReader] 进入前缀搜索分支 (Fast Path)";
         QReadLocker lock(&m_dataLock);
         
         auto it_start = std::lower_bound(m_sorted_indices.begin(), m_sorted_indices.end(), queryUtf8.constData(), 
@@ -935,9 +935,9 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
             finalRes.push_back(makeKey(dIdx, m_frns[i]));
             if (finalRes.size() > 200000) break; 
         }
-        qDebug() << "[MftReader] 前缀搜索完成. 命中:" << finalRes.size() << "耗时:" << timer.elapsed() << "ms";
+        qInfo() << "[MftReader] 前缀搜索完成. 命中:" << finalRes.size() << "耗时:" << timer.elapsed() << "ms";
     } else {
-        qDebug() << "[MftReader] 进入全量/并行搜索分支 (Parallel Path). Regex:" << useRegex << "HasExt:" << hasExt;
+        qInfo() << "[MftReader] 进入全量/并行搜索分支 (Parallel Path). Regex:" << useRegex << "HasExt:" << hasExt;
         // 2. 全量/复杂搜索分支：维持分块并行，但大幅降低加锁频率
         size_t currentTotal = 0;
         { QReadLocker lock(&m_dataLock); currentTotal = m_frns.size(); }
@@ -947,7 +947,7 @@ std::vector<uint64_t> MftReader::search(const QString& query, bool useRegex, boo
         std::iota(chunks.begin(), chunks.end(), 0);
 
         // 2026-06-xx 性能策略：使用 QtConcurrent 实现分块并行搜索，杜绝 std::execution 导致的编译失败
-        qDebug() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
+        qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
         QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
             std::vector<uint64_t> localRes;
             size_t startPos = chunkIdx * grainSize;

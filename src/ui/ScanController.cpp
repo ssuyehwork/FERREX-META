@@ -85,7 +85,7 @@ int ScanController::resultCount() const {
 void ScanController::performSearch() {
     if (m_watcher.isRunning()) {
         m_watcher.cancel();
-        qDebug() << "[ScanController] 取消正在运行的搜索任务";
+        qInfo() << "[ScanController] 取消正在运行的搜索任务";
     }
     if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
 
@@ -147,7 +147,7 @@ void ScanController::performSearch() {
         }
         int64_t decorMs = subTimer.elapsed();
 
-        qDebug() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
+        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
     });
