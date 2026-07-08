@@ -1041,8 +1041,13 @@ void ScanDialog::setupUi() {
     m_searchEdit->installEventFilter(this);
     connect(m_searchEdit, &QLineEdit::textChanged, this, [this](const QString& text) {
         m_controller->setSearchText(text);
-        m_controller->triggerSearch();
+        if (text.isEmpty()) {
+            m_controller->triggerSearch(true);
+        } else {
+            m_controller->triggerSearch(false);
+        }
     });
+    connect(m_searchEdit, &QLineEdit::editingFinished, this, [this]() { m_config.save(); });
     connect(m_searchEdit, &QLineEdit::returnPressed, this, &ScanDialog::onTriggerSearch);
     searchRow->addWidget(m_searchEdit, 1);
 
@@ -1054,8 +1059,21 @@ void ScanDialog::setupUi() {
     m_extEdit->setClearButtonEnabled(true);
     m_extEdit->installEventFilter(this);
     connect(m_extEdit, &QLineEdit::textChanged, this, [this](const QString&) {
-        onFilterOptionChanged();
+        // 2026-06-xx 性能优化：仅同步过滤状态，使用防抖触发搜索，避免输入后缀时发生假死
+        ScanFilterState state;
+        state.useRegex = m_checkRegex->isChecked();
+        state.caseSensitive = m_checkCase->isChecked();
+        state.includeHidden = m_checkHidden->isChecked();
+        state.includeSystem = m_checkSystem->isChecked();
+        state.includeDollar = m_checkDollar->isChecked();
+        state.autoDisplay = m_checkAuto->isChecked();
+        QString extText = m_extEdit->text().toLower();
+        if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
+
+        m_controller->setFilterState(state);
+        m_controller->triggerSearch(false);
     });
+    connect(m_extEdit, &QLineEdit::editingFinished, this, [this]() { m_config.save(); });
     connect(m_extEdit, &QLineEdit::returnPressed, this, &ScanDialog::onTriggerSearch);
     searchRow->addWidget(m_extEdit);
 
@@ -1703,11 +1721,8 @@ void ScanDialog::onTriggerSearch() {
 }
 
 void ScanDialog::onFilterOptionChanged() {
-    // 2026-06-xx 物理修复：在过滤选项变更时强制同步驱动器掩码。
-    // 如果不在此处同步，当用户切换“自动显示”开关时，搜索引擎可能因为默认 Mask 为 0 而导致搜索结果为空。
-    QStringList activeList;
-    for (const QString& d : m_config.activeDrives) activeList << d;
-    MftReader::instance().updateActiveDrives(activeList);
+    // 2026-06-xx 性能优化：移除这里的 config.save() 和频繁的驱动器同步。
+    // 只有在明确需要重新搜索时才触发。驱动器同步已移至 onStartScan 或 onTriggerSearch。
 
     m_config.useRegex = m_checkRegex->isChecked();
     m_config.caseSensitive = m_checkCase->isChecked();
@@ -1715,7 +1730,6 @@ void ScanDialog::onFilterOptionChanged() {
     m_config.includeSystem = m_checkSystem->isChecked();
     m_config.includeDollar = m_checkDollar->isChecked();
     m_config.autoDisplay = m_checkAuto->isChecked();
-    m_config.save();
 
     ScanFilterState state;
     state.useRegex = m_config.useRegex;
@@ -1728,7 +1742,7 @@ void ScanDialog::onFilterOptionChanged() {
     if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
     
     m_controller->setFilterState(state);
-    // 2026-06-xx 物理对标：配置变更时触发立即搜索，以响应“自动显示”等开关状态
+    // 2026-06-xx 物理对标：配置变更（如勾选开关）时触发立即搜索，以响应“自动显示”等开关状态
     m_controller->triggerSearch(true);
 }
 

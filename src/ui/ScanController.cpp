@@ -88,15 +88,26 @@ void ScanController::performSearch() {
     QElapsedTimer timer;
     timer.start();
 
-    auto future = QtConcurrent::run([this, text = m_searchText, state = m_filterState]() {
+    // 2026-06-xx 性能优化：对于明确为空且未开启自动显示的请求，直接在 UI 线程构造空结果，避免线程调度开销
+    const QString text = m_searchText;
+    const ScanFilterState state = m_filterState;
+
+    if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
+        auto newSet = std::make_shared<ResultSet>();
+        {
+            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            m_resultSet = newSet;
+        }
+        emit resultsSwapped(newSet);
+        emit searchFinished(0, timer.elapsed());
+        return;
+    }
+
+    auto future = QtConcurrent::run([this, text, state]() {
         std::vector<uint64_t> keys;
         // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
             keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
-        }
-        // 否则，如果不是自动显示且查询为空，返回空结果
-        else if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
-            keys = std::vector<uint64_t>();
         }
         else {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
