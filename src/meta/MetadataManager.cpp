@@ -51,7 +51,7 @@ MetadataManager::MetadataManager(QObject* parent) : QObject(parent) {
 }
 
 void MetadataManager::loadAllMetaAsync() {
-    QtConcurrent::run([this]() {
+    (void)QtConcurrent::run([this]() {
         std::unordered_map<std::wstring, RuntimeMeta> tempCache;
         qInfo() << "[Metadata] 启动纯内存元数据架构初始化...";
 
