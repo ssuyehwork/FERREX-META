@@ -133,7 +133,7 @@ void ScanController::performSearch() {
             auto meta = MetadataManager::instance().getMeta(path.toStdWString());
             if (!meta.color.empty()) {
                 QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-                if (c.isValid()) rs->metadata[k] = {c};
+                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
             }
         }
 

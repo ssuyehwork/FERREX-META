@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QColor>
 #include <QStringList>
 #include <QVector>
 #include <QTimer>
@@ -34,6 +35,7 @@ struct ScanFilterState {
  */
 struct RenderMeta {
     QColor color;
+    explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
 };
 
 struct ResultSet {
