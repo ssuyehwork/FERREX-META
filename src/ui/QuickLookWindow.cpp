@@ -80,8 +80,6 @@ void QuickLookWindow::setupUi() {
     layout->addWidget(m_infoLabel);
 
     rootLayout->addWidget(m_container);
-
-    resize(800, 600);
 }
 
 void QuickLookWindow::preview(const QString& filePath) {
@@ -97,14 +95,13 @@ void QuickLookWindow::preview(const QString& filePath) {
         renderText(filePath);
     }
 
-    // 居中显示
+    // 全屏显示
     if (!isVisible()) {
         QScreen* screen = QGuiApplication::primaryScreen();
         if (parentWidget() && parentWidget()->window()) {
             screen = parentWidget()->window()->screen();
         }
-        QRect screenGeom = screen->geometry();
-        move(screenGeom.center() - rect().center());
+        setGeometry(screen->geometry());
         show();
     }
 
