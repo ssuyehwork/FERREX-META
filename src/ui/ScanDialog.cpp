@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <QTimer>
 #include <QIcon>
+#include <QFileIconProvider>
 #include "../mft/MftReader.h"
 #include "UiHelper.h"
 #include "../util/ShellHelper.h"
@@ -319,11 +320,18 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             }
         }
     } else if (role == Qt::DecorationRole && index.column() == 0) {
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
+        bool isDir = reader.isDirectory(actualIndex);
+        if (isDir) {
+            // 🌟 方案 1 物理拦截：文件夹直接使用静态预加载图标，杜绝主线程发起任何磁盘/Shell 探测
+            static QIcon folderIcon = QFileIconProvider().icon(QFileIconProvider::Folder);
+            return folderIcon;
+        }
+
+        // 性能优化：对接 MftReader 预拆分的扩展名字段，消除 UI 层重复解析
         QString ext = reader.getExtQString(actualIndex);
-        
+
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
-        if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
+        if (thumbExts.contains(ext)) {
             // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
             int64_t size = reader.getSize(actualIndex);
             int64_t mtime = reader.getModifyTime(actualIndex);
@@ -336,13 +344,26 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
-                
+
                 // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
-        return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
+
+        // 🌟 方案 1 本地轻量化扩展名缓存：
+        // 针对常规文件类型建立 UI 线程级 O(1) 静态哈希，保证同一扩展名在整个生命周期内仅向底层查询一次，
+        // 彻底避免检索出成千上万同类型文件时，频繁触发底层的跨套间阻塞和锁竞争。
+        static QHash<QString, QIcon> s_localIconCache;
+        auto it = s_localIconCache.find(ext);
+        if (it != s_localIconCache.end()) {
+            return *it;
+        } else {
+            // 仅在首次遇到该扩展名时，去加载一次并写入静态缓存
+            QIcon icon = reader.getCachedIcon(ext, false);
+            s_localIconCache.insert(ext, icon);
+            return icon;
+        }
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
