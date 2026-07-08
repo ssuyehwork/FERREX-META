@@ -1310,9 +1310,11 @@ void ScanDialog::setupUi() {
 
     connect(m_controller, &ScanController::searchFinished, this, [this](int count, int64_t elapsedMs) {
         Q_UNUSED(count);
+        QElapsedTimer uiTimer; uiTimer.start();
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
         updateStatus("就绪");
+        qDebug() << "[PERF] UI 刷新与状态更新耗时:" << uiTimer.elapsed() << "ms";
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {

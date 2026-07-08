@@ -126,9 +126,18 @@ void ScanController::performSearch() {
         updateKeyToPosMapping(*rs);
 
         // 🌟 物理优化点 1：搜索结束后立即推送结果给 UI 展现，不再等待装饰过程
-        QMetaObject::invokeMethod(this, [this, rs, searchMs]() {
+        int64_t readyToPushTime = timer.elapsed();
+        QMetaObject::invokeMethod(this, [this, rs, searchMs, readyToPushTime, timer]() {
+            int64_t uiReceiveTime = timer.elapsed();
             { std::lock_guard<std::mutex> lock(m_resultsMutex); m_resultSet = rs; }
             emit resultsSwapped(rs);
+
+            qDebug() << "[PERF] 匹配 -> 显示 全链路追踪:";
+            qDebug() << "  - 1. 引擎纯匹配耗时:" << searchMs << "ms";
+            qDebug() << "  - 2. 结果预处理 (Map构建):" << (readyToPushTime - searchMs) << "ms";
+            qDebug() << "  - 3. UI 线程排队/调度时延:" << (uiReceiveTime - readyToPushTime) << "ms";
+            qDebug() << "  - 🌟 总计 (从匹配开始到显示):" << uiReceiveTime << "ms";
+
             emit searchFinished(static_cast<int>(rs->keys.size()), searchMs);
         }, Qt::BlockingQueuedConnection);
 
