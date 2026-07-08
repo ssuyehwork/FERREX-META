@@ -273,6 +273,7 @@ void MftReader::buildIndex(const QStringList& drives) {
     lock.unlock();
 
     compact();
+    buildSortedIndices();
     for (auto* w : newWatchers) w->start();
 }
 
@@ -361,7 +362,14 @@ bool MftReader::loadFromCache() {
                         m_name_offsets.push_back(poolBase + pd.name_offsets[i]);
                         m_ext_offsets.push_back(poolBase + pd.ext_offsets[i]);
                         m_parent_indices.push_back(0xFFFFFFFF);
-                        m_frn_to_idx[makeKey(dIdx, pd.frns[i])] = (uint32_t)(startIdx + i);
+
+                        uint64_t key = makeKey(dIdx, pd.frns[i]);
+                        auto it = m_frn_to_idx.find(key);
+                        if (it != m_frn_to_idx.end()) {
+                            m_frns[it->second] = 0;
+                            m_dead_count++;
+                        }
+                        m_frn_to_idx[key] = (uint32_t)(startIdx + i);
                     }
                     m_string_pool.insert(m_string_pool.end(), pd.string_pool.begin(), pd.string_pool.end());
                     currentTotal = m_frns.size();
@@ -386,6 +394,7 @@ bool MftReader::loadFromCache() {
     lock.unlock();
 
     compact();
+    buildSortedIndices();
 
     // 2026-06-xx 核心修复：加载缓存后立即启动 USN 监听器
     // 理由：确保系统在从快照恢复后，能通过 USN 锚点自动追平离线期间的磁盘变动，并开始实时监听。
@@ -495,7 +504,14 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
         m_parent_indices.push_back(0xFFFFFFFF);
         
         // 增量构建映射，减少全量重建开销
-        m_frn_to_idx[makeKey(dIdx, pd.frns[i])] = (uint32_t)(startIdx + i);
+        uint64_t key = makeKey(dIdx, pd.frns[i]);
+        auto it = m_frn_to_idx.find(key);
+        if (it != m_frn_to_idx.end()) {
+            // 如果已存在（如重复加载快照），将旧项标记为死亡
+            m_frns[it->second] = 0;
+            m_dead_count++;
+        }
+        m_frn_to_idx[key] = (uint32_t)(startIdx + i);
     }
     m_string_pool.insert(m_string_pool.end(), pd.string_pool.begin(), pd.string_pool.end());
 
@@ -511,8 +527,9 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
     m_watcher_map[vol] = w;
     lock.unlock();
 
-    // 2026-07-28 修复：禁止无条件 compact()，该函数内部已包含增量优化后的 buildSortedIndices
+    // 2026-07-28 修复：加载完成后锁外按序执行计算
     compact();
+    buildSortedIndices();
     w->start();
 
     return true;
@@ -552,18 +569,10 @@ void MftReader::unloadDrive(const QString& drive) {
             }
         }
 
-        // 策略：将该盘符的所有条目标记为已删除
-        for (size_t i = 0; i < m_frns.size(); ++i) {
-            if ((m_parent_frns[i] >> 48) == dIdx) {
-                m_frns[i] = 0;
-                m_dead_count++;
-            }
-        }
-
-        // 修正：保留占位，禁止平移索引以杜绝漂移 (Analysis_Modification_Plan-154.md)
+        // 2026-07-28 核心修复：卸载数据时禁止在锁内遍历 SoA。
+        // 策略：仅清空盘符名称并更新掩码。物理剔除任务交给随后的锁外 compact()。
         m_drive_list[dIdx] = L"";
 
-        // 更新掩码与相关映射
         m_drive_ever_saved.erase(dIdx);
         m_is_compacting.erase(dIdx);
         m_compaction_buffer.erase(dIdx);
@@ -571,9 +580,11 @@ void MftReader::unloadDrive(const QString& drive) {
         uint32_t mask = m_drive_active_mask.load();
         mask &= ~(1 << dIdx);
         m_drive_active_mask.store(mask);
-
-        compact(); 
     }
+
+    // 2026-07-28 修复：卸载后必须强制 compact 以物理回收该盘占用的所有内存。
+    // compact 内部已实现去锁化。
+    compact(true);
 
     if (w) { w->stop(); delete w; }
 }
@@ -1221,7 +1232,10 @@ void MftReader::updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& vo
     // 2026-05-14 工业级内存加固：实时监控内存碎片率
     // 当浪费的字符串空间超过 20MB 或死亡条目过多时，强制执行 compact 碎片整理
     if (m_wasted_string_bytes > 20 * 1024 * 1024 || m_dead_count > 100000) {
+        lock.unlock();
         compact();
+        buildSortedIndices();
+        lock.relock();
         // 碎片整理后索引可能发生变化，需要重新从 map 获取
         finalIdx = m_frn_to_idx[compositeKey];
     }
@@ -1306,10 +1320,8 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
         lock.unlock(); 
 
         if (shouldCompact) {
-            // Compact 必须在持有写锁时执行，但我们可以选择在空闲时段触发
-            // 或者暂时维持现状，但将其移出 removeEntryByFrn 的紧凑循环
-            QWriteLocker compactLock(&m_dataLock);
             compact();
+            buildSortedIndices();
         }
         {
             std::lock_guard<std::mutex> journalLock(m_journalMutex);
@@ -1321,9 +1333,9 @@ void MftReader::removeEntryByFrn(const std::wstring& volume, uint64_t frn) {
     }
 }
 
-void MftReader::compact() {
+void MftReader::compact(bool force) {
     // 2026-07-28 修复：恢复条件触发，禁止无条件全量重建
-    if (m_dead_count == 0 && m_wasted_string_bytes < 1024 * 1024) return;
+    if (!force && m_dead_count == 0 && m_wasted_string_bytes < 1024 * 1024) return;
 
     m_generation.fetch_add(1, std::memory_order_relaxed);
 
@@ -1339,6 +1351,7 @@ void MftReader::compact() {
         std::vector<uint32_t> attributes;
         std::vector<uint8_t>  metadata_fetched;
         std::vector<uint8_t>  string_pool;
+        std::vector<std::wstring> drive_list;
         size_t dead_count;
         size_t wasted_string_bytes;
     } snap;
@@ -1354,6 +1367,7 @@ void MftReader::compact() {
         snap.attributes = m_attributes;
         snap.metadata_fetched = m_metadata_fetched;
         snap.string_pool = m_string_pool;
+        snap.drive_list = m_drive_list;
         snap.dead_count = m_dead_count;
         snap.wasted_string_bytes = m_wasted_string_bytes;
     }
@@ -1383,8 +1397,11 @@ void MftReader::compact() {
     for (size_t i = 0; i < count; ++i) {
         if (snap.frns[i] == 0) continue;
         
-        uint32_t newIdx = (uint32_t)new_frns.size();
         size_t dIdx = static_cast<size_t>(snap.parent_frns[i] >> 48);
+        // 2026-07-28 极致优化：如果盘符已在 unloadDrive 中被置空，则该记录物理剔除
+        if (dIdx >= snap.drive_list.size() || snap.drive_list[dIdx].empty()) continue;
+
+        uint32_t newIdx = (uint32_t)new_frns.size();
         new_frn_to_idx[makeKey(dIdx, snap.frns[i])] = newIdx;
         
         new_frns.push_back(snap.frns[i]);
@@ -1431,8 +1448,8 @@ void MftReader::compact() {
         }
     }
 
-    // 排序本身支持去锁化，在锁外执行
-    buildSortedIndices();
+    // 2026-07-28 修复：不再在 compact 内部自动触发排序，该职责移交至调用者以确保锁一致性
+    // buildSortedIndices();
 }
 
 bool MftReader::loadMftDirect(const std::wstring& volume, MftReader::DriveResult& result) {
