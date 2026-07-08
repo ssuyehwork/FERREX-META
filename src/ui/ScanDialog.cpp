@@ -1937,7 +1937,7 @@ void ScanDialog::triggerWarmup() {
     } 
  
     auto* pool = weakThis->m_tableModel->m_thumbPool; 
-    int maxThreads = pool->maxThreadCount(); // 获取当前线程池的最大并发线程数（SSD 模式下可能为 2~4，HDD 模式下为 1） 
+    int maxThreads = pool->maxThreadCount(); 
  
     // 物理预热：让线程池里的每一个工作线程都至少执行一次初始化 
     for (int t = 0; t < maxThreads; ++t) { 
@@ -1951,6 +1951,20 @@ void ScanDialog::triggerWarmup() {
             } 
  
             // 2. 提前让该线程触发一次 Shell 引擎调用 
+            // 2026-07-22 物理预热补丁：预热 getCachedIcon (QFileIconProvider) 
+            // 理由：消除首次搜索结果渲染时因 Shell 图标子系统冷启动导致的 UI 线程同步阻塞。 
+            // 对标业界领先实现，循环预热常见后缀以填充图标缓存，实现“秒开”渲染体感。
+            static const QStringList commonExts = {
+                "exe", "lnk", "pdf", "zip", "7z", "rar", "jpg", "jpeg", "png", "gif", "bmp", 
+                "doc", "docx", "xls", "xlsx", "ppt", "pptx", "mp3", "mp4", "avi", "mkv", 
+                "wav", "flac", "html", "htm", "xml", "json", "py", "cpp", "h", "c", "java", 
+                "dll", "sys", "ini", "log", "tmp"
+            };
+            for (const QString& ext : commonExts) {
+                MftReader::instance().getCachedIcon(ext, false);
+            }
+            MftReader::instance().getCachedIcon("", true);
+
             int total = MftReader::instance().totalCount(); 
             if (total > 0) { 
                 for (int i = 0; i < std::min(total, 5000); ++i) { 
