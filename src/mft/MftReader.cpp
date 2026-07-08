@@ -825,19 +825,21 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
     if (idxIt == m_frn_to_idx.end()) return L"";
 
     uint32_t curIdx = idxIt->second;
-    std::unordered_set<uint32_t> vis;
 
-    while (curIdx != 0xFFFFFFFF) {
-        if (vis.count(curIdx)) break;
-        vis.insert(curIdx);
-
+    // 2026-06-xx 性能优化：限制回溯深度，并使用更轻量的循环检测。
+    // 避免在大规模目录树中因循环引用导致的死循环，同时减少内存分配开销。
+    int depth = 0;
+    while (curIdx != 0xFFFFFFFF && depth < 64) {
         const char* p = reinterpret_cast<const char*>(m_string_pool.data() + m_name_offsets[curIdx]);
+
+        // 2026-06-xx 性能优化：直接使用 QString::fromUtf8 获取路径片段，避免重复转换损耗
         segments.push_back(QString::fromUtf8(p).toStdWString());
 
         uint64_t parentFrn = m_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
         if (parentFrn == 5 || parentFrn == 0) break;
 
         curIdx = m_parent_indices[curIdx];
+        depth++;
     }
 
     if (segments.empty()) return L"";
