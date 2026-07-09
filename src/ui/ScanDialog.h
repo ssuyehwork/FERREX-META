@@ -46,6 +46,7 @@ struct ScanConfig {
     
     int viewMode = 0;   // 0: Details, 1: Icons
     int iconSize = 128; // 256, 128, 64
+    int layoutMode = 0; // 0: JustifiedMode, 1: GridMode
     int sortColumn = 0; 
     int sortOrder = 0;  // 0: Asc, 1: Desc
 
@@ -84,10 +85,13 @@ public:
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
-    void clearThumbCache() { 
+    void clearThumbCache(bool keepLastCache = false) { 
         m_thumbCache.clear(); 
         m_requestedThumbs.clear(); 
         m_thumbTaskQueue.clear();
+        if (!keepLastCache) {
+            m_lastPixmapCache.clear();
+        }
     }
 
     Qt::DropActions supportedDragActions() const override;
@@ -104,6 +108,7 @@ private:
     QThreadPool* m_thumbPool = nullptr; // 2026-06-xx 任务二：缩略图生成专用隔离线程池
 
     mutable QCache<QString, QPixmap> m_thumbCache;
+    mutable QCache<QString, QPixmap> m_lastPixmapCache; // 2026-07-xx 渐进式占位双轨缓存 (Key 为 QString::number(key))
     mutable QSet<uint64_t> m_requestedThumbs;
     mutable QMap<uint64_t, double> m_aspectRatios; // 存储宽高比
     

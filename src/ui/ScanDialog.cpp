@@ -106,6 +106,7 @@ void ScanConfig::load() {
         // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
+        if (obj.contains("layoutMode")) layoutMode = obj["layoutMode"].toInt();
         if (obj.contains("sortColumn")) sortColumn = obj["sortColumn"].toInt();
         if (obj.contains("sortOrder")) sortOrder = obj["sortOrder"].toInt();
 
@@ -146,6 +147,7 @@ void ScanConfig::save() {
         // 2026-05-16 持久化存盘
         obj["viewMode"] = viewMode;
         obj["iconSize"] = iconSize;
+        obj["layoutMode"] = layoutMode;
         obj["sortColumn"] = sortColumn;
         obj["sortOrder"] = sortOrder;
 
@@ -331,19 +333,44 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             int64_t mtime = reader.getModifyTime(actualIndex);
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
 
+            // 限制双轨缓存的最大容量，防止极端高频缩放累积内存
+            if (m_lastPixmapCache.maxCost() == 0) {
+                m_lastPixmapCache.setMaxCost(200); // 默认限制 200 项可见卡片 LRU 备份
+            }
+
+            // 1. 精确尺寸缓存匹配
             QPixmap* cached = m_thumbCache.object(cacheKey);
             if (cached) return *cached;
 
+            // 2.【核心改进：先判断历史缩略图并做平滑拉伸】
+            QPixmap* lastCached = m_lastPixmapCache.object(QString::number(key));
+            if (lastCached) {
+                // 后台静默生成符合全新精确尺寸的高画质大图
+                if (!m_requestedThumbs.contains(key)) {
+                    m_requestedThumbs.insert(key);
+                    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                    int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                    m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
+                    if (!m_thumbTimer->isActive()) m_thumbTimer->start();
+                }
+
+                // 将历史多态尺寸的旧缩略图临时拉伸/缩放到当前目标尺寸，直接返回！
+                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                return lastCached->scaled(QSize(thumbSize, thumbSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+
+            // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 
-                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
+        // 4.【最后才判断图标】实在没有任何缩略图记录，才回退到系统默认图标
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
@@ -554,6 +581,7 @@ void ScanTableModel::processThumbQueue() {
                     QPixmap pix = QPixmap::fromImage(img);
                     if (!pix.isNull()) {
                         m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                        m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
                     }
                     m_aspectRatios[key] = ar;
 
@@ -693,6 +721,37 @@ ScanDialog::ScanDialog(QWidget* parent)
                         m_config.save(); 
                     }); 
                 } 
+
+                menu->addSeparator();
+
+                // 2026-07-xx 新增排版模式自由切换 (标记 1)
+                QAction* jModeAct = menu->addAction("两端对齐 (不等宽)");
+                jModeAct->setCheckable(true);
+                jModeAct->setChecked(m_config.layoutMode == 0);
+                jModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+                QAction* gModeAct = menu->addAction("网格排版 (等高宽)");
+                gModeAct->setCheckable(true);
+                gModeAct->setChecked(m_config.layoutMode == 1);
+                gModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+                QActionGroup* layoutGrp = new QActionGroup(menu);
+                layoutGrp->addAction(jModeAct);
+                layoutGrp->addAction(gModeAct);
+
+                connect(jModeAct, &QAction::triggered, this, [this]() {
+                    m_config.layoutMode = 0;
+                    m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+                    m_tableModel->updateResults();
+                    m_config.save();
+                });
+                connect(gModeAct, &QAction::triggered, this, [this]() {
+                    m_config.layoutMode = 1;
+                    m_iconView->setLayoutMode(JustifiedView::GridMode);
+                    m_tableModel->updateResults();
+                    m_config.save();
+                });
+
                 menu->exec(viewBtn->mapToGlobal(QPoint(0, viewBtn->height() + 2))); 
             }); 
 
@@ -715,7 +774,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 m_config.iconSize = v; 
                 m_resultView->verticalHeader()->setDefaultSectionSize(v); 
                 m_iconView->setTargetRowHeight(v); 
-                m_tableModel->clearThumbCache(); 
+                m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
                 m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
                 m_config.save(); 
             }); 
@@ -898,6 +957,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     }
     if (m_config.viewMode == 1) { // 图标模式
         m_iconView->setTargetRowHeight(m_config.iconSize);
+    }
+    // 恢复排版模式：0 -> JustifiedMode, 1 -> GridMode
+    if (m_iconView) {
+        m_iconView->setLayoutMode(m_config.layoutMode == 1 ? JustifiedView::GridMode : JustifiedView::JustifiedMode);
     }
     
     // 恢复排序状态 (同时作用于模型和表头视觉)
@@ -1658,6 +1721,36 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
         else if (currentSize == 128) largeAction->setChecked(true);
         else mediumAction->setChecked(true);
     }
+
+    viewMenu->addSeparator();
+
+    // 2026-07-xx 按照用户要求：在右键视图菜单中补充对齐与网格切换逻辑 (标记 2)
+    QAction* rcJModeAct = viewMenu->addAction("两端对齐 (不等宽)");
+    rcJModeAct->setCheckable(true);
+    rcJModeAct->setChecked(m_config.layoutMode == 0);
+    rcJModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+    QAction* rcGModeAct = viewMenu->addAction("网格排版 (等高宽)");
+    rcGModeAct->setCheckable(true);
+    rcGModeAct->setChecked(m_config.layoutMode == 1);
+    rcGModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+    QActionGroup* rcLayoutGrp = new QActionGroup(viewMenu);
+    rcLayoutGrp->addAction(rcJModeAct);
+    rcLayoutGrp->addAction(rcGModeAct);
+
+    connect(rcJModeAct, &QAction::triggered, this, [this]() {
+        m_config.layoutMode = 0;
+        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    connect(rcGModeAct, &QAction::triggered, this, [this]() {
+        m_config.layoutMode = 1;
+        m_iconView->setLayoutMode(JustifiedView::GridMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};
