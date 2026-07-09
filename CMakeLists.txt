@@ -18,7 +18,7 @@ endif()
 
 # Qt 6 基础组件
 # 2026-05-10 修复：添加缺失的Core和Gui组件
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Sql Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Sql Concurrent Multimedia MultimediaWidgets)
 
 # 2026-03-xx 按照用户要求：禁用 Vulkan 探测以消除日志报错，并清理构建路径矛盾
 set(QT_NO_VULKAN ON)
@@ -95,6 +95,8 @@ target_link_libraries(FERREX PRIVATE
     Qt6::Widgets
     Qt6::Svg
     Qt6::Concurrent
+    Qt6::Multimedia
+    Qt6::MultimediaWidgets
     ntdll
     ole32
     bcrypt
