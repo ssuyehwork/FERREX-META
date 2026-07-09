@@ -328,10 +328,9 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
-            int64_t size = reader.getSize(actualIndex);
+            // 2026-06-xx 极致性能优化：剥离突变的 size 属性，构建恒定且唯一一致的 CacheKey
             int64_t mtime = reader.getModifyTime(actualIndex);
-            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+            QString cacheKey = QString("%1_%2").arg(key).arg(mtime);
 
             // 限制双轨缓存的最大容量，防止极端高频缩放累积内存
             if (m_lastPixmapCache.maxCost() == 0) {
@@ -411,9 +410,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         
         if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
 
-        int64_t size = reader.getSize(actualIndex);
         int64_t mtime = reader.getModifyTime(actualIndex);
-        QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+        QString cacheKey = QString("%1_%2").arg(key).arg(mtime);
         
         if (m_thumbCache.contains(cacheKey)) return 1;
         return 2;

@@ -85,17 +85,20 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         int y = m.cardRect.center().y() - scaled.height() / 2;
         painter->drawPixmap(x, y, scaled);
     } else {
-        QIcon icon = qvariant_cast<QIcon>(decoData);
-        if (!icon.isNull()) {
-            if (thumbStatus == 2) painter->setOpacity(0.5);
-            
-            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
-            QRect iconRect(m.cardRect.center().x() - iconSize / 2,
-                           m.cardRect.center().y() - iconSize / 2,
-                           iconSize, iconSize);
-            icon.paint(painter, iconRect);
-            
-            if (thumbStatus == 2) painter->setOpacity(1.0);
+        // 核心重构：加载期（thumbStatus == 2）不展示默认的文件图标，隐藏视觉抖动
+        if (thumbStatus == 2) {
+            // 当处于加载中（状态值为 2）时，严禁在此绘制任何通用白底或文件类型 QIcon
+            // 保持卡片纯净背景，形成极佳、顺滑的淡入体感
+        } else {
+            // 只有在不支持缩略图的普通文件、非图片或目录（thumbStatus == 0）下，才正常绘制默认 QIcon
+            QIcon icon = qvariant_cast<QIcon>(decoData);
+            if (!icon.isNull()) {
+                int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
+                QRect iconRect(m.cardRect.center().x() - iconSize / 2,
+                               m.cardRect.center().y() - iconSize / 2,
+                               iconSize, iconSize);
+                icon.paint(painter, iconRect);
+            }
         }
     }
     painter->restore();
