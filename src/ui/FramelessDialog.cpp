@@ -115,7 +115,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     m_closeBtn->setCursor(Qt::PointingHandCursor);
     m_closeBtn->setStyleSheet(
         "QPushButton { background-color: #E81123; border: none; border-radius: 4px; } "
-        "QPushButton:hover { background-color: #F1707A; } "
+        "QPushButton:hover { background-color: #E81123; } "
         "QPushButton:pressed { background-color: #A50000; }"
     );
     m_closeBtn->installEventFilter(this);
