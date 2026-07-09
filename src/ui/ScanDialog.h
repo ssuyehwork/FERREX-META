@@ -46,6 +46,7 @@ struct ScanConfig {
     
     int viewMode = 0;   // 0: Details, 1: Icons
     int iconSize = 128; // 256, 128, 64
+    int layoutMode = 0; // 0: JustifiedMode, 1: GridMode
     int sortColumn = 0; 
     int sortOrder = 0;  // 0: Asc, 1: Desc
 

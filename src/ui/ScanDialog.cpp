@@ -106,6 +106,7 @@ void ScanConfig::load() {
         // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
+        if (obj.contains("layoutMode")) layoutMode = obj["layoutMode"].toInt();
         if (obj.contains("sortColumn")) sortColumn = obj["sortColumn"].toInt();
         if (obj.contains("sortOrder")) sortOrder = obj["sortOrder"].toInt();
 
@@ -146,6 +147,7 @@ void ScanConfig::save() {
         // 2026-05-16 持久化存盘
         obj["viewMode"] = viewMode;
         obj["iconSize"] = iconSize;
+        obj["layoutMode"] = layoutMode;
         obj["sortColumn"] = sortColumn;
         obj["sortOrder"] = sortOrder;
 
@@ -693,6 +695,37 @@ ScanDialog::ScanDialog(QWidget* parent)
                         m_config.save(); 
                     }); 
                 } 
+
+                menu->addSeparator();
+
+                // 2026-07-xx 新增排版模式自由切换 (标记 1)
+                QAction* jModeAct = menu->addAction("两端对齐 (不等宽)");
+                jModeAct->setCheckable(true);
+                jModeAct->setChecked(m_config.layoutMode == 0);
+                jModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+                QAction* gModeAct = menu->addAction("网格排版 (等高宽)");
+                gModeAct->setCheckable(true);
+                gModeAct->setChecked(m_config.layoutMode == 1);
+                gModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+                QActionGroup* layoutGrp = new QActionGroup(menu);
+                layoutGrp->addAction(jModeAct);
+                layoutGrp->addAction(gModeAct);
+
+                connect(jModeAct, &QAction::triggered, this, [this]() {
+                    m_config.layoutMode = 0;
+                    m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+                    m_tableModel->updateResults();
+                    m_config.save();
+                });
+                connect(gModeAct, &QAction::triggered, this, [this]() {
+                    m_config.layoutMode = 1;
+                    m_iconView->setLayoutMode(JustifiedView::GridMode);
+                    m_tableModel->updateResults();
+                    m_config.save();
+                });
+
                 menu->exec(viewBtn->mapToGlobal(QPoint(0, viewBtn->height() + 2))); 
             }); 
 
@@ -898,6 +931,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     }
     if (m_config.viewMode == 1) { // 图标模式
         m_iconView->setTargetRowHeight(m_config.iconSize);
+    }
+    // 恢复排版模式：0 -> JustifiedMode, 1 -> GridMode
+    if (m_iconView) {
+        m_iconView->setLayoutMode(m_config.layoutMode == 1 ? JustifiedView::GridMode : JustifiedView::JustifiedMode);
     }
     
     // 恢复排序状态 (同时作用于模型和表头视觉)
@@ -1658,6 +1695,36 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
         else if (currentSize == 128) largeAction->setChecked(true);
         else mediumAction->setChecked(true);
     }
+
+    viewMenu->addSeparator();
+
+    // 2026-07-xx 按照用户要求：在右键视图菜单中补充对齐与网格切换逻辑 (标记 2)
+    QAction* rcJModeAct = viewMenu->addAction("两端对齐 (不等宽)");
+    rcJModeAct->setCheckable(true);
+    rcJModeAct->setChecked(m_config.layoutMode == 0);
+    rcJModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+    QAction* rcGModeAct = viewMenu->addAction("网格排版 (等高宽)");
+    rcGModeAct->setCheckable(true);
+    rcGModeAct->setChecked(m_config.layoutMode == 1);
+    rcGModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+
+    QActionGroup* rcLayoutGrp = new QActionGroup(viewMenu);
+    rcLayoutGrp->addAction(rcJModeAct);
+    rcLayoutGrp->addAction(rcGModeAct);
+
+    connect(rcJModeAct, &QAction::triggered, this, [this]() {
+        m_config.layoutMode = 0;
+        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    connect(rcGModeAct, &QAction::triggered, this, [this]() {
+        m_config.layoutMode = 1;
+        m_iconView->setLayoutMode(JustifiedView::GridMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};
