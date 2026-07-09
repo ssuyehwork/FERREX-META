@@ -44,6 +44,7 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
                 qDebug() << "[ScanController] 舍弃过时的重排序结果";
                 return;
             }
+            m_resultSet = newSet;
         }
 
         m_debounceTimer->stop();
@@ -116,6 +117,10 @@ void ScanController::performSearch() {
 
     if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
         auto newSet = std::make_shared<ResultSet>();
+        {
+            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            m_resultSet = newSet;
+        }
         m_debounceTimer->stop();
         if (m_warmupTimer->isActive()) {
             m_warmupTimer->stop();
@@ -178,6 +183,11 @@ void ScanController::performSearch() {
         
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
 
+        {
+            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            m_resultSet = newSet;
+        }
+
         m_debounceTimer->stop();
         if (m_warmupTimer->isActive()) {
             m_warmupTimer->stop();
@@ -199,15 +209,10 @@ void ScanController::onWarmupTimeout() {
     std::shared_ptr<ResultSet> newSet = m_pendingResultSet;
     m_pendingResultSet.reset();
 
-    {
-        std::lock_guard<std::mutex> lock(m_resultsMutex);
-        m_resultSet = newSet;
-    }
-
     emit resultsSwapped(newSet);
 
     if (m_isPendingFromSearch) {
-        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), m_pendingSearchElapsed);
+        emit searchFinished(static_cast<int>(newSet->keys.size()), m_pendingSearchElapsed);
     }
 }
 

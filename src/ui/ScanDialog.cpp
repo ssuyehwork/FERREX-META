@@ -306,6 +306,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
                         QMetaObject::invokeMethod(this, [this, cacheKey, key, pix]() {
                             m_thumbCache.insert(cacheKey, new QPixmap(pix));
                             m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix));
+                            m_requestedThumbs.remove(key); // 允许被 LRU 驱逐后重新请求
                         }, Qt::QueuedConnection);
                     }
                 }
@@ -405,6 +406,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                     QPixmap pix = QPixmap::fromImage(cachedImg);
                     m_thumbCache.insert(cacheKey, new QPixmap(pix));
                     m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix));
+                    m_requestedThumbs.remove(key); // 允许被 LRU 驱逐后重新请求
                     return pix;
                 }
             }
@@ -660,6 +662,7 @@ void ScanTableModel::processThumbQueue() {
                         m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
                     }
                     m_aspectRatios[key] = ar;
+                    m_requestedThumbs.remove(key); // 允许被 LRU 驱逐后重新请求
 
                     auto snapshot = m_controller->snapshot();
                     auto itPos = snapshot->keyToPos.find(key);
