@@ -72,12 +72,14 @@ signals:
     
     // 2026-06-xx 响应式信号 (携带原子快照，确保 Model 同步绝对安全)
     void resultsSwapped(std::shared_ptr<ResultSet> newSet);
+    void warmupRequested(std::shared_ptr<ResultSet> newSet);
 
 private slots:
     void onMftEntryAdded(uint32_t index);
     void onMftEntryRemoved(uint64_t key);
     void onMftEntryUpdated(uint32_t index);
     void processBatchUpdates();
+    void onWarmupTimeout();
 
 private:
     void performSearch();
@@ -94,6 +96,10 @@ private:
     
     QTimer* m_debounceTimer = nullptr;
     QTimer* m_batchTimer = nullptr;
+    QTimer* m_warmupTimer = nullptr;
+    std::shared_ptr<ResultSet> m_pendingResultSet;
+    bool m_isPendingFromSearch = false;
+    int64_t m_pendingSearchElapsed = 0;
     
     struct PendingEvent {
         enum Type { Add, Remove, Update } type;

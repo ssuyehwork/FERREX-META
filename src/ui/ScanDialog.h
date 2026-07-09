@@ -85,14 +85,7 @@ public:
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
-    void clearThumbCache(bool keepLastCache = false) { 
-        m_thumbCache.clear(); 
-        m_requestedThumbs.clear(); 
-        m_thumbTaskQueue.clear();
-        if (!keepLastCache) {
-            m_lastPixmapCache.clear();
-        }
-    }
+    void clearThumbCache(bool keepLastCache = false);
 
     Qt::DropActions supportedDragActions() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
@@ -136,6 +129,8 @@ class ScanDialog : public FramelessDialog {
 public:
     explicit ScanDialog(QWidget* parent = nullptr);
     ~ScanDialog() override;
+
+    static QString getL2CachePath(const QString& fullPath, int64_t size, int64_t mtime, int thumbSize);
 
 private slots:
     void onStartScan(const QString& drive = QString());

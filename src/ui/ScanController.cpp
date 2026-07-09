@@ -23,6 +23,10 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
     m_batchTimer->setInterval(200); // 200ms 批量处理间隔
     connect(m_batchTimer, &QTimer::timeout, this, &ScanController::processBatchUpdates);
 
+    m_warmupTimer = new QTimer(this);
+    m_warmupTimer->setSingleShot(true);
+    connect(m_warmupTimer, &QTimer::timeout, this, &ScanController::onWarmupTimeout);
+
     auto& reader = MftReader::instance();
     connect(&reader, &MftReader::entriesChangedBatch, this, &ScanController::processBatchUpdates);
 
@@ -40,9 +44,17 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
                 qDebug() << "[ScanController] 舍弃过时的重排序结果";
                 return;
             }
-            m_resultSet = newSet;
         }
-        emit resultsSwapped(newSet);
+
+        m_debounceTimer->stop();
+        if (m_warmupTimer->isActive()) {
+            m_warmupTimer->stop();
+        }
+        m_pendingResultSet = newSet;
+        m_isPendingFromSearch = false;
+
+        emit warmupRequested(newSet);
+        m_warmupTimer->start(20);
     });
 }
 
@@ -64,6 +76,9 @@ void ScanController::setFilterState(const ScanFilterState& state) {
 }
 
 void ScanController::triggerSearch(bool immediate) {
+    if (m_warmupTimer && m_warmupTimer->isActive()) {
+        m_warmupTimer->stop();
+    }
     if (immediate) {
         m_debounceTimer->stop();
         performSearch();
@@ -88,6 +103,7 @@ void ScanController::performSearch() {
         qInfo() << "[ScanController] 取消正在运行的搜索任务";
     }
     if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
+    if (m_warmupTimer && m_warmupTimer->isActive()) m_warmupTimer->stop();
 
     emit searchStarted();
     
@@ -100,12 +116,16 @@ void ScanController::performSearch() {
 
     if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
         auto newSet = std::make_shared<ResultSet>();
-        {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
-            m_resultSet = newSet;
+        m_debounceTimer->stop();
+        if (m_warmupTimer->isActive()) {
+            m_warmupTimer->stop();
         }
-        emit resultsSwapped(newSet);
-        emit searchFinished(0, timer.elapsed());
+        m_pendingResultSet = newSet;
+        m_isPendingFromSearch = true;
+        m_pendingSearchElapsed = timer.elapsed();
+
+        emit warmupRequested(newSet);
+        m_warmupTimer->start(20);
         return;
     }
 
@@ -158,15 +178,37 @@ void ScanController::performSearch() {
         
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
 
-        {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
-            m_resultSet = newSet;
+        m_debounceTimer->stop();
+        if (m_warmupTimer->isActive()) {
+            m_warmupTimer->stop();
         }
-        emit resultsSwapped(newSet);
-        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), timer.elapsed());
+        m_pendingResultSet = newSet;
+        m_isPendingFromSearch = true;
+        m_pendingSearchElapsed = timer.elapsed();
+
+        emit warmupRequested(newSet);
+        m_warmupTimer->start(20);
     });
 
     m_watcher.setFuture(future);
+}
+
+void ScanController::onWarmupTimeout() {
+    if (!m_pendingResultSet) return;
+
+    std::shared_ptr<ResultSet> newSet = m_pendingResultSet;
+    m_pendingResultSet.reset();
+
+    {
+        std::lock_guard<std::mutex> lock(m_resultsMutex);
+        m_resultSet = newSet;
+    }
+
+    emit resultsSwapped(newSet);
+
+    if (m_isPendingFromSearch) {
+        emit searchFinished(static_cast<int>(m_resultSet->keys.size()), m_pendingSearchElapsed);
+    }
 }
 
 // 2026-06-xx 极致性能重构：排序键投影 (Key Projection) 结构体
