@@ -24,6 +24,7 @@ class QuickLookGraphicsView : public QGraphicsView {
 public:
     explicit QuickLookGraphicsView(QWidget* parent = nullptr);
     void setPixmap(const QPixmap& pixmap);
+    void setSvg(const QString& svgPath);
     void fitImage();
     void setZoomOriginal();
     void clear();

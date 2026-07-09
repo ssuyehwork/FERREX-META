@@ -16,6 +16,7 @@
 #include <QWheelEvent>
 #include <QSet>
 #include <QUrl>
+#include <QGraphicsItem>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -29,6 +30,45 @@ static const QSet<QString> AUDIO_EXTS = {"mp3", "wav", "wma", "flac", "aac", "og
 static const QSet<QString> UNPREVIEWABLE_EXTS = {"zip", "rar", "7z", "tar", "gz", "bz2", "xz", "exe", "dll", "msi", "sys", "iso", "dmg", "pkg", "bin", "ini", "lnk"};
 
 // ==========================================
+// SvgGraphicsItem 辅助矢量渲染项
+// ==========================================
+
+class SvgGraphicsItem : public QGraphicsItem {
+public:
+    explicit SvgGraphicsItem(const QString& path) {
+        m_renderer = new QSvgRenderer(path);
+        if (m_renderer->isValid()) {
+            m_bounds = QRectF(QPointF(0, 0), m_renderer->defaultSize());
+        }
+    }
+
+    ~SvgGraphicsItem() override {
+        delete m_renderer;
+    }
+
+    QRectF boundingRect() const override {
+        return m_bounds;
+    }
+
+    void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) override {
+        Q_UNUSED(option);
+        Q_UNUSED(widget);
+        if (m_renderer && m_renderer->isValid()) {
+            m_renderer->render(painter, m_bounds);
+        }
+    }
+
+    bool isValid() const {
+        return m_renderer && m_renderer->isValid();
+    }
+
+private:
+    QSvgRenderer* m_renderer = nullptr;
+    QRectF m_bounds;
+};
+
+
+// ==========================================
 // QuickLookGraphicsView 实现
 // ==========================================
 
@@ -36,9 +76,9 @@ QuickLookGraphicsView::QuickLookGraphicsView(QWidget* parent) : QGraphicsView(pa
     m_scene = new QGraphicsScene(this);
     setScene(m_scene);
 
-    m_pixmapItem = new QGraphicsPixmapItem();
-    m_pixmapItem->setTransformationMode(Qt::SmoothTransformation);
-    m_scene->addItem(m_pixmapItem);
+    // 开启工业级平滑缩放与抗锯齿标志
+    setRenderHint(QPainter::Antialiasing);
+    setRenderHint(QPainter::SmoothPixmapTransform);
 
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setResizeAnchor(QGraphicsView::AnchorUnderMouse);
@@ -61,14 +101,30 @@ QuickLookGraphicsView::QuickLookGraphicsView(QWidget* parent) : QGraphicsView(pa
 }
 
 void QuickLookGraphicsView::setPixmap(const QPixmap& pixmap) {
+    clear();
+    m_pixmapItem = new QGraphicsPixmapItem();
+    m_pixmapItem->setTransformationMode(Qt::SmoothTransformation);
     m_pixmapItem->setPixmap(pixmap);
+    m_scene->addItem(m_pixmapItem);
     m_scene->setSceneRect(m_pixmapItem->boundingRect());
     fitImage();
 }
 
+void QuickLookGraphicsView::setSvg(const QString& svgPath) {
+    clear();
+    auto* svgItem = new SvgGraphicsItem(svgPath);
+    if (svgItem->isValid()) {
+        m_scene->addItem(svgItem);
+        m_scene->setSceneRect(svgItem->boundingRect());
+        fitImage();
+    } else {
+        delete svgItem;
+    }
+}
+
 void QuickLookGraphicsView::clear() {
-    m_pixmapItem->setPixmap(QPixmap());
-    m_scene->setSceneRect(QRectF());
+    m_scene->clear();
+    m_pixmapItem = nullptr;
     resetTransform();
     m_currentScale = 1.0;
     m_isFitMode = true;
@@ -76,11 +132,12 @@ void QuickLookGraphicsView::clear() {
 }
 
 void QuickLookGraphicsView::fitImage() {
-    if (!m_pixmapItem || m_pixmapItem->pixmap().isNull()) return;
+    if (m_scene->items().isEmpty()) return;
 
     resetTransform();
-    m_scene->setSceneRect(m_pixmapItem->boundingRect());
-    fitInView(m_pixmapItem, Qt::KeepAspectRatio);
+    QRectF rect = m_scene->itemsBoundingRect();
+    m_scene->setSceneRect(rect);
+    fitInView(rect, Qt::KeepAspectRatio);
 
     m_currentScale = transform().m11();
     m_isFitMode = true;
@@ -88,17 +145,17 @@ void QuickLookGraphicsView::fitImage() {
 }
 
 void QuickLookGraphicsView::setZoomOriginal() {
-    if (!m_pixmapItem || m_pixmapItem->pixmap().isNull()) return;
+    if (m_scene->items().isEmpty()) return;
 
     resetTransform();
-    m_scene->setSceneRect(m_pixmapItem->boundingRect());
+    m_scene->setSceneRect(m_scene->itemsBoundingRect());
     m_currentScale = 1.0;
     m_isFitMode = false;
     updateCursor();
 }
 
 void QuickLookGraphicsView::wheelEvent(QWheelEvent* event) {
-    if (!m_pixmapItem || m_pixmapItem->pixmap().isNull()) {
+    if (m_scene->items().isEmpty()) {
         QGraphicsView::wheelEvent(event);
         return;
     }
@@ -112,9 +169,9 @@ void QuickLookGraphicsView::wheelEvent(QWheelEvent* event) {
     if (newScale < 0.1) {
         factor = 0.1 / m_currentScale;
         newScale = 0.1;
-    } else if (newScale > 10.0) {
-        factor = 10.0 / m_currentScale;
-        newScale = 10.0;
+    } else if (newScale > 50.0) { // 提升极限放大倍率上限至 50.0 倍，满足工业级高清细节查看
+        factor = 50.0 / m_currentScale;
+        newScale = 50.0;
     }
 
     if (qFuzzyCompare(newScale, m_currentScale)) {
@@ -129,7 +186,7 @@ void QuickLookGraphicsView::wheelEvent(QWheelEvent* event) {
 
 void QuickLookGraphicsView::mouseDoubleClickEvent(QMouseEvent* event) {
     Q_UNUSED(event);
-    if (!m_pixmapItem || m_pixmapItem->pixmap().isNull()) return;
+    if (m_scene->items().isEmpty()) return;
 
     if (m_isFitMode) {
         setZoomOriginal();
@@ -146,9 +203,10 @@ void QuickLookGraphicsView::resizeEvent(QResizeEvent* event) {
 }
 
 void QuickLookGraphicsView::mousePressEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton) {
-        bool exceeds = (m_pixmapItem->boundingRect().width() * m_currentScale > viewport()->width()) ||
-                       (m_pixmapItem->boundingRect().height() * m_currentScale > viewport()->height());
+    if (event->button() == Qt::LeftButton && !m_scene->items().isEmpty()) {
+        QRectF rect = m_scene->itemsBoundingRect();
+        bool exceeds = (rect.width() * m_currentScale > viewport()->width()) ||
+                       (rect.height() * m_currentScale > viewport()->height());
         if (exceeds) {
             setCursor(Qt::ClosedHandCursor);
         }
@@ -162,13 +220,14 @@ void QuickLookGraphicsView::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void QuickLookGraphicsView::updateCursor() {
-    if (!m_pixmapItem || m_pixmapItem->pixmap().isNull()) {
+    if (m_scene->items().isEmpty()) {
         setCursor(Qt::ArrowCursor);
         return;
     }
 
-    bool exceedsHorizontal = m_pixmapItem->boundingRect().width() * m_currentScale > viewport()->width();
-    bool exceedsVertical = m_pixmapItem->boundingRect().height() * m_currentScale > viewport()->height();
+    QRectF rect = m_scene->itemsBoundingRect();
+    bool exceedsHorizontal = rect.width() * m_currentScale > viewport()->width();
+    bool exceedsVertical = rect.height() * m_currentScale > viewport()->height();
 
     if (exceedsHorizontal || exceedsVertical) {
         setCursor(Qt::OpenHandCursor);
@@ -430,29 +489,35 @@ void QuickLookWindow::renderImage(const QString& path) {
     QFileInfo fi(path);
     QString ext = fi.suffix().toLower();
 
-    // 优先读取原始像素的本地格式
-    static const QSet<QString> QT_NATIVE_FORMATS = {"png", "jpg", "jpeg", "bmp", "gif", "webp"};
-
     QPointer<QuickLookWindow> weakThis(this);
     (void)QtConcurrent::run([weakThis, path, ext]() {
         if (!weakThis) return;
         
         QImage img;
+        bool isLoaded = false;
+
         if (ext == "svg") {
-            QSvgRenderer renderer(path);
-            if (renderer.isValid()) {
-                img = QImage(1024, 1024, QImage::Format_ARGB32);
-                img.fill(Qt::transparent);
-                QPainter painter(&img);
-                renderer.render(&painter);
-            }
-        } else if (QT_NATIVE_FORMATS.contains(ext)) {
-            // Qt 原生支持的格式无损加载
-            img.load(path);
-        } else {
-            // 非原生格式兜底
-            img = UiHelper::getShellThumbnail(path, 1024);
+            // SVG 采用全新的高精无损矢量场景加载，杜绝固定像素栅格化
+            if (!weakThis) return;
+            QMetaObject::invokeMethod(weakThis.data(), [weakThis, path]() {
+                if (!weakThis || weakThis->m_currentPath != path) return;
+                weakThis->m_graphicsView->setSvg(path);
+                weakThis->m_infoLabel->setText(QString("矢量图形 (SVG 无损渲染) | %1").arg(path));
+            });
+            return;
+        }
+
+        // 1. 对于 Qt 原生支持解码的通用格式，优先直接无损 load 原始分辨率图，确保顶级清晰度
+        static const QSet<QString> QT_NATIVE_FORMATS = {"png", "jpg", "jpeg", "bmp", "gif", "webp"};
+        if (QT_NATIVE_FORMATS.contains(ext)) {
+            isLoaded = img.load(path);
+        }
+
+        // 2. 对于特殊专业格式（PSD/AI/EPS等），采用 2048px 高像素 Shell 缩略图引擎进行兜底
+        if (!isLoaded) {
+            img = UiHelper::getShellThumbnail(path, 2048);
             if (img.isNull()) {
+                // 再次尝试通过 Qt 自身的底层载入
                 img.load(path);
             }
         }
@@ -462,7 +527,7 @@ void QuickLookWindow::renderImage(const QString& path) {
             if (!weakThis || weakThis->m_currentPath != path) return;
             if (!img.isNull()) {
                 qint64 totalPixels = static_cast<qint64>(img.width()) * img.height();
-                bool isHuge = totalPixels > 50000000LL; // 超过 5000 万像素安全降采样
+                bool isHuge = totalPixels > 50000000LL; // 超过 5000 万像素时进行自适应内存安全保护
 
                 QPixmap pix;
                 if (isHuge) {
@@ -476,7 +541,7 @@ void QuickLookWindow::renderImage(const QString& path) {
                 }
                 weakThis->m_graphicsView->setPixmap(pix);
             } else {
-                weakThis->renderText(path); // 图片加载失败尝试文本模式
+                weakThis->renderText(path); // 加载失败尝试文本模式
             }
         });
     });
