@@ -106,11 +106,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         // 仅当 Pixmap 为空且判定无法加载缩略图、或提取彻底失败后，才作为最后的手段去绘制默认的文件类型关联图标
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
-            if (thumbStatus == 2) {
-                painter->setOpacity(0.25); // 降低到 25% 灰度透明，作为极静默的隐式过渡
-            } else {
-                painter->setOpacity(0.7);  // 常规不支持缩略图的项，也采取略显高级的 70% 亮度
-            }
+            // 用户要求：此兜底系统默认文件图标的绘制必须是 100% 不透明度（1.0），不能采取 25% 的淡入降级或任何透明化处理
+            painter->setOpacity(1.0);
             
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
