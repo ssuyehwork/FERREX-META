@@ -107,7 +107,8 @@ void QuickLookGraphicsView::setPixmap(const QPixmap& pixmap) {
     m_pixmapItem->setPixmap(pixmap);
     m_scene->addItem(m_pixmapItem);
     m_scene->setSceneRect(m_pixmapItem->boundingRect());
-    fitImage();
+    setZoomOriginal();
+    centerOn(m_scene->sceneRect().center());
 }
 
 void QuickLookGraphicsView::setSvg(const QString& svgPath) {
@@ -116,7 +117,8 @@ void QuickLookGraphicsView::setSvg(const QString& svgPath) {
     if (svgItem->isValid()) {
         m_scene->addItem(svgItem);
         m_scene->setSceneRect(svgItem->boundingRect());
-        fitImage();
+        setZoomOriginal();
+        centerOn(m_scene->sceneRect().center());
     } else {
         delete svgItem;
     }
