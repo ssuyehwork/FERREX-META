@@ -103,10 +103,10 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
             painter->setOpacity(1.0);
         }
     } else {
-        // 仅当 Pixmap 为空且判定无法加载缩略图、或提取彻底失败后，才作为最后的手段去绘制默认的文件类型关联图标
+        // 系统默认图标只作为【没有缩略图或生成失败时】的最后兜底回退手段
+        // 在没有有效缩略图物理资产时，直接以 100% 的完全不透明度绘制默认的文件类型关联图标，绝不闪现空白卡片
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
-            // 用户要求：此兜底系统默认文件图标的绘制必须是 100% 不透明度（1.0），不能采取 25% 的淡入降级或任何透明化处理
             painter->setOpacity(1.0);
             
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
