@@ -233,6 +233,7 @@ void QuickLookWindow::setupUi() {
         QScrollBar:vertical { width: 4px; background: transparent; }
         QScrollBar::handle:vertical { background: #444; border-radius: 2px; }
     )");
+    m_textEdit->installEventFilter(this); // 2026-07-xx 交互优化：安装事件过滤器拦截空格键以防吞噬
     layout->addWidget(m_textEdit);
 
     // 媒体播放器控件容器
@@ -652,6 +653,15 @@ void QuickLookWindow::showEvent(QShowEvent* event) {
 }
 
 bool QuickLookWindow::eventFilter(QObject* watched, QEvent* event) {
+    // 2026-07-xx 核心改进：当文本框组件获得焦点并按下空格键时，将其拦截，改为执行关闭预览逻辑
+    if (watched == m_textEdit && event->type() == QEvent::KeyPress) {
+        QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Space) {
+            closePreview();
+            return true; // 100% 拦截，阻止 QPlainTextEdit 响应并向下翻页
+        }
+    }
+
     if (event->type() == QEvent::WindowDeactivate) {
         if (m_ignoreDeactivate) {
             return true;
