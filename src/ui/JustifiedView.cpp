@@ -30,7 +30,6 @@ JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
     pal.setColor(QPalette::Window, QColor("#1E1E1E"));
     viewport()->setPalette(pal);
     setPalette(pal);
-
 }
 
 void JustifiedView::setTargetRowHeight(int h) {
@@ -111,7 +110,6 @@ void JustifiedView::rowsInserted(const QModelIndex& parent, int start, int end) 
 }
 
 void JustifiedView::rowsAboutToBeRemoved(const QModelIndex& parent, int start, int end) {
-    // 直接转发给基类即可，实际重排由 setModel 中连接的 rowsRemoved 信号处理
     QAbstractItemView::rowsAboutToBeRemoved(parent, start, end);
 }
 
@@ -188,8 +186,6 @@ QRegion JustifiedView::visualRegionForSelection(const QItemSelection& selection)
 }
 
 void JustifiedView::mousePressEvent(QMouseEvent* event) {
-    // 2026-06-xx 物理拨乱反正：仅在按下 Shift 时执行自定义“视觉顺序”选择逻辑
-    // 其余所有情况（普通单击、Ctrl、空白处）均退避并转发给基类处理，防止破坏 Model/View 原生多选状态
     if (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier)) {
         QModelIndex clicked = indexAt(event->pos());
         if (clicked.isValid() && m_anchorRow >= 0) {
@@ -215,7 +211,6 @@ void JustifiedView::mousePressEvent(QMouseEvent* event) {
         }
     }
 
-    // 更新锚点：在每次有效点击（非 Shift 点击）时同步锚点，以便后续 Shift 多选定位
     QAbstractItemView::mousePressEvent(event);
     QModelIndex current = currentIndex();
     if (current.isValid()) {
@@ -232,12 +227,11 @@ void JustifiedView::mouseDoubleClickEvent(QMouseEvent* event) {
         return;
     }
 
-    // 2026-06-16 工业级纠偏：与 doLayout 及 ThumbnailDelegate::calculateMetrics 保持 100% 同步
+    // 2026-07-xx 重构纠偏：移除已弃用的星级高度，使双击判定区域与布局保持 100% 同步
     const int textHeight   = 36;
-    const int ratingHeight = 20;
-    const int gap          = 4;
+    const int gap          = 6;  // 紧凑间距
     const int cardPadding  = 6;
-    const int extraHeight  = cardPadding + textHeight + ratingHeight + gap; 
+    const int extraHeight  = cardPadding + textHeight + gap; 
 
     QRect itemRect = visualRect(idx);
 
@@ -255,7 +249,6 @@ void JustifiedView::mouseDoubleClickEvent(QMouseEvent* event) {
 
 void JustifiedView::paintEvent(QPaintEvent*) {
     QPainter painter(viewport());
-    // 2026-06-xx 物理修复：在开启 TranslucentBackground 时手动填充坚实背景，防止透明穿透
     painter.fillRect(viewport()->rect(), QColor("#1E1E1E"));
     
     painter.translate(0, -verticalScrollBar()->value());
@@ -275,7 +268,6 @@ void JustifiedView::paintEvent(QPaintEvent*) {
         if (currentIndex() == idx)
             option.state |= QStyle::State_HasFocus;
 
-        // 2026-05-20 物理适配：使用接口推荐的 itemDelegateForIndex
         itemDelegateForIndex(idx)->paint(&painter, option, idx);
     }
 }
@@ -325,7 +317,6 @@ void JustifiedView::doLayout() {
     m_geometries.resize(count);
     const int margin = 10;
     const int spacing = 5;
-    // 可用宽度：视口宽度 - 左边距 - 右边距
     int containerWidth = viewport()->width() - (margin * 2); 
     if (containerWidth <= 0) return;
 
@@ -345,11 +336,8 @@ void JustifiedView::doLayout() {
             rowAspectRatioSum += ar;
             
             int numInRow = (int)aspectRatios.size();
-            // 2026-06-xx 物理修正：考虑 ThumbnailDelegate 的内边距 (左右各 3px = 6px)
-            // 预估宽度 = (宽高比总和 * 目标高度) + (内边距补偿 6px * 数量) + (项间距 * 间距数量)
             double estimatedWidth = (rowAspectRatioSum * m_targetRowHeight) + (6 * numInRow) + (spacing * (numInRow - 1));
             if (estimatedWidth > containerWidth) {
-                // 如果单项就超过了容器宽度，则强制独占一行
                 if (numInRow > 1) {
                     aspectRatios.pop_back();
                     rowAspectRatioSum -= ar;
@@ -367,31 +355,30 @@ void JustifiedView::doLayout() {
 
         int actualHeight = m_targetRowHeight;
         bool isLastRow = (i == count);
-        bool rowIsJustified = !isLastRow; // 2026-06-16 物理修正：非最后一行始终填满，杜绝空隙
+        bool rowIsJustified = !isLastRow;
 
         int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
 
         if (rowIsJustified) {
             actualHeight = qRound(availableImageWidth / rowAspectRatioSum);
-            // 工业级纠偏：允许高度在一定范围内浮动以填满行宽，无论是否超出 targetRowHeight 范围均开启对齐
             actualHeight = std::max(actualHeight, (int)(m_targetRowHeight * 0.75));
             actualHeight = std::min(actualHeight, (int)(m_targetRowHeight * 1.5));
             rowIsJustified = true; 
         }
 
         int currentX = margin;
+        
+        // 2026-07-xx 物理重构：移除了已弃用的 ratingHeight，使卡片直接贴合文件名 [1]
         const int textHeight = 36;
-        const int ratingHeight = 20;
-        const int gap = 4;
-        const int cardPadding = 6; // 左右内边距总和 (3px + 3px)
-        const int extraHeight = cardPadding + textHeight + ratingHeight + gap; // cardPadding 也是上下内边距总和
+        const int gap = 6;                     // 卡片与文件名的精致间隙
+        const int cardPadding = 6;             // 内边距补偿 (上下各 3px)
+        const int extraHeight = cardPadding + textHeight + gap; 
 
         for (int j = 0; j < numInRow; ++j) {
             int itemIdx = rowStart + j;
             int itemWidth;
 
             if (j == numInRow - 1 && rowIsJustified) {
-                // 最后一个 item 精确填满剩余宽度，消除舍入误差导致的空隙
                 itemWidth = (containerWidth + margin) - currentX;
             } else {
                 itemWidth = qRound(aspectRatios[j] * actualHeight) + cardPadding;
@@ -400,7 +387,7 @@ void JustifiedView::doLayout() {
             m_geometries[itemIdx] = { QRect(currentX, currentY, itemWidth, actualHeight + extraHeight), itemIdx };
             currentX += itemWidth + spacing; 
         }
-        currentY += actualHeight + extraHeight + spacing; // 统一行高推进
+        currentY += actualHeight + extraHeight + spacing; 
     }
 
     m_totalHeight = currentY + 10;

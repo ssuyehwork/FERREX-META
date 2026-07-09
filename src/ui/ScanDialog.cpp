@@ -18,6 +18,7 @@
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QCloseEvent>
+#include <QWheelEvent>
 #include <QLineEdit>
 #include <QTableView>
 #include <QAbstractTableModel>
@@ -2006,6 +2007,18 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::Wheel) {
+        QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
+        if (wheelEvent->modifiers() & Qt::ControlModifier) {
+            int deltaY = wheelEvent->angleDelta().y();
+            if (deltaY > 0) {
+                m_sizeSlider->setValue(m_sizeSlider->value() + 10);
+            } else if (deltaY < 0) {
+                m_sizeSlider->setValue(m_sizeSlider->value() - 10);
+            }
+            return true; // 拦截事件，防止 Ctrl + 滚轮导致列表区域意外滚动
+        }
+    }
     if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
