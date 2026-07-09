@@ -242,9 +242,11 @@ void QuickLookWindow::setupUi() {
     mediaLayout->setContentsMargins(0, 0, 0, 0);
     mediaLayout->setSpacing(10);
 
+#ifdef FERREX_HAS_MULTIMEDIA
     m_videoWidget = new QVideoWidget();
     m_videoWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     mediaLayout->addWidget(m_videoWidget);
+#endif
 
     m_audioPlaceholder = new QLabel();
     m_audioPlaceholder->setAlignment(Qt::AlignCenter);
@@ -306,6 +308,7 @@ void QuickLookWindow::setupUi() {
 
     rootLayout->addWidget(m_container);
 
+#ifdef FERREX_HAS_MULTIMEDIA
     // 初始化媒体播放器
     m_mediaPlayer = new QMediaPlayer(this);
     m_audioOutput = new QAudioOutput(this);
@@ -347,6 +350,10 @@ void QuickLookWindow::setupUi() {
         m_infoLabel->setText(QString("播放错误: %1 (可能缺失系统编解码器)").arg(errorString));
         m_infoLabel->setStyleSheet("color: #E24B4A; font-weight: bold;");
     });
+#else
+    m_playBtn->setEnabled(false);
+    m_timeSlider->setEnabled(false);
+#endif
 }
 
 void QuickLookWindow::preview(const QString& filePath) {
@@ -532,6 +539,7 @@ void QuickLookWindow::renderMedia(const QString& path) {
     QFileInfo fi(path);
     QString ext = fi.suffix().toLower();
 
+#ifdef FERREX_HAS_MULTIMEDIA
     if (AUDIO_EXTS.contains(ext)) {
         m_videoWidget->hide();
         m_audioPlaceholder->setText(QString("音频播放中...\n%1").arg(fi.fileName()));
@@ -546,13 +554,21 @@ void QuickLookWindow::renderMedia(const QString& path) {
     m_playBtn->setText("暂停");
 
     m_infoLabel->setText(path);
+#else
+    m_audioPlaceholder->setText(QString("音视频预览未启用\n%1").arg(fi.fileName()));
+    m_audioPlaceholder->show();
+    m_infoLabel->setText("当前系统未启用多媒体播放模块 (构建时缺少 Qt Multimedia 组件)");
+    m_infoLabel->setStyleSheet("color: #FF8C00; font-weight: bold;");
+#endif
 }
 
 void QuickLookWindow::resetMedia() {
+#ifdef FERREX_HAS_MULTIMEDIA
     if (m_mediaPlayer) {
         m_mediaPlayer->stop();
         m_mediaPlayer->setSource(QUrl());
     }
+#endif
     m_playBtn->setText("播放");
     m_timeSlider->setValue(0);
     m_timeLabel->setText("00:00 / 00:00");
@@ -607,6 +623,7 @@ void QuickLookWindow::keyPressEvent(QKeyEvent* event) {
         return;
     }
     if (event->key() == Qt::Key_P) {
+#ifdef FERREX_HAS_MULTIMEDIA
         if (m_mediaContainer && m_mediaContainer->isVisible() && m_mediaPlayer) {
             if (m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState) {
                 m_mediaPlayer->pause();
@@ -616,6 +633,7 @@ void QuickLookWindow::keyPressEvent(QKeyEvent* event) {
                 m_playBtn->setText("暂停");
             }
         }
+#endif
         return;
     }
     if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Left) {

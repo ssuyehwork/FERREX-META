@@ -8,9 +8,11 @@
 #include <QGraphicsView>
 #include <QGraphicsScene>
 #include <QGraphicsPixmapItem>
+#ifdef FERREX_HAS_MULTIMEDIA
 #include <QMediaPlayer>
 #include <QAudioOutput>
 #include <QVideoWidget>
+#endif
 #include <QPushButton>
 #include <QSlider>
 #include <QHBoxLayout>
@@ -79,9 +81,15 @@ private:
     
     // 媒体播放器组件
     QWidget* m_mediaContainer = nullptr;
+#ifdef FERREX_HAS_MULTIMEDIA
     QVideoWidget* m_videoWidget = nullptr;
     QMediaPlayer* m_mediaPlayer = nullptr;
     QAudioOutput* m_audioOutput = nullptr;
+#else
+    QWidget* m_videoWidget = nullptr;
+    QObject* m_mediaPlayer = nullptr;
+    QObject* m_audioOutput = nullptr;
+#endif
     QPushButton* m_playBtn = nullptr;
     QSlider* m_timeSlider = nullptr;
     QLabel* m_timeLabel = nullptr;
