@@ -265,7 +265,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     connect(m_controller, &ScanController::warmupRequested, this, [this](std::shared_ptr<ResultSet> newSet) {
         if (!newSet || newSet->keys.empty()) return;
 
-        ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+        ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
         int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
 
         int warmupCount = std::min<int>(50, (int)newSet->keys.size());
@@ -395,7 +395,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             if (cached) return *cached;
 
             // 1.5 L2 磁盘快速同步探针与同步读取，打通 UI 线程与持久化 .png 缓存连接
-            ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+            ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
             int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
             QString fullPath = getPath();
             QString cachePath = ScanDialog::getL2CachePath(fullPath, size, mtime, thumbSize);
@@ -415,14 +415,14 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 // 后台静默生成符合全新精确尺寸的高画质大图
                 if (!m_requestedThumbs.contains(key)) {
                     m_requestedThumbs.insert(key);
-                    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                    ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
                     int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                     m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                     if (!m_thumbTimer->isActive()) m_thumbTimer->start();
                 }
 
                 // 将历史多态尺寸的旧缩略图临时拉伸/缩放到当前目标尺寸，直接返回！
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 return lastCached->scaled(QSize(thumbSize, thumbSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
@@ -430,7 +430,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
@@ -485,7 +485,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         if (m_thumbCache.contains(cacheKey)) return 1;
 
         // 打通 L2 磁盘缓存同步判定
-        ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+        ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
         int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
         QString fullPath = getPath();
         QString cachePath = ScanDialog::getL2CachePath(fullPath, size, mtime, thumbSize);
