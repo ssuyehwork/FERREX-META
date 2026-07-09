@@ -102,7 +102,7 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
             m_maxBtn->setIcon(UiHelper::getIcon("maximize", QColor("#CCCCCC"), 18));
         } else {
             showMaximized();
-            m_maxBtn->setIcon(UiHelper::getIcon("restore_window", QColor("#CCCCCC"), 18));
+            m_maxBtn->setIcon(UiHelper::getIcon("restore_line", QColor("#CCCCCC"), 18));
         }
     });
 
