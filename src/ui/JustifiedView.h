@@ -9,10 +9,14 @@ namespace FERREX {
 class JustifiedView : public QAbstractItemView {
     Q_OBJECT
 public:
+    enum LayoutMode { JustifiedMode, GridMode };
+
     explicit JustifiedView(QWidget* parent = nullptr);
 
     void setTargetRowHeight(int h);
     void setAspectRatioRole(int role);
+    void setLayoutMode(LayoutMode mode);
+    LayoutMode layoutMode() const;
 
     QRect visualRect(const QModelIndex& index) const override;
     void scrollTo(const QModelIndex& index, ScrollHint hint = EnsureVisible) override;
@@ -59,6 +63,7 @@ private:
     int m_targetRowHeight = 128;
     int m_aspectRatioRole = Qt::UserRole + 2;
     int m_anchorRow = -1; // 2026-06-16 物理锚点：锁定 Shift 多选起始行
+    LayoutMode m_layoutMode = JustifiedMode;
 };
 
 } // namespace FERREX

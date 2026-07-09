@@ -30,6 +30,20 @@ JustifiedView::JustifiedView(QWidget* parent) : QAbstractItemView(parent) {
     pal.setColor(QPalette::Window, QColor("#1E1E1E"));
     viewport()->setPalette(pal);
     setPalette(pal);
+
+    setProperty("gridMode", false);
+}
+
+void JustifiedView::setLayoutMode(LayoutMode mode) {
+    if (m_layoutMode != mode) {
+        m_layoutMode = mode;
+        setProperty("gridMode", m_layoutMode == GridMode);
+        scheduleLayout();
+    }
+}
+
+JustifiedView::LayoutMode JustifiedView::layoutMode() const {
+    return m_layoutMode;
 }
 
 void JustifiedView::setTargetRowHeight(int h) {
@@ -320,74 +334,104 @@ void JustifiedView::doLayout() {
     int containerWidth = viewport()->width() - (margin * 2); 
     if (containerWidth <= 0) return;
 
-    int currentY = margin; 
-    int i = 0;
-    
-    while (i < count) {
-        int rowStart = i;
-        double rowAspectRatioSum = 0;
-        std::vector<double> aspectRatios;
+    int currentY = margin;
 
+    // 物理常数统一定义
+    const int textHeight = 36;
+    const int gap = 6;                     // 卡片与文件名的精致间隙
+    const int cardPadding = 6;             // 内边距补偿 (上下各 3px)
+    const int extraHeight = cardPadding + textHeight + gap;
+
+    if (m_layoutMode == GridMode) {
+        // GridMode 核心布局算法：等宽等高网格排布
+        int itemWidth = m_targetRowHeight + cardPadding;
+        int itemHeight = m_targetRowHeight + extraHeight;
+
+        int i = 0;
         while (i < count) {
-            double ar = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
-            if (ar <= 0) ar = 1.0;
-            
-            aspectRatios.push_back(ar);
-            rowAspectRatioSum += ar;
-            
-            int numInRow = (int)aspectRatios.size();
-            double estimatedWidth = (rowAspectRatioSum * m_targetRowHeight) + (6 * numInRow) + (spacing * (numInRow - 1));
-            if (estimatedWidth > containerWidth) {
-                if (numInRow > 1) {
-                    aspectRatios.pop_back();
-                    rowAspectRatioSum -= ar;
-                } else {
-                    i++;
+            // 容纳数计算：(containerWidth + spacing) / (itemWidth + spacing)
+            int numInRow = (containerWidth + spacing) / (itemWidth + spacing);
+            if (numInRow <= 0) numInRow = 1;
+            numInRow = std::min(numInRow, count - i);
+
+            // 两端对齐等间距分布
+            int actualSpacing = 0;
+            if (numInRow > 1) {
+                actualSpacing = (containerWidth - (numInRow * itemWidth)) / (numInRow - 1);
+            }
+
+            int currentX = margin;
+            for (int j = 0; j < numInRow; ++j) {
+                int itemIdx = i + j;
+                m_geometries[itemIdx] = { QRect(currentX, currentY, itemWidth, itemHeight), itemIdx };
+                currentX += itemWidth + actualSpacing;
+            }
+            currentY += itemHeight + spacing;
+            i += numInRow;
+        }
+    } else {
+        // JustifiedMode 逻辑保持原有自适应宽高
+        int i = 0;
+        while (i < count) {
+            int rowStart = i;
+            double rowAspectRatioSum = 0;
+            std::vector<double> aspectRatios;
+
+            while (i < count) {
+                double ar = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
+                if (ar <= 0) ar = 1.0;
+                
+                aspectRatios.push_back(ar);
+                rowAspectRatioSum += ar;
+                
+                int numInRow = (int)aspectRatios.size();
+                double estimatedWidth = (rowAspectRatioSum * m_targetRowHeight) + (6 * numInRow) + (spacing * (numInRow - 1));
+                if (estimatedWidth > containerWidth) {
+                    if (numInRow > 1) {
+                        aspectRatios.pop_back();
+                        rowAspectRatioSum -= ar;
+                    } else {
+                        i++;
+                    }
+                    break; 
                 }
-                break; 
-            }
-            i++;
-        }
-
-        int rowEnd = i;
-        int numInRow = rowEnd - rowStart;
-        if (numInRow <= 0) break;
-
-        int actualHeight = m_targetRowHeight;
-        bool isLastRow = (i == count);
-        bool rowIsJustified = !isLastRow;
-
-        int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
-
-        if (rowIsJustified) {
-            actualHeight = qRound(availableImageWidth / rowAspectRatioSum);
-            actualHeight = std::max(actualHeight, (int)(m_targetRowHeight * 0.75));
-            actualHeight = std::min(actualHeight, (int)(m_targetRowHeight * 1.5));
-            rowIsJustified = true; 
-        }
-
-        int currentX = margin;
-        
-        // 2026-07-xx 物理重构：移除了已弃用的 ratingHeight，使卡片直接贴合文件名 [1]
-        const int textHeight = 36;
-        const int gap = 6;                     // 卡片与文件名的精致间隙
-        const int cardPadding = 6;             // 内边距补偿 (上下各 3px)
-        const int extraHeight = cardPadding + textHeight + gap; 
-
-        for (int j = 0; j < numInRow; ++j) {
-            int itemIdx = rowStart + j;
-            int itemWidth;
-
-            if (j == numInRow - 1 && rowIsJustified) {
-                itemWidth = (containerWidth + margin) - currentX;
-            } else {
-                itemWidth = qRound(aspectRatios[j] * actualHeight) + cardPadding;
+                i++;
             }
 
-            m_geometries[itemIdx] = { QRect(currentX, currentY, itemWidth, actualHeight + extraHeight), itemIdx };
-            currentX += itemWidth + spacing; 
+            int rowEnd = i;
+            int numInRow = rowEnd - rowStart;
+            if (numInRow <= 0) break;
+
+            int actualHeight = m_targetRowHeight;
+            bool isLastRow = (i == count);
+            bool rowIsJustified = !isLastRow;
+
+            int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
+
+            if (rowIsJustified) {
+                actualHeight = qRound(availableImageWidth / rowAspectRatioSum);
+                actualHeight = std::max(actualHeight, (int)(m_targetRowHeight * 0.75));
+                actualHeight = std::min(actualHeight, (int)(m_targetRowHeight * 1.5));
+                rowIsJustified = true; 
+            }
+
+            int currentX = margin;
+
+            for (int j = 0; j < numInRow; ++j) {
+                int itemIdx = rowStart + j;
+                int itemWidth;
+
+                if (j == numInRow - 1 && rowIsJustified) {
+                    itemWidth = (containerWidth + margin) - currentX;
+                } else {
+                    itemWidth = qRound(aspectRatios[j] * actualHeight) + cardPadding;
+                }
+
+                m_geometries[itemIdx] = { QRect(currentX, currentY, itemWidth, actualHeight + extraHeight), itemIdx };
+                currentX += itemWidth + spacing; 
+            }
+            currentY += actualHeight + extraHeight + spacing; 
         }
-        currentY += actualHeight + extraHeight + spacing; 
     }
 
     m_totalHeight = currentY + 10;

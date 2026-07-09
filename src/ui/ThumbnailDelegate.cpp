@@ -54,6 +54,7 @@ ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptio
 void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
     Metrics m = calculateMetrics(option);
     bool isSelected = (option.state & QStyle::State_Selected);
+    bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
     int thumbStatus = index.data(m_hasThumbnailRole).toInt();
     QVariant decoData = index.data(Qt::DecorationRole);
@@ -77,7 +78,9 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->drawRect(m.cardRect);
 
     if (thumbStatus == 1 && !thumb.isNull()) {
-        QPixmap scaled = thumb.scaled(m.cardRect.size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+        QPixmap scaled = thumb.scaled(m.cardRect.size(), 
+                                      isGrid ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding, 
+                                      Qt::SmoothTransformation);
         int x = m.cardRect.center().x() - scaled.width() / 2;
         int y = m.cardRect.center().y() - scaled.height() / 2;
         painter->drawPixmap(x, y, scaled);
