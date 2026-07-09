@@ -333,19 +333,44 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             int64_t mtime = reader.getModifyTime(actualIndex);
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
 
+            // 限制双轨缓存的最大容量，防止极端高频缩放累积内存
+            if (m_lastPixmapCache.maxCost() == 0) {
+                m_lastPixmapCache.setMaxCost(200); // 默认限制 200 项可见卡片 LRU 备份
+            }
+
+            // 1. 精确尺寸缓存匹配
             QPixmap* cached = m_thumbCache.object(cacheKey);
             if (cached) return *cached;
 
+            // 2.【核心改进：先判断历史缩略图并做平滑拉伸】
+            QPixmap* lastCached = m_lastPixmapCache.object(QString::number(key));
+            if (lastCached) {
+                // 后台静默生成符合全新精确尺寸的高画质大图
+                if (!m_requestedThumbs.contains(key)) {
+                    m_requestedThumbs.insert(key);
+                    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                    int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                    m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
+                    if (!m_thumbTimer->isActive()) m_thumbTimer->start();
+                }
+
+                // 将历史多态尺寸的旧缩略图临时拉伸/缩放到当前目标尺寸，直接返回！
+                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                return lastCached->scaled(QSize(thumbSize, thumbSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            }
+
+            // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 
-                // 2026-06-xx 极致架构：加入并行批处理队列，废除“单请求单线程”模式
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
         }
+        // 4.【最后才判断图标】实在没有任何缩略图记录，才回退到系统默认图标
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
@@ -556,6 +581,7 @@ void ScanTableModel::processThumbQueue() {
                     QPixmap pix = QPixmap::fromImage(img);
                     if (!pix.isNull()) {
                         m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                        m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
                     }
                     m_aspectRatios[key] = ar;
 
@@ -748,7 +774,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 m_config.iconSize = v; 
                 m_resultView->verticalHeader()->setDefaultSectionSize(v); 
                 m_iconView->setTargetRowHeight(v); 
-                m_tableModel->clearThumbCache(); 
+                m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
                 m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
                 m_config.save(); 
             }); 
