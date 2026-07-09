@@ -21,7 +21,6 @@ namespace FERREX {
 
 QuickLookWindow::QuickLookWindow(QWidget* parent) : QWidget(parent) {
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::Tool);
-    setAttribute(Qt::WA_TranslucentBackground);
     
     setupUi();
     installEventFilter(this);
@@ -31,15 +30,13 @@ QuickLookWindow::~QuickLookWindow() {}
 
 void QuickLookWindow::setupUi() {
     auto* rootLayout = new QVBoxLayout(this);
-    rootLayout->setContentsMargins(20, 20, 20, 20);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
 
     m_container = new QWidget();
     m_container->setObjectName("QLContainer");
     m_container->setStyleSheet(R"(
         #QLContainer {
-            background-color: rgba(30, 30, 30, 230);
-            border: 1px solid #444;
-            border-radius: 12px;
+            background-color: #1E1E1E;
         }
         QLabel { color: #CCC; font-size: 12px; }
         #QLTitle { color: #FF8C00; font-weight: bold; font-size: 14px; }
