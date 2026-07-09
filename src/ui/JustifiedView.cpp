@@ -347,24 +347,25 @@ void JustifiedView::doLayout() {
         int itemWidth = m_targetRowHeight + cardPadding;
         int itemHeight = m_targetRowHeight + extraHeight;
 
+        // 预先计算标准满行情况下的最多容纳数（最少能放 1 个）
+        int maxNumInRow = (containerWidth + spacing) / (itemWidth + spacing);
+        if (maxNumInRow <= 0) maxNumInRow = 1;
+
+        // 确定标准的物理列间距（使跨行垂直列线严格对齐，避免末行由于未满排而被强行拉伸分散）
+        int standardSpacing = spacing;
+        if (maxNumInRow > 1) {
+            standardSpacing = (containerWidth - (maxNumInRow * itemWidth)) / (maxNumInRow - 1);
+        }
+
         int i = 0;
         while (i < count) {
-            // 容纳数计算：(containerWidth + spacing) / (itemWidth + spacing)
-            int numInRow = (containerWidth + spacing) / (itemWidth + spacing);
-            if (numInRow <= 0) numInRow = 1;
-            numInRow = std::min(numInRow, count - i);
-
-            // 两端对齐等间距分布
-            int actualSpacing = 0;
-            if (numInRow > 1) {
-                actualSpacing = (containerWidth - (numInRow * itemWidth)) / (numInRow - 1);
-            }
+            int numInRow = std::min(maxNumInRow, count - i);
 
             int currentX = margin;
             for (int j = 0; j < numInRow; ++j) {
                 int itemIdx = i + j;
                 m_geometries[itemIdx] = { QRect(currentX, currentY, itemWidth, itemHeight), itemIdx };
-                currentX += itemWidth + actualSpacing;
+                currentX += itemWidth + standardSpacing;
             }
             currentY += itemHeight + spacing;
             i += numInRow;
