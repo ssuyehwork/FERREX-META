@@ -44,6 +44,7 @@
 #include <QPointer>
 #include <QThreadStorage>
 #include <QElapsedTimer>
+#include <QStandardPaths>
 #include <QtConcurrent/QtConcurrent>
 #include <QDir>
 #include <QReadLocker>
@@ -260,6 +261,57 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     connect(m_controller, &ScanController::resultsSwapped, this, [this](std::shared_ptr<ResultSet> newSet) {
         updateResults(newSet);
     });
+
+    connect(m_controller, &ScanController::warmupRequested, this, [this](std::shared_ptr<ResultSet> newSet) {
+        if (!newSet || newSet->keys.empty()) return;
+
+        ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+        int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+
+        int warmupCount = std::min<int>(50, (int)newSet->keys.size());
+        for (int i = 0; i < warmupCount; ++i) {
+            uint64_t key = newSet->keys[i];
+
+            auto& reader = MftReader::instance();
+            int idx = reader.getIndexByKey(key);
+            if (idx == -1) continue;
+
+            QString ext = reader.getExtQString(idx);
+            static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
+            if (!thumbExts.contains(ext) || reader.isDirectory(idx)) continue;
+
+            int64_t size = reader.getSize(idx);
+            int64_t mtime = reader.getModifyTime(idx);
+            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+
+            // 在主线程执行安全的 contains 检查
+            if (m_thumbCache.contains(cacheKey)) continue;
+
+            // 在主线程执行路径提取
+            QString fullPath = reader.getFullPath(idx);
+            if (fullPath.isEmpty()) continue;
+
+            // 将纯物理状态值通过按值捕获传递给线程池，绝对线程安全，绝无 GUI 访问
+            m_thumbPool->start([this, key, thumbSize, fullPath, ext, size, mtime, cacheKey]() {
+                static QThreadStorage<ScopedComInit> comStorage;
+                if (!comStorage.hasLocalData()) {
+                    comStorage.setLocalData(ScopedComInit());
+                }
+
+                QString cachePath = ScanDialog::getL2CachePath(fullPath, size, mtime, thumbSize);
+                if (QFile::exists(cachePath)) {
+                    QImage cachedImg;
+                    if (cachedImg.load(cachePath)) {
+                        QPixmap pix = QPixmap::fromImage(cachedImg);
+                        QMetaObject::invokeMethod(this, [this, cacheKey, key, pix]() {
+                            m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                            m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix));
+                        }, Qt::QueuedConnection);
+                    }
+                }
+            });
+        }
+    });
 }
 ScanTableModel::~ScanTableModel() {
     if (m_thumbPool) {
@@ -342,6 +394,21 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             QPixmap* cached = m_thumbCache.object(cacheKey);
             if (cached) return *cached;
 
+            // 1.5 L2 磁盘快速同步探针与同步读取，打通 UI 线程与持久化 .png 缓存连接
+            ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+            int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+            QString fullPath = getPath();
+            QString cachePath = ScanDialog::getL2CachePath(fullPath, size, mtime, thumbSize);
+            if (QFile::exists(cachePath)) {
+                QImage cachedImg;
+                if (cachedImg.load(cachePath)) {
+                    QPixmap pix = QPixmap::fromImage(cachedImg);
+                    m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                    m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix));
+                    return pix;
+                }
+            }
+
             // 2.【核心改进：先判断历史缩略图并做平滑拉伸】
             QPixmap* lastCached = m_lastPixmapCache.object(QString::number(key));
             if (lastCached) {
@@ -416,6 +483,14 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
         if (m_thumbCache.contains(cacheKey)) return 1;
+
+        // 打通 L2 磁盘缓存同步判定
+        ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+        int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+        QString fullPath = getPath();
+        QString cachePath = ScanDialog::getL2CachePath(fullPath, size, mtime, thumbSize);
+        if (QFile::exists(cachePath)) return 1;
+
         return 2;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
@@ -474,6 +549,15 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
     return QVariant();
 }
 
+void ScanTableModel::clearThumbCache(bool keepLastCache) {
+    m_thumbCache.clear();
+    m_requestedThumbs.clear();
+    m_thumbTaskQueue.clear();
+    if (!keepLastCache) {
+        m_lastPixmapCache.clear();
+    }
+}
+
 void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     auto newSet = nextSet ? nextSet : m_controller->snapshot();
     int oldSize = (int)m_currentResultSet->keys.size();
@@ -488,7 +572,6 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
         beginResetModel();
         m_currentResultSet = newSet;
         m_displayCount = newSize; 
-        m_requestedThumbs.clear();
         m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
         endResetModel();
         return;
@@ -626,6 +709,14 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 }
 
 // --- ScanDialog Implementation ---
+
+QString ScanDialog::getL2CachePath(const QString& fullPath, int64_t size, int64_t mtime, int thumbSize) {
+    QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString cacheDir = QDir(appData).filePath("thumbs/");
+    QString hashKey = QString("%1_%2_%3_%4_v13").arg(fullPath).arg(size).arg(mtime).arg(thumbSize);
+    QString cachePath = cacheDir + QString::number(qHash(hashKey), 16) + ".png";
+    return cachePath;
+}
 
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
@@ -1579,6 +1670,7 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
 
     auto* unloadAct = menu.addAction("卸载数据", [this, drive]() {
         MftReader::instance().unloadDrive(drive);
+        m_tableModel->clearThumbCache();
         updateDriveButtonStyles();
         onTriggerSearch();
     });
