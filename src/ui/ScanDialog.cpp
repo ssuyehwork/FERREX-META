@@ -415,24 +415,17 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 // 后台静默生成符合全新精确尺寸的高画质大图
                 if (!m_requestedThumbs.contains(key)) {
                     m_requestedThumbs.insert(key);
-                    ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
-                    int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                     m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                     if (!m_thumbTimer->isActive()) m_thumbTimer->start();
                 }
 
                 // 将历史多态尺寸的旧缩略图临时拉伸/缩放到当前目标尺寸，直接返回！
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
                 return lastCached->scaled(QSize(thumbSize, thumbSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
             }
 
             // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(this->parent());
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
-                
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
