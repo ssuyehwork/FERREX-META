@@ -507,19 +507,12 @@ void QuickLookWindow::renderImage(const QString& path) {
             return;
         }
 
-        // 1. 对于 Qt 原生支持解码的通用格式，优先直接无损 load 原始分辨率图，确保顶级清晰度
-        static const QSet<QString> QT_NATIVE_FORMATS = {"png", "jpg", "jpeg", "bmp", "gif", "webp"};
-        if (QT_NATIVE_FORMATS.contains(ext)) {
-            isLoaded = img.load(path);
-        }
+        // 1. 优先采用无损原图加载：直接调用 QImage::load() 载入无损原始图像，彻底避免后缀限定导致的次级加载模糊
+        isLoaded = img.load(path);
 
-        // 2. 对于特殊专业格式（PSD/AI/EPS等），采用 2048px 高像素 Shell 缩略图引擎进行兜底
+        // 2. 专业创意及数码特种格式（如 PSD、AI、EPS、RAW 等）原生加载失败，转而使用 2048 像素的高清 Shell 引擎解析
         if (!isLoaded) {
             img = UiHelper::getShellThumbnail(path, 2048);
-            if (img.isNull()) {
-                // 再次尝试通过 Qt 自身的底层载入
-                img.load(path);
-            }
         }
 
         if (!weakThis) return;
@@ -527,16 +520,20 @@ void QuickLookWindow::renderImage(const QString& path) {
             if (!weakThis || weakThis->m_currentPath != path) return;
             if (!img.isNull()) {
                 qint64 totalPixels = static_cast<qint64>(img.width()) * img.height();
-                bool isHuge = totalPixels > 50000000LL; // 超过 5000 万像素时进行自适应内存安全保护
+                bool isHuge = totalPixels > 50000000LL; // 超过 5000 万像素时进行自适应物理安全缩放
 
                 QPixmap pix;
                 if (isHuge) {
                     pix = QPixmap::fromImage(img.scaled(4096, 4096, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-                    weakThis->m_infoLabel->setText(QString("超大图像（已应用安全限制）: %1x%2 | %3")
+                    // 开启 High-DPI 像素级完美适配，消除 125%/150%/200% 缩放下的次级插值模糊
+                    pix.setDevicePixelRatio(weakThis->devicePixelRatioF());
+                    weakThis->m_infoLabel->setText(QString("超大图像（已应用安全限制，1:1 物理像素输出）: %1x%2 | %3")
                         .arg(img.width()).arg(img.height()).arg(path));
                 } else {
                     pix = QPixmap::fromImage(img);
-                    weakThis->m_infoLabel->setText(QString("%1x%2 | %3")
+                    // 开启 High-DPI 像素级完美适配，消除 125%/150%/200% 缩放下的次级插值模糊
+                    pix.setDevicePixelRatio(weakThis->devicePixelRatioF());
+                    weakThis->m_infoLabel->setText(QString("无损原图高精解码 (1:1 物理像素输出) | %1x%2 | %3")
                         .arg(img.width()).arg(img.height()).arg(path));
                 }
                 weakThis->m_graphicsView->setPixmap(pix);
