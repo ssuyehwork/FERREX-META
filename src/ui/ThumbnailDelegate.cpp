@@ -56,14 +56,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     bool isSelected = (option.state & QStyle::State_Selected);
     bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
-    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持, 1=就绪, 2=加载中
+    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持/未就绪, 1=有可用缩略图物理资产
     QVariant decoData = index.data(Qt::DecorationRole);
     
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 只要 decoData 能转换为 QPixmap，不管当前状态是 1（就绪）还是 2（加载中），
-    // 都认为这属于可用的、高质量的缩略图物理资产（包括上一代多态拉伸暂位图），优先提取！
+    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取！
     if (decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
@@ -85,7 +84,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->setBrush(QColor("#2d2d2d"));
     painter->drawRect(m.cardRect);
 
-    // 关键路径重构：优先绘制缩略图
+    // 关键路径重构：缩略图优先（直接以 100% 完全不透明度绘制）
     if (hasValidThumb) {
         // 缩略图平滑拉伸并充满卡片（100% Cover/Contain）
         QPixmap scaled = thumb.scaled(m.cardRect.size(), 
@@ -94,23 +93,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         int x = m.cardRect.center().x() - scaled.width() / 2;
         int y = m.cardRect.center().y() - scaled.height() / 2;
         
-        // 异步加载升级期间，赋予平滑淡入感
-        if (thumbStatus == 2) {
-            painter->setOpacity(0.95); // 95% 透明度，给高精大图的替换预留非常自然的过渡
-        }
         painter->drawPixmap(x, y, scaled);
-        if (thumbStatus == 2) {
-            painter->setOpacity(1.0);
-        }
     } else {
-        // 仅当 Pixmap 为空且判定无法加载缩略图、或提取彻底失败后，才作为最后的手段去绘制默认的文件类型关联图标
+        // 系统默认图标只作为【没有缩略图或生成失败时】的最后兜底回退手段
+        // 在没有有效缩略图物理资产时，直接以 100% 的完全不透明度绘制默认的文件类型关联图标，绝不闪现空白卡片
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
-            if (thumbStatus == 2) {
-                painter->setOpacity(0.25); // 降低到 25% 灰度透明，作为极静默的隐式过渡
-            } else {
-                painter->setOpacity(0.7);  // 常规不支持缩略图的项，也采取略显高级的 70% 亮度
-            }
+            painter->setOpacity(1.0);
             
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,

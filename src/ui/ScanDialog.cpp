@@ -402,8 +402,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole) {
         return key;
     } else if (role == Qt::UserRole + 1) {
-        // 返回缩略图状态：0=不支持, 1=就绪, 2=加载中 (用于 Delegate 实施“缩略图优先”绘制)
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分字段
+        // 返回缩略图物理资产状态：0=未就绪/不支持, 1=有可用缩略图 (用于 Delegate 实施“缩略图第一优先、系统图标靠后兜底”绘制)
+        // 对接 MftReader 预拆分字段
         QString ext = reader.getExtQString(actualIndex);
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
@@ -413,8 +413,11 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         int64_t mtime = reader.getModifyTime(actualIndex);
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
-        if (m_thumbCache.contains(cacheKey)) return 1;
-        return 2;
+        // 只要 L1 精确匹配命中，或者 L2 历史备份可用，即视为存在可用物理缩略图资产并返回线索 1，彻底删除任何多余的过渡加载状态。
+        if (m_thumbCache.contains(cacheKey) || m_lastPixmapCache.contains(QString::number(key))) {
+            return 1;
+        }
+        return 0;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
         return m_aspectRatios.value(key, 1.0);
