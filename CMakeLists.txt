@@ -20,6 +20,18 @@ endif()
 # 2026-05-10 修复：添加缺失的Core和Gui组件
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Svg Sql Concurrent)
 
+# 可选组件：Qt Multimedia (多媒体播放能力)
+find_package(Qt6 COMPONENTS Multimedia MultimediaWidgets QUIET)
+
+set(EXTRA_LIBS)
+if(Qt6Multimedia_FOUND AND Qt6MultimediaWidgets_FOUND)
+    add_compile_definitions(FERREX_HAS_MULTIMEDIA)
+    list(APPEND EXTRA_LIBS Qt6::Multimedia Qt6::MultimediaWidgets)
+    message(STATUS "🎉 检测到 Qt Multimedia 模块，已开启视频/音频原生预览支持！")
+else()
+    message(WARNING "⚠️ 未检测到 Qt Multimedia 模块，视频/音频预览将采用优雅降级机制显示占位图。")
+endif()
+
 # 2026-03-xx 按照用户要求：禁用 Vulkan 探测以消除日志报错，并清理构建路径矛盾
 set(QT_NO_VULKAN ON)
 
@@ -95,6 +107,7 @@ target_link_libraries(FERREX PRIVATE
     Qt6::Widgets
     Qt6::Svg
     Qt6::Concurrent
+    ${EXTRA_LIBS}
     ntdll
     ole32
     bcrypt
