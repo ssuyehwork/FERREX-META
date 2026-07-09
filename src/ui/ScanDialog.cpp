@@ -354,10 +354,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                     if (!m_thumbTimer->isActive()) m_thumbTimer->start();
                 }
 
-                // 将历史多态尺寸的旧缩略图临时拉伸/缩放到当前目标尺寸，直接返回！
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
-                return lastCached->scaled(QSize(thumbSize, thumbSize), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                // 物理资产优先：直接返回原始的历史 Pixmap 资产，由 Delegate 进行后续 Cover/Contain 平滑拉伸，绝不闪现系统默认图标
+                return *lastCached;
             }
 
             // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
@@ -808,7 +806,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 m_closeBtn->setToolTip("");
                 m_closeBtn->setStyleSheet(
                     "QPushButton { background-color: #E81123; border: none; border-radius: 4px; } "
-                    "QPushButton:hover { background-color: #F1707A; } "
+                    "QPushButton:hover { background-color: #E81123; } "
                     "QPushButton:pressed { background-color: #A50000; }"
                 );
             }
