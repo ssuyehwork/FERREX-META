@@ -409,8 +409,8 @@ public:
         QDir().mkpath(cacheDir);
 
         QFileInfo fi(path);
-        // 2026-06-xx 物理修复：在 hashKey 中加入 v13 标识，强制失效旧缓存
-        QString hashKey = QString("%1_%2_%3_%4_v13").arg(path).arg(fi.size()).arg(fi.lastModified().toMSecsSinceEpoch()).arg(size);
+        // 2026-07-xx 物理重构：在 hashKey 中物理剥离 fi.size()，只依赖绝对准确的路径、修改时间与缩略图尺寸，升级缓存版本至 v14
+        QString hashKey = QString("%1_%2_%3_v14").arg(path).arg(fi.lastModified().toMSecsSinceEpoch()).arg(size);
         QString safeName = QString::number(qHash(hashKey), 16) + ".png";
         QString cachePath = cacheDir + safeName;
 
