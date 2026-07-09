@@ -358,7 +358,12 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 return *lastCached;
             }
 
-            // 3. 首次加载（完全没有生成过任何缩略图），触发异步处理并回退
+            // C. 失败兜底阻断器：如果已经被标记为彻底提取失败，则可以穿透放行，退回到最下方的系统默认图标展示。
+            if (m_failedThumbs.contains(key)) {
+                return reader.getCachedIcon(ext, false);
+            }
+
+            // D. 加载期强制阻断方案：此时缩略图在加载队列中尚未产生。为了杜绝默认图标的插足闪跃，模型层强制返回“符合规范的空 QVariant()”。
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
@@ -367,8 +372,11 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
+
+            return QVariant(); // 【核心物理阻断点】向视图提供空数据，掐断默认图标的透传通路！
         }
-        // 4.【最后才判断图标】实在没有任何缩略图记录，才回退到系统默认图标
+        
+        // 常规不支持缩略图的后缀（如 txt, exe），直接放行，回退到系统默认图标
         return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
@@ -490,6 +498,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
         m_currentResultSet = newSet;
         m_displayCount = newSize; 
         m_requestedThumbs.clear();
+        m_failedThumbs.clear(); // 2026-07-xx 重置时也必须清理失败跟踪，避免由于路径变动或磁盘更新造成不可恢复的阻断
         m_pendingRows.clear(); // 2026-06-xx 任务修复：重置时必须清空待刷新行，防止索引失效
         endResetModel();
         return;
@@ -586,6 +595,17 @@ void ScanTableModel::processThumbQueue() {
                     }
                     m_aspectRatios[key] = ar;
 
+                    auto snapshot = m_controller->snapshot();
+                    auto itPos = snapshot->keyToPos.find(key);
+                    if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
+                        m_pendingRows.insert(itPos->second);
+                        if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+                    }
+                }, Qt::QueuedConnection);
+            } else {
+                // 【核心改进】：获取失败，记录进失败名单，并强制刷新，退化使用默认图标兜底
+                QMetaObject::invokeMethod(this, [this, key = t.key]() {
+                    m_failedThumbs.insert(key);
                     auto snapshot = m_controller->snapshot();
                     auto itPos = snapshot->keyToPos.find(key);
                     if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
