@@ -737,8 +737,12 @@ ScanDialog::ScanDialog(QWidget* parent)
                             m_iconView->setTargetRowHeight(v.size); 
                             if (m_sizeSlider) m_sizeSlider->setValue(v.size); 
                         } 
-                        if (v.stackIdx == 0) 
-                            m_resultView->verticalHeader()->setDefaultSectionSize(std::min(m_config.iconSize, 230)); // 详情列表行高上限 230px
+                        if (v.stackIdx == 0) {
+                            int cappedHeight = std::min(m_config.iconSize, 230); // 详情列表行高上限 230px
+                            m_resultView->verticalHeader()->setDefaultSectionSize(cappedHeight);
+                            int squareSize = qMax(cappedHeight - 6, 0);
+                            m_resultView->setColumnWidth(0, squareSize + 8 + 180); // 缩略图列宽随行高联动
+                        }
                         m_config.save(); 
                     }); 
                 } 
@@ -793,7 +797,10 @@ ScanDialog::ScanDialog(QWidget* parent)
             ); 
             connect(m_sizeSlider, &QSlider::valueChanged, this, [this](int v) { 
                 m_config.iconSize = v; 
-                m_resultView->verticalHeader()->setDefaultSectionSize(std::min(v, 230)); // 详情列表行高上限 230px
+                int cappedHeight = std::min(v, 230); // 详情列表行高上限 230px
+                m_resultView->verticalHeader()->setDefaultSectionSize(cappedHeight);
+                int squareSize = qMax(cappedHeight - 6, 0);
+                m_resultView->setColumnWidth(0, squareSize + 8 + 180); // 缩略图列宽随行高联动
                 m_iconView->setTargetRowHeight(v); 
                 m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
                 m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
@@ -973,8 +980,12 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
         m_resultView->verticalHeader()->setDefaultSectionSize(32);
+        m_resultView->setColumnWidth(0, qMax(32 - 6, 0) + 8 + 180); // 缩略图列宽随行高联动
     } else {
-        m_resultView->verticalHeader()->setDefaultSectionSize(std::min(m_config.iconSize + 10, 230)); // 详情列表行高上限 230px
+        int cappedHeight = std::min(m_config.iconSize + 10, 230); // 详情列表行高上限 230px
+        m_resultView->verticalHeader()->setDefaultSectionSize(cappedHeight);
+        int squareSize = qMax(cappedHeight - 6, 0);
+        m_resultView->setColumnWidth(0, squareSize + 8 + 180); // 缩略图列宽随行高联动
     }
     if (m_config.viewMode == 1) { // 图标模式
         m_iconView->setTargetRowHeight(m_config.iconSize);
