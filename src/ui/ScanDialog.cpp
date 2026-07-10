@@ -722,7 +722,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 for (auto& v : QList<ViewDef>{ 
                     {"超大图标", 1, 192}, {"大图标", 1, 128}, {"中图标", 1, 64}, 
                     {}, // separator 
-                    {"详情",    0, 0} 
+                    {"列表",    0, 0}
                 }) { 
                     if (v.label.isEmpty()) { menu->addSeparator(); continue; } 
                     QAction* act = menu->addAction(v.label); 
