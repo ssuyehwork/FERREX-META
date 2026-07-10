@@ -63,7 +63,8 @@ QuickLookGraphicsView::QuickLookGraphicsView(QWidget* parent) : QGraphicsView(pa
 void QuickLookGraphicsView::setPixmap(const QPixmap& pixmap) {
     m_pixmapItem->setPixmap(pixmap);
     m_scene->setSceneRect(m_pixmapItem->boundingRect());
-    fitImage();
+    setZoomOriginal();
+    centerOn(m_scene->sceneRect().center());
 }
 
 void QuickLookGraphicsView::clear() {
@@ -474,6 +475,7 @@ void QuickLookWindow::renderImage(const QString& path) {
                     weakThis->m_infoLabel->setText(QString("%1x%2 | %3")
                         .arg(img.width()).arg(img.height()).arg(path));
                 }
+                pix.setDevicePixelRatio(weakThis->devicePixelRatioF());
                 weakThis->m_graphicsView->setPixmap(pix);
             } else {
                 weakThis->renderText(path); // 图片加载失败尝试文本模式
