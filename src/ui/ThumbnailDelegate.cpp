@@ -26,6 +26,11 @@ void ThumbnailDelegate::setColorRole(int role) { m_colorRole = role; }
 
 ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptionViewItem& option) const {
     Metrics m;
+
+    // 与 paint() 中一致的判断方式，用来区分网格模式 / 详情（列表）模式
+    bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : true;
+
+    // 初始化无用变量，防止其他潜在编译未定义警告
     m.ratingH = 0; // 彻底停用星级占位
     m.ratingY = 0;
     m.starSize = 0;
@@ -33,11 +38,10 @@ ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptio
     m.banRect = QRect();
     m.starsStartX = 0;
 
-    bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
-
     if (isGrid) {
         const int textHeight = 36;
         const int gap = 6; // 卡片与文件名的紧凑间隙
+
         // 底部预留高度调整：文件名高度 + 间距 + 底部内边距补偿(3px)
         m.cardRect = option.rect.adjusted(3, 3, -3, -(textHeight + gap + 3));
 
@@ -47,18 +51,21 @@ ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptio
                            option.rect.width() - 6,
                            textHeight);
     } else {
-        // 详情列表模式：缩略图/图标限定为正方形，居中压缩
-        int rowHeight = qMax(option.rect.height(), 0);
-        int margin = 3;
+        // 详情（列表）模式：缩略图/图标限定为正方形，随行高缩放，靠行左侧对齐；
+        // 文件名紧跟在正方形右侧，同一行内左右布局，而不是上下堆叠。
+        const int margin = 3;
+        int rowHeight = option.rect.height();
         int squareSize = qMax(rowHeight - margin * 2, 0);
-        int leftOffset = option.rect.left() + margin;
-        int topOffset = option.rect.top() + (rowHeight - squareSize) / 2;
-        m.cardRect = QRect(leftOffset, topOffset, squareSize, squareSize);
 
-        // 文件名紧跟在正方形右侧，偏移 8px
-        int textLeft = m.cardRect.x() + m.cardRect.width() + 8;
-        int textWidth = qMax(option.rect.right() - textLeft, 0);
-        m.textRect = QRect(textLeft, option.rect.top(), textWidth, rowHeight);
+        m.cardRect = QRect(option.rect.left() + margin,
+                           option.rect.top() + (rowHeight - squareSize) / 2,
+                           squareSize, squareSize);
+
+        int textLeft = m.cardRect.right() + 8;
+        m.textRect = QRect(textLeft,
+                           option.rect.top(),
+                           qMax(option.rect.right() - textLeft - margin, 0),
+                           rowHeight);
     }
 
     return m;
@@ -99,7 +106,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
 
     // 关键路径重构：缩略图优先（直接以 100% 完全不透明度绘制）
     if (hasValidThumb) {
-        // 无论网格模式还是详情模式，统一使用 Qt::KeepAspectRatio 包含式平滑缩放
+        // 网格模式和详情模式统一使用包含式缩放（Qt::KeepAspectRatio），
+        // 缩略图始终完整显示在 cardRect 正方形范围内，不裁切、不溢出边界。
         QPixmap scaled = thumb.scaled(m.cardRect.size(), 
                                       Qt::KeepAspectRatio,
                                       Qt::SmoothTransformation);
@@ -174,7 +182,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
 
     // [已停用] 星级渲染逻辑：星级已不再使用，此处直接跳过以节省 CPU 消耗
 
-    // ③ 文件名
+    // ③ 文件名（卡片下方）
     painter->save();
     QString name = index.data(Qt::DisplayRole).toString();
     painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
@@ -191,11 +199,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     displayName.replace("_", "_\u200B");
     displayName.replace(".", ".\u200B");
 
-    int alignment = isGrid ? (Qt::AlignCenter | Qt::TextWordWrap) : (Qt::AlignLeft | Qt::AlignVCenter);
-    int elideWidth = isGrid ? (m.textRect.width() * 2) : m.textRect.width();
-
-    painter->drawText(m.textRect.adjusted(4, 0, -4, 0), alignment,
-        option.fontMetrics.elidedText(displayName, Qt::ElideMiddle, elideWidth));
+    painter->drawText(m.textRect.adjusted(4, 0, -4, 0), Qt::AlignCenter | Qt::TextWordWrap,
+        option.fontMetrics.elidedText(displayName, Qt::ElideMiddle, m.textRect.width() * 2));
     painter->restore();
 
     // ④ 空文件夹特殊标记
