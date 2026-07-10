@@ -30,6 +30,8 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     m_container = new QWidget(this);
     m_container->setObjectName("DialogContainer");
     m_container->setAttribute(Qt::WA_StyledBackground);
+    m_container->setMouseTracking(true);
+    m_container->installEventFilter(this);
     m_container->setStyleSheet(
         "#DialogContainer {"
         "  background-color: #1E1E1E;"
@@ -150,10 +152,67 @@ void FramelessDialog::showEvent(QShowEvent* event) {
     QDialog::showEvent(event);
 }
 
+FramelessDialog::ResizeDir FramelessDialog::getResizeDir(const QPoint& pos) const {
+    int x = pos.x();
+    int y = pos.y();
+    int w = this->width();
+    int h = this->height();
+
+    bool left = (x >= 0 && x <= PADDING);
+    bool right = (x >= w - PADDING && x <= w);
+    bool top = (y >= 0 && y <= PADDING);
+    bool bottom = (y >= h - PADDING && y <= h);
+
+    if (left && top) return DIR_TOPLEFT;
+    if (right && top) return DIR_TOPRIGHT;
+    if (left && bottom) return DIR_BOTTOMLEFT;
+    if (right && bottom) return DIR_BOTTOMRIGHT;
+    if (left) return DIR_LEFT;
+    if (right) return DIR_RIGHT;
+    if (top) return DIR_TOP;
+    if (bottom) return DIR_BOTTOM;
+
+    return DIR_NONE;
+}
+
+void FramelessDialog::updateCursorShape(ResizeDir dir) {
+    switch (dir) {
+        case DIR_LEFT:
+        case DIR_RIGHT:
+            setCursor(Qt::SizeHorCursor);
+            break;
+        case DIR_TOP:
+        case DIR_BOTTOM:
+            setCursor(Qt::SizeVerCursor);
+            break;
+        case DIR_TOPLEFT:
+        case DIR_BOTTOMRIGHT:
+            setCursor(Qt::SizeFDiagCursor);
+            break;
+        case DIR_TOPRIGHT:
+        case DIR_BOTTOMLEFT:
+            setCursor(Qt::SizeBDiagCursor);
+            break;
+        default:
+            setCursor(Qt::ArrowCursor);
+            break;
+    }
+}
+
 void FramelessDialog::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        QPoint localPos = event->pos();
+        ResizeDir dir = getResizeDir(localPos);
+        if (dir != DIR_NONE) {
+            m_resizeDir = dir;
+            m_startGlobalPos = event->globalPosition().toPoint();
+            m_startGeometry = geometry();
+            event->accept();
+            return;
+        }
+
         // 判定是否在标题栏区域拖拽
-        QWidget* child = childAt(event->pos());
+        QWidget* child = childAt(localPos);
         if (child) {
             bool inTitleBar = false;
             QWidget* p = child;
@@ -178,16 +237,103 @@ void FramelessDialog::mousePressEvent(QMouseEvent* event) {
 }
 
 void FramelessDialog::mouseMoveEvent(QMouseEvent* event) {
+    if (m_resizeDir != DIR_NONE) {
+        QPoint currentGlobalPos = event->globalPosition().toPoint();
+        int dx = currentGlobalPos.x() - m_startGlobalPos.x();
+        int dy = currentGlobalPos.y() - m_startGlobalPos.y();
+
+        int minWidth = minimumSize().width();
+        int minHeight = minimumSize().height();
+
+        QRect newGeom = m_startGeometry;
+
+        switch (m_resizeDir) {
+            case DIR_RIGHT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() + dx);
+                newGeom.setWidth(newWidth);
+                break;
+            }
+            case DIR_BOTTOM: {
+                int newHeight = qMax(minHeight, m_startGeometry.height() + dy);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            case DIR_LEFT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() - dx);
+                int newX = m_startGeometry.right() - newWidth + 1;
+                newGeom.setLeft(newX);
+                newGeom.setWidth(newWidth);
+                break;
+            }
+            case DIR_TOP: {
+                int newHeight = qMax(minHeight, m_startGeometry.height() - dy);
+                int newY = m_startGeometry.bottom() - newHeight + 1;
+                newGeom.setTop(newY);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            case DIR_TOPLEFT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() - dx);
+                int newX = m_startGeometry.right() - newWidth + 1;
+                int newHeight = qMax(minHeight, m_startGeometry.height() - dy);
+                int newY = m_startGeometry.bottom() - newHeight + 1;
+                newGeom.setLeft(newX);
+                newGeom.setWidth(newWidth);
+                newGeom.setTop(newY);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            case DIR_TOPRIGHT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() + dx);
+                int newHeight = qMax(minHeight, m_startGeometry.height() - dy);
+                int newY = m_startGeometry.bottom() - newHeight + 1;
+                newGeom.setWidth(newWidth);
+                newGeom.setTop(newY);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            case DIR_BOTTOMLEFT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() - dx);
+                int newX = m_startGeometry.right() - newWidth + 1;
+                int newHeight = qMax(minHeight, m_startGeometry.height() + dy);
+                newGeom.setLeft(newX);
+                newGeom.setWidth(newWidth);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            case DIR_BOTTOMRIGHT: {
+                int newWidth = qMax(minWidth, m_startGeometry.width() + dx);
+                int newHeight = qMax(minHeight, m_startGeometry.height() + dy);
+                newGeom.setWidth(newWidth);
+                newGeom.setHeight(newHeight);
+                break;
+            }
+            default:
+                break;
+        }
+
+        setGeometry(newGeom);
+        event->accept();
+        return;
+    }
+
     if (m_isDragging && (event->buttons() & Qt::LeftButton)) {
         move(event->globalPosition().toPoint() - m_dragPos);
         event->accept();
         return;
     }
+
+    // 处于正常悬停阶段，更新光标样式
+    ResizeDir dir = getResizeDir(event->pos());
+    updateCursorShape(dir);
+
     QDialog::mouseMoveEvent(event);
 }
 
 void FramelessDialog::mouseReleaseEvent(QMouseEvent* event) {
     m_isDragging = false;
+    m_resizeDir = DIR_NONE;
+    updateCursorShape(getResizeDir(event->pos()));
     QDialog::mouseReleaseEvent(event);
 }
 
@@ -208,6 +354,29 @@ void FramelessDialog::keyPressEvent(QKeyEvent* event) {
 }
 
 bool FramelessDialog::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_container) {
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
+            // 将 m_container 的局部 mouseMove 映射为本窗口坐标，然后转发给 mouseMoveEvent
+            QPoint dialogPos = mapFromGlobal(mouseEvent->globalPosition().toPoint());
+            QMouseEvent mappedEvent(mouseEvent->type(), dialogPos, mouseEvent->globalPosition(),
+                                    mouseEvent->button(), mouseEvent->buttons(), mouseEvent->modifiers());
+            mouseMoveEvent(&mappedEvent);
+            // 必须不拦截，允许 container 内的控件继续接收鼠标移动事件
+            return false;
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent* mouseEvent = static_cast<QMouseEvent*>(event);
+            QPoint dialogPos = mapFromGlobal(mouseEvent->globalPosition().toPoint());
+            ResizeDir dir = getResizeDir(dialogPos);
+            if (dir != DIR_NONE) {
+                // 如果是在边缘上按下的，重定向到主窗口的鼠标按下事件
+                QMouseEvent mappedEvent(mouseEvent->type(), dialogPos, mouseEvent->globalPosition(),
+                                        mouseEvent->button(), mouseEvent->buttons(), mouseEvent->modifiers());
+                mousePressEvent(&mappedEvent);
+                return true; // 拦截此事件，不向子部件派发，避免边缘拖拽导致子控件获焦或误触
+            }
+        }
+    }
     return QDialog::eventFilter(watched, event);
 }
 
