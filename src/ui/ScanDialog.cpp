@@ -149,6 +149,45 @@ public:
 
         painter->restore();
     }
+
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
+        if (editor) {
+            editor->setStyleSheet(
+                "background-color: #2D2D2D; color: white; "
+                "selection-background-color: #3498db; "
+                "border: 1px solid #3498db; border-radius: 4px; padding: 0 4px;"
+            );
+        }
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
+        QString value = index.model()->data(index, Qt::EditRole).toString();
+        QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor);
+        if (lineEdit) {
+            lineEdit->setText(value);
+            int lastDot = value.lastIndexOf('.');
+            if (lastDot > 0) {
+                lineEdit->setSelection(0, lastDot);
+            } else {
+                lineEdit->selectAll();
+            }
+        }
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option, const QModelIndex& /*index*/) const override {
+        int padding = 3;
+        int side = option.rect.height() - (padding * 2);
+        if (side <= 0) side = 16;
+
+        int textLeft = option.rect.left() + 6 + side + 10;
+
+        QRect textRect = option.rect;
+        textRect.setLeft(textLeft);
+
+        editor->setGeometry(textRect.adjusted(1, 4, -4, -4));
+    }
 };
 
 // --- ScanConfig Implementation ---
