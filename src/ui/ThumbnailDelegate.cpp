@@ -9,6 +9,8 @@
 #include <QLineEdit>
 #include <QTimer>
 #include <QAbstractItemView>
+#include <QTextLayout>
+#include <QTextOption>
 #include "UiHelper.h"
 
 namespace FERREX {
@@ -178,8 +180,67 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     displayName.replace("_", "_\u200B");
     displayName.replace(".", ".\u200B");
 
-    painter->drawText(m.textRect.adjusted(4, 0, -4, 0), Qt::AlignCenter | Qt::TextWordWrap,
-        option.fontMetrics.elidedText(displayName, Qt::ElideMiddle, m.textRect.width() * 2));
+    // 采用方案 A：使用 QTextLayout 进行精准的双行物理修剪与第二行末尾省略
+    QTextLayout textLayout(displayName, painter->font());
+    QTextOption textOption;
+    textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    textOption.setAlignment(Qt::AlignCenter);
+    textLayout.setTextOption(textOption);
+
+    textLayout.beginLayout();
+    int lineCount = 0;
+    int textWidth = m.textRect.width() - 8; // 两侧留出 4px 安全边距 (对应 adjusted(4, 0, -4, 0))
+    int currentY = m.textRect.top();
+    int fontHeight = option.fontMetrics.height();
+
+    // 存储切分出的各行
+    struct RenderLine {
+        QString text;
+        int y;
+    };
+    QList<RenderLine> linesToRender;
+
+    while (true) {
+        QTextLine line = textLayout.createLine();
+        if (!line.isValid()) {
+            break;
+        }
+        line.setLineWidth(textWidth);
+        lineCount++;
+
+        if (lineCount == 1) {
+            // 第一行完整保留
+            int start = line.textStart();
+            int len = line.textLength();
+            linesToRender.append({displayName.mid(start, len), currentY});
+            currentY += fontHeight;
+        } else if (lineCount == 2) {
+            // 关键路径：检查是否存在第三行
+            QTextLine nextLine = textLayout.createLine();
+            if (nextLine.isValid()) {
+                // 确实存在第三行或更多，第二行必须承接全部剩余的长尾内容，并做 ElideMiddle 裁剪
+                int start = line.textStart();
+                QString remainingText = displayName.mid(start);
+                // 物理省略
+                QString elidedRemaining = option.fontMetrics.elidedText(remainingText, Qt::ElideMiddle, textWidth);
+                linesToRender.append({elidedRemaining, currentY});
+            } else {
+                // 没有第三行，第二行正常显示
+                int start = line.textStart();
+                int len = line.textLength();
+                linesToRender.append({displayName.mid(start, len), currentY});
+            }
+            break; // 绝对阻断第三行，退出排版循环
+        }
+    }
+    textLayout.endLayout();
+
+    // 物理渲染
+    for (const auto& rLine : linesToRender) {
+        QRect lineRect(m.textRect.left() + 4, rLine.y, textWidth, fontHeight);
+        painter->drawText(lineRect, Qt::AlignCenter, rLine.text);
+    }
+
     painter->restore();
 
     // ④ 空文件夹特殊标记
