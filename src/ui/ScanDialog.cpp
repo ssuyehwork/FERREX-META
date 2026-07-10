@@ -182,12 +182,21 @@ public:
         int side = option.rect.height() - (padding * 2);
         if (side <= 0) side = 16;
 
+        // 1. 精确计算输入框的左侧水平起点 (左边距 6px + 缩略图边长 + 间距 10px) [1]
         int textLeft = option.rect.left() + 6 + side + 10;
 
-        QRect textRect = option.rect;
-        textRect.setLeft(textLeft);
+        // 2. 物理锁定编辑框高度为 28 像素，杜绝其随滚轮无限膨胀 [1]
+        const int targetEditorHeight = 28;
 
-        editor->setGeometry(textRect.adjusted(1, 4, -4, -4));
+        // 3. 数学垂直居中对齐计算： y_offset = (当前行高 - 目标编辑框高度) / 2 [1]
+        int yOffset = (option.rect.height() - targetEditorHeight) / 2;
+        int editorTop = option.rect.top() + yOffset;
+
+        // 4. 构建完美垂直居中的 QRect 区域，右侧保留 10 像素安全边距
+        int editorWidth = option.rect.width() - (textLeft - option.rect.left()) - 10;
+        QRect editorRect(textLeft, editorTop, editorWidth, targetEditorHeight);
+
+        editor->setGeometry(editorRect);
     }
 };
 
