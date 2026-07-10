@@ -1155,6 +1155,51 @@ ScanDialog::ScanDialog(QWidget* parent)
             });
         });
     });
+
+    // 1. 初始化持久 Action，并赋予全局快捷键
+    m_actJMode = new QAction("自适应(A)", this);
+    m_actJMode->setShortcut(QKeySequence("Ctrl+Shift+1"));
+    m_actJMode->setCheckable(true);
+    connect(m_actJMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
+        m_config.layoutMode = 0;
+        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    this->addAction(m_actJMode); // 【核心步骤】：注册至窗口，使其在全局事件循环中生效 [1]
+
+    m_actGMode = new QAction("网格(G)", this);
+    m_actGMode->setShortcut(QKeySequence("Ctrl+Shift+2"));
+    m_actGMode->setCheckable(true);
+    connect(m_actGMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
+        m_config.layoutMode = 1;
+        m_iconView->setLayoutMode(JustifiedView::GridMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    this->addAction(m_actGMode);
+
+    m_actListMode = new QAction("列表(L)", this);
+    m_actListMode->setShortcut(QKeySequence("Ctrl+Shift+3"));
+    m_actListMode->setCheckable(true);
+    connect(m_actListMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(0);
+        m_config.viewMode = 0;
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    this->addAction(m_actListMode);
+
+    // 2. 通过 QActionGroup 保持物理单选互斥
+    QActionGroup* modeGrp = new QActionGroup(this);
+    modeGrp->addAction(m_actJMode);
+    modeGrp->addAction(m_actGMode);
+    modeGrp->addAction(m_actListMode);
 }
 
 ScanDialog::~ScanDialog() {
@@ -1808,52 +1853,18 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
-    QActionGroup* rcModeGrp = new QActionGroup(this);
 
-    // 自适应 (A)（对应用户原话：“自适应”）
-    QAction* rcJModeAct = viewMenu->addAction("自适应(A)");
-    rcJModeAct->setShortcut(QKeySequence("Ctrl+Shift+1"));
-    rcJModeAct->setCheckable(true);
-    rcJModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0);
-    rcModeGrp->addAction(rcJModeAct);
+    // 在菜单弹出前，根据当前真实配置刷新勾选状态 [1]
+    if (m_actJMode && m_actGMode && m_actListMode) {
+        m_actJMode->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0);
+        m_actGMode->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1);
+        m_actListMode->setChecked(m_config.viewMode == 0);
 
-    // 网格 (G)（对应用户原话：“网格”）
-    QAction* rcGModeAct = viewMenu->addAction("网格(G)");
-    rcGModeAct->setShortcut(QKeySequence("Ctrl+Shift+2"));
-    rcGModeAct->setCheckable(true);
-    rcGModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1);
-    rcModeGrp->addAction(rcGModeAct);
-
-    // 列表 (L)（对应用户原话：“列表”）
-    QAction* rcListModeAct = viewMenu->addAction("列表(L)");
-    rcListModeAct->setShortcut(QKeySequence("Ctrl+Shift+3"));
-    rcListModeAct->setCheckable(true);
-    rcListModeAct->setChecked(m_config.viewMode == 0);
-    rcModeGrp->addAction(rcListModeAct);
-
-    connect(rcJModeAct, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(1);
-        m_config.viewMode = 1;
-        m_config.layoutMode = 0;
-        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
-        m_tableModel->updateResults();
-        m_config.save();
-    });
-    connect(rcGModeAct, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(1);
-        m_config.viewMode = 1;
-        m_config.layoutMode = 1;
-        m_iconView->setLayoutMode(JustifiedView::GridMode);
-        m_tableModel->updateResults();
-        m_config.save();
-    });
-    connect(rcListModeAct, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(0);
-        m_config.viewMode = 0;
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
-        m_tableModel->updateResults();
-        m_config.save();
-    });
+        // 直接将持久 Action 插入菜单中展现
+        viewMenu->addAction(m_actJMode);
+        viewMenu->addAction(m_actGMode);
+        viewMenu->addAction(m_actListMode);
+    }
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};
