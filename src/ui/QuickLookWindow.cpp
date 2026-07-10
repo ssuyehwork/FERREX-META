@@ -392,36 +392,12 @@ void QuickLookWindow::preview(const QString& filePath) {
         renderText(filePath);
     }
 
-    // 全屏显示
-    if (!isVisible()) {
-        QScreen* screen = QGuiApplication::primaryScreen();
-        if (parentWidget() && parentWidget()->window()) {
-            screen = parentWidget()->window()->screen();
-        }
-
-        qDebug() << "[QuickLook诊断] primaryScreen geometry:" << QGuiApplication::primaryScreen()->geometry();
-        qDebug() << "[QuickLook诊断] primaryScreen devicePixelRatio:" << QGuiApplication::primaryScreen()->devicePixelRatio();
-        qDebug() << "[QuickLook诊断] 实际选用的 screen geometry:" << screen->geometry();
-        qDebug() << "[QuickLook诊断] 实际选用的 screen availableGeometry:" << screen->availableGeometry();
-        qDebug() << "[QuickLook诊断] 实际选用的 screen devicePixelRatio:" << screen->devicePixelRatio();
-        qDebug() << "[QuickLook诊断] 实际选用的 screen name:" << screen->name();
-        qDebug() << "[QuickLook诊断] parentWidget 是否存在:" << (parentWidget() != nullptr);
-        if (parentWidget() && parentWidget()->window()) {
-            qDebug() << "[QuickLook诊断] parentWidget->window()->screen() name:" << parentWidget()->window()->screen()->name();
-        }
-
-        setGeometry(screen->geometry());
-        show();
-
-        qDebug() << "[QuickLook诊断] setGeometry 后 this->geometry():" << this->geometry();
-        qDebug() << "[QuickLook诊断] setGeometry 后 this->frameGeometry():" << this->frameGeometry();
-        qDebug() << "[QuickLook诊断] this->devicePixelRatioF():" << this->devicePixelRatioF();
-    }
+    // 全屏显示：改用 Qt 原生 showFullScreen()，由 Qt/操作系统正确处理当前显示器的
+    // DPI 缩放、多屏坐标等细节，避免手动计算 screen geometry 导致的尺寸偏差。
+    showFullScreen();
     
     raise();
     activateWindow();
-
-    qDebug() << "[QuickLook诊断] activateWindow 后 this->geometry():" << this->geometry();
 
 #ifdef Q_OS_WIN
     // 强制置顶保护
