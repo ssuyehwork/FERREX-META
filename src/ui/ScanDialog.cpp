@@ -37,6 +37,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QClipboard>
+#include <QShortcut>
 #include <QApplication>
 #include <QProcess>
 #include <QMessageBox>
@@ -1156,9 +1157,9 @@ ScanDialog::ScanDialog(QWidget* parent)
         });
     });
 
-    // 1. 初始化持久 Action，并赋予全局快捷键
+    // 1. 初始化持久 Action 并绑定核心业务槽函数
     m_actJMode = new QAction("自适应(A)", this);
-    m_actJMode->setShortcut(QKeySequence("Ctrl+Shift+1"));
+    m_actJMode->setShortcut(QKeySequence("Ctrl+Shift+1")); // 仅用于在右键菜单上渲染展示快捷键文本 [1]
     m_actJMode->setCheckable(true);
     connect(m_actJMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(1);
@@ -1168,10 +1169,9 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_tableModel->updateResults();
         m_config.save();
     });
-    this->addAction(m_actJMode); // 【核心步骤】：注册至窗口，使其在全局事件循环中生效 [1]
 
     m_actGMode = new QAction("网格(G)", this);
-    m_actGMode->setShortcut(QKeySequence("Ctrl+Shift+2"));
+    m_actGMode->setShortcut(QKeySequence("Ctrl+Shift+2")); // 仅用于菜单文本渲染 [1]
     m_actGMode->setCheckable(true);
     connect(m_actGMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(1);
@@ -1181,10 +1181,9 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_tableModel->updateResults();
         m_config.save();
     });
-    this->addAction(m_actGMode);
 
     m_actListMode = new QAction("列表(L)", this);
-    m_actListMode->setShortcut(QKeySequence("Ctrl+Shift+3"));
+    m_actListMode->setShortcut(QKeySequence("Ctrl+Shift+3")); // 仅用于菜单文本渲染 [1]
     m_actListMode->setCheckable(true);
     connect(m_actListMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(0);
@@ -1193,13 +1192,25 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_tableModel->updateResults();
         m_config.save();
     });
-    this->addAction(m_actListMode);
 
     // 2. 通过 QActionGroup 保持物理单选互斥
     QActionGroup* modeGrp = new QActionGroup(this);
     modeGrp->addAction(m_actJMode);
     modeGrp->addAction(m_actGMode);
     modeGrp->addAction(m_actListMode);
+
+    // 3. 【核心修复】：使用 QShortcut 进行顶层物理拦截，彻底杜绝子控件焦点吞噬快捷键的问题 [1]
+    QShortcut* shortcutJ = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_1), this);
+    shortcutJ->setContext(Qt::WindowShortcut); // 限制仅在当前窗口处于激活状态时生效 [1]
+    connect(shortcutJ, &QShortcut::activated, m_actJMode, &QAction::trigger); // 激活时直接向 Action 发送物理触发指令 [1]
+
+    QShortcut* shortcutG = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_2), this);
+    shortcutG->setContext(Qt::WindowShortcut);
+    connect(shortcutG, &QShortcut::activated, m_actGMode, &QAction::trigger);
+
+    QShortcut* shortcutList = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_3), this);
+    shortcutList->setContext(Qt::WindowShortcut);
+    connect(shortcutList, &QShortcut::activated, m_actListMode, &QAction::trigger);
 }
 
 ScanDialog::~ScanDialog() {
