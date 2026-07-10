@@ -77,6 +77,80 @@
 
 namespace FERREX {
 
+class ListThumbnailDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
+        // 1. 绘制高亮背景与悬停背景
+        bool isSelected = (option.state & QStyle::State_Selected);
+        if (isSelected) {
+            painter->fillRect(option.rect, QColor("#094771")); // 使用项目标准高亮蓝
+        } else if (option.state & QStyle::State_MouseOver) {
+            painter->fillRect(option.rect, QColor("#2A2A2A")); // 悬停深灰
+        }
+
+        // 2. 计算正方形几何体 (上下预留 3px 的 padding)
+        int padding = 3;
+        int side = option.rect.height() - (padding * 2);
+        if (side <= 0) side = 16; // 兜底保护
+
+        // 卡片正方形左边界留出 6px 的视觉间距
+        QRect squareRect(option.rect.left() + 6, option.rect.top() + padding, side, side);
+
+        // 3. 绘制正方形背景容器（圆角 4px）
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#2d2d2d"));
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(squareRect, 4, 4);
+        painter->drawPath(cardPath);
+
+        // 4. 获取并渲染缩略图或默认图标
+        QVariant decoData = index.data(Qt::DecorationRole);
+
+        if (decoData.canConvert<QPixmap>()) {
+            QPixmap thumb = decoData.value<QPixmap>();
+            if (!thumb.isNull()) {
+                // 强制使用 KeepAspectRatio (Contain 模式) 不失真地自适应填充正方形容器
+                QPixmap scaled = thumb.scaled(squareRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                int x = squareRect.center().x() - scaled.width() / 2;
+                int y = squareRect.center().y() - scaled.height() / 2;
+                painter->drawPixmap(x, y, scaled);
+            }
+        } else {
+            QIcon icon = qvariant_cast<QIcon>(decoData);
+            if (!icon.isNull()) {
+                int iconSize = side * 0.6; // 默认图标占正方形容器的 60%
+                QRect iconRect(squareRect.center().x() - iconSize / 2,
+                               squareRect.center().y() - iconSize / 2,
+                               iconSize, iconSize);
+                icon.paint(painter, iconRect);
+            }
+        }
+
+        // 5. 绘制右侧文字 (文件名)
+        QString name = index.data(Qt::DisplayRole).toString();
+        // 原项目设定：第0列强制显示为蓝色（未选中时）
+        QColor textColor = isSelected ? QColor("#FFFFFF") : QColor("#3498db");
+
+        painter->setPen(textColor);
+        painter->setFont(option.font);
+
+        // 文字区域左边线对齐到：正方形右边线 + 10px 间距
+        QRect textRect = option.rect;
+        textRect.setLeft(squareRect.right() + 10);
+
+        QString elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, textRect.width() - 10);
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedText);
+
+        painter->restore();
+    }
+};
+
 // --- ScanConfig Implementation ---
 
 void ScanConfig::load() {
@@ -349,7 +423,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 if (!m_requestedThumbs.contains(key)) {
                     m_requestedThumbs.insert(key);
                     ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                    int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                    int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
                     m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                     if (!m_thumbTimer->isActive()) m_thumbTimer->start();
                 }
@@ -367,7 +441,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
                 
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
@@ -964,7 +1038,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
-        m_resultView->verticalHeader()->setDefaultSectionSize(32);
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); // 启动时读取持久化尺寸
     } else {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
     }
@@ -1190,6 +1264,7 @@ void ScanDialog::setupUi() {
 
     m_resultView = new QTableView();
     m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
+    m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
     m_controller = new ScanController(this);
     m_tableModel = new ScanTableModel(m_controller, this);
     m_resultView->setModel(m_tableModel);
