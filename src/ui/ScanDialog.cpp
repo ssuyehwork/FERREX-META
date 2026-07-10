@@ -718,57 +718,49 @@ ScanDialog::ScanDialog(QWidget* parent)
                     "QMenu::item:selected { background: #2A2A2A; color: #FFF; }" 
                     "QMenu::item:checked { color: #FF8C00; }" 
                 ); 
-                struct ViewDef { QString label; int stackIdx; int size; }; 
-                for (auto& v : QList<ViewDef>{ 
-                    {"超大图标", 1, 192}, {"大图标", 1, 128}, {"中图标", 1, 64}, 
-                    {}, // separator 
-                    {"列表",    0, 0} 
-                }) { 
-                    if (v.label.isEmpty()) { menu->addSeparator(); continue; } 
-                    QAction* act = menu->addAction(v.label); 
-                    act->setCheckable(true); 
-                    act->setChecked(m_viewStack->currentIndex() == v.stackIdx && 
-                                    (v.stackIdx == 0 || m_config.iconSize == v.size)); 
-                    connect(act, &QAction::triggered, this, [this, v]() { 
-                        m_viewStack->setCurrentIndex(v.stackIdx); 
-                        m_config.viewMode = v.stackIdx; 
-                        if (v.stackIdx == 1) { 
-                            m_config.iconSize = v.size; 
-                            m_iconView->setTargetRowHeight(v.size); 
-                            if (m_sizeSlider) m_sizeSlider->setValue(v.size); 
-                        } 
-                        if (v.stackIdx == 0) 
-                            m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
-                        m_config.save(); 
-                    }); 
-                } 
 
-                menu->addSeparator();
-
-                // 2026-07-xx 新增排版模式自由切换 (标记 1)
+                // 自适应模式（对应用户原话：“自适应”）
                 QAction* jModeAct = menu->addAction("自适应");
                 jModeAct->setCheckable(true);
-                jModeAct->setChecked(m_config.layoutMode == 0);
-                jModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+                jModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0);
 
+                // 网格模式（对应用户原话：“网格”）
                 QAction* gModeAct = menu->addAction("网格");
                 gModeAct->setCheckable(true);
-                gModeAct->setChecked(m_config.layoutMode == 1);
-                gModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+                gModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1);
 
-                QActionGroup* layoutGrp = new QActionGroup(menu);
-                layoutGrp->addAction(jModeAct);
-                layoutGrp->addAction(gModeAct);
+                // 列表模式（对应用户原话：“列表”）
+                QAction* listModeAct = menu->addAction("列表");
+                listModeAct->setCheckable(true);
+                listModeAct->setChecked(m_config.viewMode == 0);
 
+                // 通过排他性的 Action 组进行物理互斥
+                QActionGroup* modeGrp = new QActionGroup(menu);
+                modeGrp->addAction(jModeAct);
+                modeGrp->addAction(gModeAct);
+                modeGrp->addAction(listModeAct);
+
+                // 各项单选槽连接，使选择彻底正交
                 connect(jModeAct, &QAction::triggered, this, [this]() {
+                    m_viewStack->setCurrentIndex(1);
+                    m_config.viewMode = 1;
                     m_config.layoutMode = 0;
                     m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
                     m_tableModel->updateResults();
                     m_config.save();
                 });
                 connect(gModeAct, &QAction::triggered, this, [this]() {
+                    m_viewStack->setCurrentIndex(1);
+                    m_config.viewMode = 1;
                     m_config.layoutMode = 1;
                     m_iconView->setLayoutMode(JustifiedView::GridMode);
+                    m_tableModel->updateResults();
+                    m_config.save();
+                });
+                connect(listModeAct, &QAction::triggered, this, [this]() {
+                    m_viewStack->setCurrentIndex(0);
+                    m_config.viewMode = 0;
+                    m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
                     m_tableModel->updateResults();
                     m_config.save();
                 });
@@ -1702,73 +1694,49 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
-    QActionGroup* viewGroup = new QActionGroup(this);
-    
-    auto addViewAction = [this, viewMenu, viewGroup](const QString& text, const QString& shortcut, int stackIdx, int iconSize) {
-        QAction* act = viewMenu->addAction(text);
-        act->setShortcut(QKeySequence(shortcut));
-        act->setCheckable(true);
-        viewGroup->addAction(act);
-        connect(act, &QAction::triggered, this, [this, stackIdx, iconSize]() {
-            m_viewStack->setCurrentIndex(stackIdx);
-            m_config.viewMode = stackIdx;
-            if (stackIdx == 1) { // 图标模式
-                m_iconView->setTargetRowHeight(iconSize);
-                m_config.iconSize = iconSize;
-            }
-            if (stackIdx == 0) { // 详情模式
-                m_resultView->verticalHeader()->setDefaultSectionSize(32); // 详情模式固定为标准高度
-            } else {
-                m_resultView->verticalHeader()->setDefaultSectionSize(iconSize + 10);
-            }
-            m_config.save();
-        });
-        return act;
-    };
+    QActionGroup* rcModeGrp = new QActionGroup(this);
 
-    QAction* xLargeAction = addViewAction("超大图标(X)", "Ctrl+Shift+1", 1, 192);
-    QAction* largeAction = addViewAction("大图标(L)", "Ctrl+Shift+2", 1, 128);
-    QAction* mediumAction = addViewAction("中图标(M)", "Ctrl+Shift+3", 1, 64);
-    
-    viewMenu->addSeparator();
-    
-    QAction* detailsAction = addViewAction("详情(D)", "Ctrl+Shift+6", 0, 0);
-    
-    // 同步当前视图状态
-    if (m_viewStack->currentIndex() == 0) detailsAction->setChecked(true);
-    else {
-        int currentSize = m_config.iconSize;
-        if (currentSize == 192) xLargeAction->setChecked(true);
-        else if (currentSize == 128) largeAction->setChecked(true);
-        else mediumAction->setChecked(true);
-    }
-
-    viewMenu->addSeparator();
-
-    // 2026-07-xx 按照用户要求：在右键视图菜单中补充对齐与网格切换逻辑 (标记 2)
-    QAction* rcJModeAct = viewMenu->addAction("两端对齐 (不等宽)");
+    // 自适应 (A)（对应用户原话：“自适应”）
+    QAction* rcJModeAct = viewMenu->addAction("自适应(A)");
+    rcJModeAct->setShortcut(QKeySequence("Ctrl+Shift+1"));
     rcJModeAct->setCheckable(true);
-    rcJModeAct->setChecked(m_config.layoutMode == 0);
-    rcJModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+    rcJModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0);
+    rcModeGrp->addAction(rcJModeAct);
 
-    QAction* rcGModeAct = viewMenu->addAction("网格排版 (等高宽)");
+    // 网格 (G)（对应用户原话：“网格”）
+    QAction* rcGModeAct = viewMenu->addAction("网格(G)");
+    rcGModeAct->setShortcut(QKeySequence("Ctrl+Shift+2"));
     rcGModeAct->setCheckable(true);
-    rcGModeAct->setChecked(m_config.layoutMode == 1);
-    rcGModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+    rcGModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1);
+    rcModeGrp->addAction(rcGModeAct);
 
-    QActionGroup* rcLayoutGrp = new QActionGroup(viewMenu);
-    rcLayoutGrp->addAction(rcJModeAct);
-    rcLayoutGrp->addAction(rcGModeAct);
+    // 列表 (L)（对应用户原话：“列表”）
+    QAction* rcListModeAct = viewMenu->addAction("列表(L)");
+    rcListModeAct->setShortcut(QKeySequence("Ctrl+Shift+3"));
+    rcListModeAct->setCheckable(true);
+    rcListModeAct->setChecked(m_config.viewMode == 0);
+    rcModeGrp->addAction(rcListModeAct);
 
     connect(rcJModeAct, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
         m_config.layoutMode = 0;
         m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
         m_tableModel->updateResults();
         m_config.save();
     });
     connect(rcGModeAct, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
         m_config.layoutMode = 1;
         m_iconView->setLayoutMode(JustifiedView::GridMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+    connect(rcListModeAct, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(0);
+        m_config.viewMode = 0;
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
         m_tableModel->updateResults();
         m_config.save();
     });
