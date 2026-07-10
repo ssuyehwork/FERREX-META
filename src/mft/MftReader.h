@@ -91,6 +91,14 @@ public:
     int activeCount() const;           // 新增：仅返回当前处于激活（勾选）状态的盘符的文件总数
     QString getFullPath(int index) const;
     void requestMetadata(int index);
+
+    // 获取父节点在 SoA 中的下标，加速路径回溯 [1]
+    inline int getParentIndex(int index) const {
+        QReadLocker lock(&m_dataLock);
+        if (index < 0 || index >= (int)m_parent_indices.size()) return -1;
+        uint32_t pIdx = m_parent_indices[index];
+        return (pIdx == 0xFFFFFFFF) ? -1 : static_cast<int>(pIdx);
+    }
     bool isMetadataFetched(int index) const;
 
     // 辅助工具：生成复合主键
