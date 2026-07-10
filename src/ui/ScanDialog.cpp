@@ -746,12 +746,12 @@ ScanDialog::ScanDialog(QWidget* parent)
                 menu->addSeparator();
 
                 // 2026-07-xx 新增排版模式自由切换 (标记 1)
-                QAction* jModeAct = menu->addAction("两端对齐 (不等宽)");
+                QAction* jModeAct = menu->addAction("自适应");
                 jModeAct->setCheckable(true);
                 jModeAct->setChecked(m_config.layoutMode == 0);
                 jModeAct->setEnabled(m_viewStack->currentIndex() == 1);
 
-                QAction* gModeAct = menu->addAction("网格排版 (等高宽)");
+                QAction* gModeAct = menu->addAction("网格");
                 gModeAct->setCheckable(true);
                 gModeAct->setChecked(m_config.layoutMode == 1);
                 gModeAct->setEnabled(m_viewStack->currentIndex() == 1);
