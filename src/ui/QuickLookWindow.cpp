@@ -63,8 +63,7 @@ QuickLookGraphicsView::QuickLookGraphicsView(QWidget* parent) : QGraphicsView(pa
 void QuickLookGraphicsView::setPixmap(const QPixmap& pixmap) {
     m_pixmapItem->setPixmap(pixmap);
     m_scene->setSceneRect(m_pixmapItem->boundingRect());
-    setZoomOriginal();
-    centerOn(m_scene->sceneRect().center());
+    fitImage();
 }
 
 void QuickLookGraphicsView::clear() {
@@ -452,7 +451,7 @@ void QuickLookWindow::renderImage(const QString& path) {
             img.load(path);
         } else {
             // 非原生格式兜底
-            img = UiHelper::getShellThumbnail(path, 1024);
+            img = UiHelper::getShellThumbnail(path, 4096);
             if (img.isNull()) {
                 img.load(path);
             }
