@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QDebug>
+#include <QSharedMemory>
 #include <QMutex>
 #include <QFile>
 #include <QTextStream>
@@ -106,6 +107,22 @@ int main(int argc, char *argv[]) {
     // 设置高 DPI 支持：Qt 6 默认行为，此处显式设置 PassThrough 以防旧设备缩放模糊
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
     QApplication a(argc, argv);
+
+    // 单例运行检测
+    QSharedMemory sharedMem("FERREX_SINGLE_INSTANCE_SHARED_MEMORY_KEY_UNIQUE_2026");
+    if (sharedMem.attach()) {
+        qWarning() << "[SINGLE_INSTANCE] 检测到已有实例正在运行，当前进程准备安全退出。";
+        return 0; // 重复启动，安全静默退出
+    }
+
+    if (!sharedMem.create(1)) {
+        qWarning() << "[SINGLE_INSTANCE] 共享内存块创建失败，错误代码:" << sharedMem.errorString();
+        // 在极少数由于前序系统崩溃导致共享内存残留的情况下，尝试重新 attach 并处理
+        if (sharedMem.error() == QSharedMemory::AlreadyExists) {
+            qWarning() << "[SINGLE_INSTANCE] 共享内存已存在。重复运行，当前进程准备安全退出。";
+            return 0;
+        }
+    }
 
     a.setQuitOnLastWindowClosed(false);
     
