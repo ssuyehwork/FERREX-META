@@ -24,37 +24,46 @@ void ThumbnailDelegate::setTypeRole(int role) { m_typeRole = role; }
 void ThumbnailDelegate::setIsEmptyRole(int role) { m_isEmptyRole = role; }
 void ThumbnailDelegate::setColorRole(int role) { m_colorRole = role; }
 
-ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptionViewItem& option) const {
+ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptionViewItem& option, bool isGrid) const {
     Metrics m;
-    const int textHeight = 36;
-    const int gap = 6; // 卡片与文件名的紧凑间隙
-
     m.ratingH = 0; // 彻底停用星级占位
-
-    // 底部预留高度调整：文件名高度 + 间距 + 底部内边距补偿(3px)
-    m.cardRect = option.rect.adjusted(3, 3, -3, -(textHeight + gap + 3));
-    
     m.ratingY = 0;
-
-    // 文件名框紧贴卡片底部下方 gap 像素的位置
-    m.textRect = QRect(option.rect.left() + 3,
-                       m.cardRect.bottom() + gap,
-                       option.rect.width() - 6,
-                       textHeight);
-    
-    // 初始化无用变量，防止其他潜在编译未定义警告
     m.starSize = 0;
     m.starSpacing = 0;
     m.banRect = QRect();
     m.starsStartX = 0;
 
+    if (isGrid) {
+        const int textHeight = 36;
+        const int gap = 6; // 卡片与文件名的紧凑间隙
+        // 底部预留高度调整：文件名高度 + 间距 + 底部内边距补偿(3px)
+        m.cardRect = option.rect.adjusted(3, 3, -3, -(textHeight + gap + 3));
+        // 文件名框紧贴卡片底部下方 gap 像素的位置
+        m.textRect = QRect(option.rect.left() + 3,
+                           m.cardRect.bottom() + gap,
+                           option.rect.width() - 6,
+                           textHeight);
+    } else {
+        // 详情列表模式下，高度等比自适应行高
+        int side = option.rect.height() - 4; // 上下留出 2px 边距，保证精致高雅的 4px 圆角比例
+        m.cardRect = QRect(option.rect.left() + 4,
+                           option.rect.top() + 2,
+                           side,
+                           side);
+        // 视觉上缩略图为单独一列，名称仍然是靠左对齐的。右侧预留 8px 作为隔离间距，占满剩余的右侧宽度
+        m.textRect = QRect(m.cardRect.right() + 8,
+                           option.rect.top(),
+                           option.rect.width() - (m.cardRect.right() - option.rect.left() + 12),
+                           option.rect.height());
+    }
+
     return m;
 }
 
 void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
-    Metrics m = calculateMetrics(option);
-    bool isSelected = (option.state & QStyle::State_Selected);
     bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
+    Metrics m = calculateMetrics(option, isGrid);
+    bool isSelected = (option.state & QStyle::State_Selected);
 
     int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持/未就绪, 1=有可用缩略图物理资产
     QVariant decoData = index.data(Qt::DecorationRole);
@@ -87,8 +96,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     // 关键路径重构：缩略图优先（直接以 100% 完全不透明度绘制）
     if (hasValidThumb) {
         // 缩略图平滑拉伸并充满卡片（100% Cover/Contain）
-        QPixmap scaled = thumb.scaled(m.cardRect.size(), 
-                                      isGrid ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding, 
+        QPixmap scaled = thumb.scaled(m.cardRect.size(),
+                                      isGrid ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding,
                                       Qt::SmoothTransformation);
         int x = m.cardRect.center().x() - scaled.width() / 2;
         int y = m.cardRect.center().y() - scaled.height() / 2;
@@ -100,13 +109,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
-            
+
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,
                            iconSize, iconSize);
             icon.paint(painter, iconRect);
-            
+
             painter->setOpacity(1.0);
         }
     }
@@ -215,46 +224,50 @@ QWidget* ThumbnailDelegate::createEditor(QWidget* parent, const QStyleOptionView
 void ThumbnailDelegate::updateEditorGeometry(QWidget* editor,
                                               const QStyleOptionViewItem& option,
                                               const QModelIndex& /*index*/) const {
-    Metrics m = calculateMetrics(option);
-    // 重命名编辑框位置微调，完美契合没有星级后的新 textRect 布局 [1]
-    editor->setGeometry(m.textRect.adjusted(1, 5, -1, -5));
+    bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
+    Metrics m = calculateMetrics(option, isGrid);
+    if (isGrid) {
+        editor->setGeometry(m.textRect.adjusted(1, 5, -1, -5));
+    } else {
+        editor->setGeometry(m.textRect.adjusted(0, 2, -4, -2));
+    }
 }
 
 void ThumbnailDelegate::setEditorData(QWidget* editor, const QModelIndex& index) const {
     QString value = index.model()->data(index, Qt::EditRole).toString();
-    QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor); 
+    QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor);
     if (lineEdit) {
-        lineEdit->setText(value); 
-        int lastDot = value.lastIndexOf('.'); 
-        if (lastDot > 0) { 
-            lineEdit->setSelection(0, lastDot); 
-        } else { 
-            lineEdit->selectAll(); 
+        lineEdit->setText(value);
+        int lastDot = value.lastIndexOf('.');
+        if (lastDot > 0) {
+            lineEdit->setSelection(0, lastDot);
+        } else {
+            lineEdit->selectAll();
         }
     }
 }
 
 bool ThumbnailDelegate::eventFilter(QObject* obj, QEvent* event) {
     if (event->type() == QEvent::KeyPress) {
-        QKeyEvent* keyEvent = reinterpret_cast<QKeyEvent*>(event); 
-        QLineEdit* editor = qobject_cast<QLineEdit*>(obj); 
-        if (editor) { 
-            switch (keyEvent->key()) { 
-                case Qt::Key_Left: 
-                case Qt::Key_Right: 
-                case Qt::Key_Up: 
-                case Qt::Key_Down: 
-                case Qt::Key_Home: 
-                case Qt::Key_End: 
-                    keyEvent->accept(); 
-                    return false; 
-                default: 
-                    break; 
-            } 
-        } 
-    } 
-    return QStyledItemDelegate::eventFilter(obj, event); 
-} 
+        QKeyEvent* keyEvent = reinterpret_cast<QKeyEvent*>(event);
+        QLineEdit* editor = qobject_cast<QLineEdit*>(obj);
+        if (editor) {
+            switch (keyEvent->key()) {
+                case Qt::Key_Left:
+                case Qt::Key_Right:
+                case Qt::Key_Up:
+                case Qt::Key_Down:
+                case Qt::Key_Home:
+                case Qt::Key_End:
+                    keyEvent->accept();
+                    return false;
+                default:
+                    break;
+            }
+        }
+    }
+    return QStyledItemDelegate::eventFilter(obj, event);
+}
 
 bool ThumbnailDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) {
     // 2026-07-xx 重构：星级已不再使用，不拦截任何鼠标按下事件修改星级，直接走基类逻辑 [1]

@@ -52,7 +52,7 @@ private:
                          starSize, starSize);
         }
     };
-    Metrics calculateMetrics(const QStyleOptionViewItem& option) const;
+    Metrics calculateMetrics(const QStyleOptionViewItem& option, bool isGrid) const;
 };
 
 } // namespace FERREX
