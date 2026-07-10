@@ -135,18 +135,42 @@ public:
 
         // 5. 绘制右侧文字 (文件名)
         QString name = index.data(Qt::DisplayRole).toString();
-        // 原项目设定：第0列强制显示为蓝色（未选中时）
+        // 原项目设定：第0列选中的项为白色，未选中的项为蓝色 [1]
         QColor textColor = isSelected ? QColor("#FFFFFF") : QColor("#3498db");
 
         painter->setPen(textColor);
         painter->setFont(option.font);
 
-        // 文字区域左边线对齐到：正方形右边线 + 10px 间距
+        // --- 物理限制算法：至多显示两行并根据行高自适应折行 ---
+        int lineHeight = option.fontMetrics.height(); // 获取当前单行高度 [1]
+        int maxTextHeight = lineHeight * 2;          // 限制文字绘制区域最高为双倍行高 [1]
+
+        // 精确对齐计算：使 2 行高的文字区域在整行内部保持垂直居中 [1]
+        int textTop = option.rect.top() + (option.rect.height() - maxTextHeight) / 2;
+        if (textTop < option.rect.top()) textTop = option.rect.top(); // 越界防护
+
         QRect textRect = option.rect;
         textRect.setLeft(squareRect.right() + 10);
+        textRect.setTop(textTop);
+        textRect.setHeight(maxTextHeight);
 
-        QString elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, textRect.width() - 10);
-        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedText);
+        // 临界高度判定：如果整行高度较小（例如默认的 32px 或 40px），双倍高度会导致文字被上下截断 [1]
+        // 因此若行高不足以容纳 2.5 行文字，强制退化为纯单行缩略模式 [1]
+        bool isSingleLineMode = (option.rect.height() < lineHeight * 2.5);
+
+        QString elidedText;
+        int flags = Qt::AlignLeft | Qt::AlignVCenter;
+
+        if (isSingleLineMode) {
+            // 单行模式：仅在 1 倍宽度内缩略，不启用折行 [1]
+            elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, textRect.width() - 10);
+        } else {
+            // 双行模式：允许在 2 倍宽度内缩略，并启用 TextWordWrap 自动换行 [1]
+            elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, (textRect.width() - 10) * 2);
+            flags |= Qt::TextWordWrap;
+        }
+
+        painter->drawText(textRect, flags, elidedText);
 
         painter->restore();
     }
