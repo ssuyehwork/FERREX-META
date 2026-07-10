@@ -77,6 +77,80 @@
 
 namespace FERREX {
 
+class ListThumbnailDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
+        // 1. 绘制高亮背景与悬停背景
+        bool isSelected = (option.state & QStyle::State_Selected);
+        if (isSelected) {
+            painter->fillRect(option.rect, QColor("#094771")); // 使用项目标准高亮蓝
+        } else if (option.state & QStyle::State_MouseOver) {
+            painter->fillRect(option.rect, QColor("#2A2A2A")); // 悬停深灰
+        }
+
+        // 2. 计算正方形几何体 (上下预留 3px 的 padding)
+        int padding = 3;
+        int side = option.rect.height() - (padding * 2);
+        if (side <= 0) side = 16; // 兜底保护
+
+        // 卡片正方形左边界留出 6px 的视觉间距
+        QRect squareRect(option.rect.left() + 6, option.rect.top() + padding, side, side);
+
+        // 3. 绘制正方形背景容器（圆角 4px）
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor("#2d2d2d"));
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(squareRect, 4, 4);
+        painter->drawPath(cardPath);
+
+        // 4. 获取并渲染缩略图或默认图标
+        QVariant decoData = index.data(Qt::DecorationRole);
+
+        if (decoData.canConvert<QPixmap>()) {
+            QPixmap thumb = decoData.value<QPixmap>();
+            if (!thumb.isNull()) {
+                // 强制使用 KeepAspectRatio (Contain 模式) 不失真地自适应填充正方形容器
+                QPixmap scaled = thumb.scaled(squareRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                int x = squareRect.center().x() - scaled.width() / 2;
+                int y = squareRect.center().y() - scaled.height() / 2;
+                painter->drawPixmap(x, y, scaled);
+            }
+        } else {
+            QIcon icon = qvariant_cast<QIcon>(decoData);
+            if (!icon.isNull()) {
+                int iconSize = side * 0.6; // 默认图标占正方形容器的 60%
+                QRect iconRect(squareRect.center().x() - iconSize / 2,
+                               squareRect.center().y() - iconSize / 2,
+                               iconSize, iconSize);
+                icon.paint(painter, iconRect);
+            }
+        }
+
+        // 5. 绘制右侧文字 (文件名)
+        QString name = index.data(Qt::DisplayRole).toString();
+        // 原项目设定：第0列强制显示为蓝色（未选中时）
+        QColor textColor = isSelected ? QColor("#FFFFFF") : QColor("#3498db");
+
+        painter->setPen(textColor);
+        painter->setFont(option.font);
+
+        // 文字区域左边线对齐到：正方形右边线 + 10px 间距
+        QRect textRect = option.rect;
+        textRect.setLeft(squareRect.right() + 10);
+
+        QString elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, textRect.width() - 10);
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedText);
+
+        painter->restore();
+    }
+};
+
 // --- ScanConfig Implementation ---
 
 void ScanConfig::load() {
@@ -349,7 +423,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 if (!m_requestedThumbs.contains(key)) {
                     m_requestedThumbs.insert(key);
                     ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                    int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                    int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
                     m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                     if (!m_thumbTimer->isActive()) m_thumbTimer->start();
                 }
@@ -367,7 +441,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             if (!m_requestedThumbs.contains(key)) {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                int thumbSize = (dlg && dlg->m_viewStack->currentIndex() == 0) ? 24 : (dlg ? dlg->m_config.iconSize : 64);
+                int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
                 
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
@@ -718,60 +792,52 @@ ScanDialog::ScanDialog(QWidget* parent)
                     "QMenu::item:selected { background: #2A2A2A; color: #FFF; }" 
                     "QMenu::item:checked { color: #FF8C00; }" 
                 ); 
-                struct ViewDef { QString label; int stackIdx; int size; }; 
-                for (auto& v : QList<ViewDef>{ 
-                    {"超大图标", 1, 192}, {"大图标", 1, 128}, {"中图标", 1, 64}, 
-                    {}, // separator 
-                    {"列表",    0, 0} 
-                }) { 
-                    if (v.label.isEmpty()) { menu->addSeparator(); continue; } 
-                    QAction* act = menu->addAction(v.label); 
-                    act->setCheckable(true); 
-                    act->setChecked(m_viewStack->currentIndex() == v.stackIdx && 
-                                    (v.stackIdx == 0 || m_config.iconSize == v.size)); 
-                    connect(act, &QAction::triggered, this, [this, v]() { 
-                        m_viewStack->setCurrentIndex(v.stackIdx); 
-                        m_config.viewMode = v.stackIdx; 
-                        if (v.stackIdx == 1) { 
-                            m_config.iconSize = v.size; 
-                            m_iconView->setTargetRowHeight(v.size); 
-                            if (m_sizeSlider) m_sizeSlider->setValue(v.size); 
-                        } 
-                        if (v.stackIdx == 0) 
-                            m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
-                        m_config.save(); 
-                    }); 
-                } 
 
-                menu->addSeparator();
+                // 自适应模式（对应用户原话：“自适应”） 
+                QAction* jModeAct = menu->addAction("自适应"); 
+                jModeAct->setCheckable(true); 
+                jModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0); 
 
-                // 2026-07-xx 新增排版模式自由切换 (标记 1)
-                QAction* jModeAct = menu->addAction("自适应");
-                jModeAct->setCheckable(true);
-                jModeAct->setChecked(m_config.layoutMode == 0);
-                jModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+                // 网格模式（对应用户原话：“网格”） 
+                QAction* gModeAct = menu->addAction("网格"); 
+                gModeAct->setCheckable(true); 
+                gModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1); 
 
-                QAction* gModeAct = menu->addAction("网格");
-                gModeAct->setCheckable(true);
-                gModeAct->setChecked(m_config.layoutMode == 1);
-                gModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+                // 列表模式（对应用户原话：“列表”） 
+                QAction* listModeAct = menu->addAction("列表"); 
+                listModeAct->setCheckable(true); 
+                listModeAct->setChecked(m_config.viewMode == 0); 
 
-                QActionGroup* layoutGrp = new QActionGroup(menu);
-                layoutGrp->addAction(jModeAct);
-                layoutGrp->addAction(gModeAct);
+                // 通过排他性的 Action 组进行物理互斥 
+                QActionGroup* modeGrp = new QActionGroup(menu); 
+                modeGrp->addAction(jModeAct); 
+                modeGrp->addAction(gModeAct); 
+                modeGrp->addAction(listModeAct); 
 
-                connect(jModeAct, &QAction::triggered, this, [this]() {
-                    m_config.layoutMode = 0;
-                    m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
-                    m_tableModel->updateResults();
-                    m_config.save();
-                });
-                connect(gModeAct, &QAction::triggered, this, [this]() {
-                    m_config.layoutMode = 1;
-                    m_iconView->setLayoutMode(JustifiedView::GridMode);
-                    m_tableModel->updateResults();
-                    m_config.save();
-                });
+                // 各项单选槽连接，使选择彻底正交 
+                connect(jModeAct, &QAction::triggered, this, [this]() { 
+                    m_viewStack->setCurrentIndex(1); 
+                    m_config.viewMode = 1; 
+                    m_config.layoutMode = 0; 
+                    m_iconView->setLayoutMode(JustifiedView::JustifiedMode); 
+                    m_tableModel->updateResults(); 
+                    m_config.save(); 
+                }); 
+                connect(gModeAct, &QAction::triggered, this, [this]() { 
+                    m_viewStack->setCurrentIndex(1); 
+                    m_config.viewMode = 1; 
+                    m_config.layoutMode = 1; 
+                    m_iconView->setLayoutMode(JustifiedView::GridMode); 
+                    m_tableModel->updateResults(); 
+                    m_config.save(); 
+                }); 
+                connect(listModeAct, &QAction::triggered, this, [this]() { 
+                    m_viewStack->setCurrentIndex(0); 
+                    m_config.viewMode = 0; 
+                    m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
+                    m_tableModel->updateResults(); 
+                    m_config.save(); 
+                }); 
 
                 menu->exec(viewBtn->mapToGlobal(QPoint(0, viewBtn->height() + 2))); 
             }); 
@@ -972,7 +1038,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
-        m_resultView->verticalHeader()->setDefaultSectionSize(32);
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); // 启动时读取持久化尺寸
     } else {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
     }
@@ -1198,6 +1264,7 @@ void ScanDialog::setupUi() {
 
     m_resultView = new QTableView();
     m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
+    m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
     m_controller = new ScanController(this);
     m_tableModel = new ScanTableModel(m_controller, this);
     m_resultView->setModel(m_tableModel);
@@ -1702,76 +1769,52 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
-    QActionGroup* viewGroup = new QActionGroup(this);
-    
-    auto addViewAction = [this, viewMenu, viewGroup](const QString& text, const QString& shortcut, int stackIdx, int iconSize) {
-        QAction* act = viewMenu->addAction(text);
-        act->setShortcut(QKeySequence(shortcut));
-        act->setCheckable(true);
-        viewGroup->addAction(act);
-        connect(act, &QAction::triggered, this, [this, stackIdx, iconSize]() {
-            m_viewStack->setCurrentIndex(stackIdx);
-            m_config.viewMode = stackIdx;
-            if (stackIdx == 1) { // 图标模式
-                m_iconView->setTargetRowHeight(iconSize);
-                m_config.iconSize = iconSize;
-            }
-            if (stackIdx == 0) { // 详情模式
-                m_resultView->verticalHeader()->setDefaultSectionSize(32); // 详情模式固定为标准高度
-            } else {
-                m_resultView->verticalHeader()->setDefaultSectionSize(iconSize + 10);
-            }
-            m_config.save();
-        });
-        return act;
-    };
+    QActionGroup* rcModeGrp = new QActionGroup(this);
 
-    QAction* xLargeAction = addViewAction("超大图标(X)", "Ctrl+Shift+1", 1, 192);
-    QAction* largeAction = addViewAction("大图标(L)", "Ctrl+Shift+2", 1, 128);
-    QAction* mediumAction = addViewAction("中图标(M)", "Ctrl+Shift+3", 1, 64);
-    
-    viewMenu->addSeparator();
-    
-    QAction* detailsAction = addViewAction("详情(D)", "Ctrl+Shift+6", 0, 0);
-    
-    // 同步当前视图状态
-    if (m_viewStack->currentIndex() == 0) detailsAction->setChecked(true);
-    else {
-        int currentSize = m_config.iconSize;
-        if (currentSize == 192) xLargeAction->setChecked(true);
-        else if (currentSize == 128) largeAction->setChecked(true);
-        else mediumAction->setChecked(true);
-    }
+    // 自适应 (A)（对应用户原话：“自适应”） 
+    QAction* rcJModeAct = viewMenu->addAction("自适应(A)"); 
+    rcJModeAct->setShortcut(QKeySequence("Ctrl+Shift+1")); 
+    rcJModeAct->setCheckable(true); 
+    rcJModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0); 
+    rcModeGrp->addAction(rcJModeAct); 
 
-    viewMenu->addSeparator();
+    // 网格 (G)（对应用户原话：“网格”） 
+    QAction* rcGModeAct = viewMenu->addAction("网格(G)"); 
+    rcGModeAct->setShortcut(QKeySequence("Ctrl+Shift+2")); 
+    rcGModeAct->setCheckable(true); 
+    rcGModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1); 
+    rcModeGrp->addAction(rcGModeAct); 
 
-    // 2026-07-xx 按照用户要求：在右键视图菜单中补充对齐与网格切换逻辑 (标记 2)
-    QAction* rcJModeAct = viewMenu->addAction("两端对齐 (不等宽)");
-    rcJModeAct->setCheckable(true);
-    rcJModeAct->setChecked(m_config.layoutMode == 0);
-    rcJModeAct->setEnabled(m_viewStack->currentIndex() == 1);
+    // 列表 (L)（对应用户原话：“列表”） 
+    QAction* rcListModeAct = viewMenu->addAction("列表(L)"); 
+    rcListModeAct->setShortcut(QKeySequence("Ctrl+Shift+3")); 
+    rcListModeAct->setCheckable(true); 
+    rcListModeAct->setChecked(m_config.viewMode == 0); 
+    rcModeGrp->addAction(rcListModeAct); 
 
-    QAction* rcGModeAct = viewMenu->addAction("网格排版 (等高宽)");
-    rcGModeAct->setCheckable(true);
-    rcGModeAct->setChecked(m_config.layoutMode == 1);
-    rcGModeAct->setEnabled(m_viewStack->currentIndex() == 1);
-
-    QActionGroup* rcLayoutGrp = new QActionGroup(viewMenu);
-    rcLayoutGrp->addAction(rcJModeAct);
-    rcLayoutGrp->addAction(rcGModeAct);
-
-    connect(rcJModeAct, &QAction::triggered, this, [this]() {
-        m_config.layoutMode = 0;
-        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
-        m_tableModel->updateResults();
-        m_config.save();
-    });
-    connect(rcGModeAct, &QAction::triggered, this, [this]() {
-        m_config.layoutMode = 1;
-        m_iconView->setLayoutMode(JustifiedView::GridMode);
-        m_tableModel->updateResults();
-        m_config.save();
-    });
+    connect(rcJModeAct, &QAction::triggered, this, [this]() { 
+        m_viewStack->setCurrentIndex(1); 
+        m_config.viewMode = 1; 
+        m_config.layoutMode = 0; 
+        m_iconView->setLayoutMode(JustifiedView::JustifiedMode); 
+        m_tableModel->updateResults(); 
+        m_config.save(); 
+    }); 
+    connect(rcGModeAct, &QAction::triggered, this, [this]() { 
+        m_viewStack->setCurrentIndex(1); 
+        m_config.viewMode = 1; 
+        m_config.layoutMode = 1; 
+        m_iconView->setLayoutMode(JustifiedView::GridMode); 
+        m_tableModel->updateResults(); 
+        m_config.save(); 
+    }); 
+    connect(rcListModeAct, &QAction::triggered, this, [this]() { 
+        m_viewStack->setCurrentIndex(0); 
+        m_config.viewMode = 0; 
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
+        m_tableModel->updateResults(); 
+        m_config.save(); 
+    }); 
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};
