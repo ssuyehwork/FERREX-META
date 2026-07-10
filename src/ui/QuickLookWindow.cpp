@@ -213,12 +213,14 @@ void QuickLookWindow::setupUi() {
     )");
 
     auto* layout = new QVBoxLayout(m_container);
-    layout->setContentsMargins(15, 15, 15, 15);
-    layout->setSpacing(10);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
-    m_titleLabel = new QLabel();
+    m_titleLabel = new QLabel(m_container);
     m_titleLabel->setObjectName("QLTitle");
-    layout->addWidget(m_titleLabel);
+    m_titleLabel->hide();
+    // 2026-07-xx 按用户要求：标题栏不再占用布局空间，仅保留对象供其他函数调用
+    // setText()，避免调用处出现空指针；实际不会显示在界面上。
 
     // 图片渲染控件 (QGraphicsView 替代原本的 QLabel)
     m_graphicsView = new QuickLookGraphicsView();
@@ -303,9 +305,11 @@ void QuickLookWindow::setupUi() {
     layout->addWidget(m_mediaContainer);
 
     // 状态与信息标签
-    m_infoLabel = new QLabel();
+    m_infoLabel = new QLabel(m_container);
     m_infoLabel->setStyleSheet("color: #777;");
-    layout->addWidget(m_infoLabel);
+    m_infoLabel->hide();
+    // 2026-07-xx 按用户要求：信息栏不再占用布局空间，仅保留对象供其他函数调用
+    // setText()，避免调用处出现空指针；实际不会显示在界面上。
 
     rootLayout->addWidget(m_container);
 
