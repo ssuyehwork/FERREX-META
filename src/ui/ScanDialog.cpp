@@ -37,6 +37,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QClipboard>
+#include <QShortcut>
 #include <QApplication>
 #include <QProcess>
 #include <QMessageBox>
@@ -148,6 +149,54 @@ public:
         painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedText);
 
         painter->restore();
+    }
+
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
+        if (editor) {
+            editor->setStyleSheet(
+                "background-color: #2D2D2D; color: white; "
+                "selection-background-color: #3498db; "
+                "border: 1px solid #3498db; border-radius: 4px; padding: 0 4px;"
+            );
+        }
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
+        QString value = index.model()->data(index, Qt::EditRole).toString();
+        QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor); 
+        if (lineEdit) {
+            lineEdit->setText(value); 
+            int lastDot = value.lastIndexOf('.'); 
+            if (lastDot > 0) { 
+                lineEdit->setSelection(0, lastDot); 
+            } else { 
+                lineEdit->selectAll(); 
+            }
+        }
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option, const QModelIndex& /*index*/) const override {
+        int padding = 3;
+        int side = option.rect.height() - (padding * 2);
+        if (side <= 0) side = 16;
+
+        // 1. 精确计算输入框的左侧水平起点 (左边距 6px + 缩略图边长 + 间距 10px) [1]
+        int textLeft = option.rect.left() + 6 + side + 10;
+        
+        // 2. 物理锁定编辑框高度为 28 像素，杜绝其随滚轮无限膨胀 [1]
+        const int targetEditorHeight = 28;
+        
+        // 3. 数学垂直居中对齐计算： y_offset = (当前行高 - 目标编辑框高度) / 2 [1]
+        int yOffset = (option.rect.height() - targetEditorHeight) / 2;
+        int editorTop = option.rect.top() + yOffset;
+
+        // 4. 构建完美垂直居中的 QRect 区域，右侧保留 10 像素安全边距
+        int editorWidth = option.rect.width() - (textLeft - option.rect.left()) - 10;
+        QRect editorRect(textLeft, editorTop, editorWidth, targetEditorHeight);
+
+        editor->setGeometry(editorRect);
     }
 };
 
@@ -1116,6 +1165,61 @@ ScanDialog::ScanDialog(QWidget* parent)
             });
         });
     });
+
+    // 1. 初始化持久 Action 并绑定核心业务槽函数
+    m_actJMode = new QAction("自适应(A)", this);
+    m_actJMode->setShortcut(QKeySequence("Ctrl+Shift+1")); // 仅用于在右键菜单上渲染展示快捷键文本 [1]
+    m_actJMode->setCheckable(true);
+    connect(m_actJMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
+        m_config.layoutMode = 0;
+        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+
+    m_actGMode = new QAction("网格(G)", this);
+    m_actGMode->setShortcut(QKeySequence("Ctrl+Shift+2")); // 仅用于菜单文本渲染 [1]
+    m_actGMode->setCheckable(true);
+    connect(m_actGMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(1);
+        m_config.viewMode = 1;
+        m_config.layoutMode = 1;
+        m_iconView->setLayoutMode(JustifiedView::GridMode);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+
+    m_actListMode = new QAction("列表(L)", this);
+    m_actListMode->setShortcut(QKeySequence("Ctrl+Shift+3")); // 仅用于菜单文本渲染 [1]
+    m_actListMode->setCheckable(true);
+    connect(m_actListMode, &QAction::triggered, this, [this]() {
+        m_viewStack->setCurrentIndex(0);
+        m_config.viewMode = 0;
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
+        m_tableModel->updateResults();
+        m_config.save();
+    });
+
+    // 2. 通过 QActionGroup 保持物理单选互斥
+    QActionGroup* modeGrp = new QActionGroup(this);
+    modeGrp->addAction(m_actJMode);
+    modeGrp->addAction(m_actGMode);
+    modeGrp->addAction(m_actListMode);
+
+    // 3. 【核心修复】：使用 QShortcut 进行顶层物理拦截，彻底杜绝子控件焦点吞噬快捷键的问题 [1]
+    QShortcut* shortcutJ = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_1), this);
+    shortcutJ->setContext(Qt::WindowShortcut); // 限制仅在当前窗口处于激活状态时生效 [1]
+    connect(shortcutJ, &QShortcut::activated, m_actJMode, &QAction::trigger); // 激活时直接向 Action 发送物理触发指令 [1]
+
+    QShortcut* shortcutG = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_2), this);
+    shortcutG->setContext(Qt::WindowShortcut);
+    connect(shortcutG, &QShortcut::activated, m_actGMode, &QAction::trigger);
+
+    QShortcut* shortcutList = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_3), this);
+    shortcutList->setContext(Qt::WindowShortcut);
+    connect(shortcutList, &QShortcut::activated, m_actListMode, &QAction::trigger);
 }
 
 ScanDialog::~ScanDialog() {
@@ -1769,52 +1873,18 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     // --- 2026-05-16 新增：视图、排序、刷新全局功能菜单 ---
     
     QMenu* viewMenu = menu.addMenu("视图(V)");
-    QActionGroup* rcModeGrp = new QActionGroup(this);
 
-    // 自适应 (A)（对应用户原话：“自适应”） 
-    QAction* rcJModeAct = viewMenu->addAction("自适应(A)"); 
-    rcJModeAct->setShortcut(QKeySequence("Ctrl+Shift+1")); 
-    rcJModeAct->setCheckable(true); 
-    rcJModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0); 
-    rcModeGrp->addAction(rcJModeAct); 
+    // 在菜单弹出前，根据当前真实配置刷新勾选状态 [1]
+    if (m_actJMode && m_actGMode && m_actListMode) {
+        m_actJMode->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 0);
+        m_actGMode->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1);
+        m_actListMode->setChecked(m_config.viewMode == 0);
 
-    // 网格 (G)（对应用户原话：“网格”） 
-    QAction* rcGModeAct = viewMenu->addAction("网格(G)"); 
-    rcGModeAct->setShortcut(QKeySequence("Ctrl+Shift+2")); 
-    rcGModeAct->setCheckable(true); 
-    rcGModeAct->setChecked(m_config.viewMode == 1 && m_config.layoutMode == 1); 
-    rcModeGrp->addAction(rcGModeAct); 
-
-    // 列表 (L)（对应用户原话：“列表”） 
-    QAction* rcListModeAct = viewMenu->addAction("列表(L)"); 
-    rcListModeAct->setShortcut(QKeySequence("Ctrl+Shift+3")); 
-    rcListModeAct->setCheckable(true); 
-    rcListModeAct->setChecked(m_config.viewMode == 0); 
-    rcModeGrp->addAction(rcListModeAct); 
-
-    connect(rcJModeAct, &QAction::triggered, this, [this]() { 
-        m_viewStack->setCurrentIndex(1); 
-        m_config.viewMode = 1; 
-        m_config.layoutMode = 0; 
-        m_iconView->setLayoutMode(JustifiedView::JustifiedMode); 
-        m_tableModel->updateResults(); 
-        m_config.save(); 
-    }); 
-    connect(rcGModeAct, &QAction::triggered, this, [this]() { 
-        m_viewStack->setCurrentIndex(1); 
-        m_config.viewMode = 1; 
-        m_config.layoutMode = 1; 
-        m_iconView->setLayoutMode(JustifiedView::GridMode); 
-        m_tableModel->updateResults(); 
-        m_config.save(); 
-    }); 
-    connect(rcListModeAct, &QAction::triggered, this, [this]() { 
-        m_viewStack->setCurrentIndex(0); 
-        m_config.viewMode = 0; 
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
-        m_tableModel->updateResults(); 
-        m_config.save(); 
-    }); 
+        // 直接将持久 Action 插入菜单中展现
+        viewMenu->addAction(m_actJMode);
+        viewMenu->addAction(m_actGMode);
+        viewMenu->addAction(m_actListMode);
+    }
     
     QMenu* sortMenu = menu.addMenu("排序(S)");
     QStringList sortOptions = {"名称", "路径", "大小", "修改日期"};

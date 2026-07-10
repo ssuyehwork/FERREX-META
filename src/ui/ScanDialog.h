@@ -211,6 +211,10 @@ private:
     std::unique_ptr<CacheManager> m_cacheManager;
     ScanConfig m_config;
 
+    QAction* m_actJMode = nullptr;
+    QAction* m_actGMode = nullptr;
+    QAction* m_actListMode = nullptr;
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 };
