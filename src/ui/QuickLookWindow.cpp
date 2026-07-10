@@ -451,7 +451,7 @@ void QuickLookWindow::renderImage(const QString& path) {
             img.load(path);
         } else {
             // 非原生格式兜底
-            img = UiHelper::getShellThumbnail(path, 1024);
+            img = UiHelper::getShellThumbnail(path, 4096);
             if (img.isNull()) {
                 img.load(path);
             }
@@ -474,6 +474,7 @@ void QuickLookWindow::renderImage(const QString& path) {
                     weakThis->m_infoLabel->setText(QString("%1x%2 | %3")
                         .arg(img.width()).arg(img.height()).arg(path));
                 }
+                pix.setDevicePixelRatio(weakThis->devicePixelRatioF());
                 weakThis->m_graphicsView->setPixmap(pix);
             } else {
                 weakThis->renderText(path); // 图片加载失败尝试文本模式
