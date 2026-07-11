@@ -263,26 +263,6 @@ class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
-    // 物理拦截原生的列表项 ToolTip 询问事件，转向 ToolTipOverlay (对应用户原话：“鼠标悬停在某个项目时显示的Tooltip仍然在使用原生的ToolTip ... 彻底替换成ToolTipOverlay”)
-    bool helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option, const QModelIndex& index) override {
-        if (!event || !view || !index.isValid()) {
-            return QStyledItemDelegate::helpEvent(event, view, option, index);
-        }
-
-        if (event->type() == QEvent::ToolTip) {
-            // 获取项目在 ToolTipRole 中由模型已经处理好的完整高清晰文本（包含路径、备注和标签等）
-            QString tipText = index.data(Qt::ToolTipRole).toString();
-            if (!tipText.isEmpty()) {
-                // 使用 timeout = 0（非自动关闭，跟随鼠标运动并在移出时被 hide 事件闭合）
-                ToolTipOverlay::instance()->showText(event->globalPos(), tipText, 0);
-            } else {
-                ToolTipOverlay::hideTip();
-            }
-            return true; // 极其重要：返回 true 阻止 Qt 底层触发原生的黑色小气泡弹窗
-        }
-        return QStyledItemDelegate::helpEvent(event, view, option, index);
-    }
-
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
@@ -1384,6 +1364,11 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_iconView->setLayoutMode(m_config.layoutMode == 1 ? JustifiedView::GridMode : JustifiedView::JustifiedMode);
     }
     
+    // 初始化 ToolTip 悬停延时定时器
+    m_itemToolTipTimer = new QTimer(this);
+    m_itemToolTipTimer->setSingleShot(true);
+    connect(m_itemToolTipTimer, &QTimer::timeout, this, &ScanDialog::onItemToolTipTimeout);
+
     // 恢复排序状态 (同时作用于模型和表头视觉)
     m_resultView->horizontalHeader()->setSortIndicator(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
     m_tableModel->sort(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
@@ -1745,6 +1730,8 @@ void ScanDialog::setupUi() {
     mainLayout->addWidget(searchContainer);
 
     m_resultView = new QTableView();
+    m_resultView->setMouseTracking(true);
+    m_resultView->viewport()->setMouseTracking(true);
     m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
     m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
     m_controller = new ScanController(this);
@@ -1782,6 +1769,7 @@ void ScanDialog::setupUi() {
     m_resultView->setColumnWidth(3, 140); 
     
     m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+    m_resultView->viewport()->installEventFilter(this);
     
     m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
@@ -1846,6 +1834,8 @@ void ScanDialog::setupUi() {
     });
 
     m_iconView = new JustifiedView();
+    m_iconView->setMouseTracking(true);
+    m_iconView->viewport()->setMouseTracking(true);
     m_iconView->setModel(m_tableModel);
     m_iconView->setItemDelegate(new ThumbnailDelegate(this));
     m_iconView->setTargetRowHeight(m_config.iconSize);
@@ -1856,6 +1846,7 @@ void ScanDialog::setupUi() {
     // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
     m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+    m_iconView->viewport()->installEventFilter(this);
 
     // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
@@ -2309,6 +2300,19 @@ void ScanDialog::onSelectionChanged() {
     updateStatus("就绪");
 }
 
+void ScanDialog::onItemToolTipTimeout() {
+    if (m_hoveredIndex.isValid()) {
+        QString tipText = m_tableModel->data(m_hoveredIndex, Qt::ToolTipRole).toString();
+        if (!tipText.isEmpty()) {
+            // 项目上显示的 ToolTip 悬停 2 秒后弹出，且鼠标移开后应该自动隐藏
+            // 调用 ToolTipOverlay，但不再采用 0 (持续显示)，而是让它伴随状态机管理。
+            // 实际上为了确保在用户离开时隐藏，我们还是可以通过 `ToolTipOverlay` 配合我们的 Hover/MouseMove 过滤器来控制关闭。
+            // 传入 0 配合 Leave / MouseMove 精准自动关闭是非常完美稳健的方案。
+            ToolTipOverlay::instance()->showText(m_hoveredGlobalPos, tipText, 0);
+        }
+    }
+}
+
 
 void ScanDialog::onStartScan(const QString& drive) {
     QStringList selectedDrives;
@@ -2660,13 +2664,44 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
-    // 当鼠标彻底离开详情列表或网格卡片视图时，必须同步调用 hideTip 使得气泡自然退隐，杜绝残留悬浮
-    if ((watched == m_resultView || watched == m_iconView) && 
-        (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress)) {
-        ToolTipOverlay::hideTip();
+    // 1. 处理鼠标悬停在列表/网格项目上的延迟显示与离开自动隐藏
+    if (watched == m_resultView || watched == m_resultView->viewport() ||
+        watched == m_iconView || watched == m_iconView->viewport()) {
+
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            QPoint posInViewport = me->pos();
+            if (watched == m_resultView || watched == m_iconView) {
+                // 如果事件来自视图而非 viewport，转换坐标
+                QAbstractItemView* view = qobject_cast<QAbstractItemView*>(watched);
+                posInViewport = view->viewport()->mapFrom(view, me->pos());
+            }
+
+            QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ?
+                                       static_cast<QAbstractItemView*>(m_resultView) :
+                                       static_cast<QAbstractItemView*>(m_iconView);
+
+            QModelIndex idx = view->indexAt(posInViewport);
+            if (idx != m_hoveredIndex) {
+                m_itemToolTipTimer->stop();
+                ToolTipOverlay::hideTip();
+                m_hoveredIndex = idx;
+                if (idx.isValid()) {
+                    m_hoveredGlobalPos = me->globalPosition().toPoint();
+                    m_itemToolTipTimer->start(2000); // 严格等待 2 秒（2000 毫秒）以上显示
+                }
+            }
+        } else if (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress) {
+            m_itemToolTipTimer->stop();
+            ToolTipOverlay::hideTip();
+            m_hoveredIndex = QModelIndex();
+        } else if (event->type() == QEvent::ToolTip) {
+            // 极其重要：直接拦截并消费 ToolTip 事件，严防原生黑色小气泡冒泡闪现
+            return true;
+        }
     }
 
-    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::Wheel) {
+    if ((watched == m_resultView || watched == m_resultView->viewport() || watched == m_iconView || watched == m_iconView->viewport()) && event->type() == QEvent::Wheel) {
         QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & Qt::ControlModifier) {
             int deltaY = wheelEvent->angleDelta().y();
@@ -2678,10 +2713,12 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true; // 拦截事件，防止 Ctrl + 滚轮导致列表区域意外滚动
         }
     }
-    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
+    if ((watched == m_resultView || watched == m_resultView->viewport() || watched == m_iconView || watched == m_iconView->viewport()) && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
-            auto* view = qobject_cast<QAbstractItemView*>(watched);
+            QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ?
+                                       static_cast<QAbstractItemView*>(m_resultView) :
+                                       static_cast<QAbstractItemView*>(m_iconView);
             QModelIndex idx = view->currentIndex();
             if (idx.isValid()) {
                 if (m_quickLook->isVisible()) {

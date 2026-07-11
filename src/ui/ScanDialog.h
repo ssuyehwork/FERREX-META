@@ -209,6 +209,11 @@ private:
 
     class ResizeEventFilter* m_resizeFilter = nullptr; // 全局拦截事件过滤器
 
+    // ToolTip 悬停延时与自动隐藏状态机
+    QTimer* m_itemToolTipTimer = nullptr;
+    QModelIndex m_hoveredIndex;
+    QPoint m_hoveredGlobalPos;
+
     void setupUi();
     void showDriveLoading();
     void refreshDriveList(bool forceProbe = false);
@@ -220,6 +225,7 @@ private:
     void handleMetadataShortcut(QKeyEvent* event);
     QString formatNumber(int64_t n);
     QString formatSize(int64_t bytes);
+    void onItemToolTipTimeout();
 
     struct DriveInfo {
         QString letter;
