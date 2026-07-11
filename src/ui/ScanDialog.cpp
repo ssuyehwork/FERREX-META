@@ -81,6 +81,40 @@
 
 namespace FERREX {
 
+namespace {
+
+static bool isPathPreviewable(const QString& path) {
+    QFileInfo info(path);
+    if (info.isDir()) {
+        return false; // 文件夹直接物理拦截，不用打开预览（对应用户原话：“无法预览的可直接不用打开预览界面”）
+    }
+
+    QString ext = info.suffix().toLower();
+
+    // 1. 系统级不可预览黑名单 (包含压缩包、二进制文件及系统库)
+    static const QSet<QString> blackList = {
+        "exe", "dll", "sys", "bin", "dat", "lib", "obj", "msi", "com",
+        "zip", "rar", "7z", "iso", "tar", "gz", "bz2", "xz", "dmg", "pkg"
+    };
+    if (blackList.contains(ext)) {
+        return false; // 黑名单直接物理拦截
+    }
+
+    // 2. 预览准入白名单 (仅限受支持的图像类、音视频、及文本类文件)
+    static const QSet<QString> whiteList = {
+        // 图像类 (对齐 ArcMeta 标准)
+        "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
+        // 音视频类 (对齐 FERREX 标准)
+        "mp3", "wav", "wma", "flac", "aac", "ogg", "m4a", "ape", "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp",
+        // 文本类 (对齐 Notepad++ 文本标准)
+        "txt", "md", "markdown", "log", "cpp", "h", "hpp", "c", "py", "js", "css", "html", "json", "xml", "ini", "conf", "yaml", "yml"
+    };
+
+    return whiteList.contains(ext);
+}
+
+} // namespace
+
 class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -2235,6 +2269,12 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
                 m_quickLook->closePreview();
             } else {
                 QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+
+                // 2026-07-10 物理移植自 ArcMeta：优先判断项目属性，无法预览的项目直接 Return 阻断（对应用户原话：“先判断项目属性，无法预览的可直接不用打开预览界面，直接Return即可”）
+                if (!isPathPreviewable(path)) {
+                    return; // 物理阻断，直接 Return，不唤起 QuickLook 界面
+                }
+
                 m_quickLook->preview(path);
             }
         }
@@ -2375,6 +2415,12 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                     m_quickLook->closePreview();
                 } else {
                     QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+
+                    // 2026-07-10 物理移植自 ArcMeta：事件过滤器空格按键前置属性准入判定，不通过则直接 Return（对应用户原话：“先判断项目属性……直接Return即可”）
+                    if (!isPathPreviewable(path)) {
+                        return true; // 拦截该按键事件并直接返回，阻断其传播与后续处理
+                    }
+
                     m_quickLook->preview(path);
                 }
             }
