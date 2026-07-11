@@ -618,6 +618,13 @@ QString QuickLookWindow::detectEncoding(const QByteArray& fileData) {
 }
 
 void QuickLookWindow::keyPressEvent(QKeyEvent* event) {
+    // 2026-07-10 新增：支持 Ctrl+W 关闭空格文件预览窗口（对应用户原话：“我期望整个应用的任何界面都必须支持Ctrl+W关闭窗口”）
+    if (event->key() == Qt::Key_W && (event->modifiers() & Qt::ControlModifier)) {
+        closePreview();
+        event->accept();
+        return;
+    }
+
     if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Escape) {
         closePreview();
         return;

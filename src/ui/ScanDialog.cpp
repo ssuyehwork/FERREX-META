@@ -1051,7 +1051,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:vertical {
             border: none;
             background: transparent;
-            width: 10px;
+            width: 7px;
             margin: 0px;
         }
         QScrollBar::handle:vertical {
@@ -1072,7 +1072,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:horizontal {
             border: none;
             background: transparent;
-            height: 10px;
+            height: 7px;
             margin: 0px;
         }
         QScrollBar::handle:horizontal {
@@ -1175,7 +1175,6 @@ ScanDialog::ScanDialog(QWidget* parent)
 
     // 1. 初始化持久 Action 并绑定核心业务槽函数
     m_actJMode = new QAction("自适应(A)", this);
-    m_actJMode->setShortcut(QKeySequence("Ctrl+Shift+1")); // 仅用于在右键菜单上渲染展示快捷键文本 [1]
     m_actJMode->setCheckable(true);
     connect(m_actJMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(1);
@@ -1187,7 +1186,6 @@ ScanDialog::ScanDialog(QWidget* parent)
     });
 
     m_actGMode = new QAction("网格(G)", this);
-    m_actGMode->setShortcut(QKeySequence("Ctrl+Shift+2")); // 仅用于菜单文本渲染 [1]
     m_actGMode->setCheckable(true);
     connect(m_actGMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(1);
@@ -1199,7 +1197,6 @@ ScanDialog::ScanDialog(QWidget* parent)
     });
 
     m_actListMode = new QAction("列表(L)", this);
-    m_actListMode->setShortcut(QKeySequence("Ctrl+Shift+3")); // 仅用于菜单文本渲染 [1]
     m_actListMode->setCheckable(true);
     connect(m_actListMode, &QAction::triggered, this, [this]() {
         m_viewStack->setCurrentIndex(0);
@@ -1214,19 +1211,6 @@ ScanDialog::ScanDialog(QWidget* parent)
     modeGrp->addAction(m_actJMode);
     modeGrp->addAction(m_actGMode);
     modeGrp->addAction(m_actListMode);
-
-    // 3. 【核心修复】：使用 QShortcut 进行顶层物理拦截，彻底杜绝子控件焦点吞噬快捷键的问题 [1]
-    QShortcut* shortcutJ = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_1), this);
-    shortcutJ->setContext(Qt::WindowShortcut); // 限制仅在当前窗口处于激活状态时生效 [1]
-    connect(shortcutJ, &QShortcut::activated, m_actJMode, &QAction::trigger); // 激活时直接向 Action 发送物理触发指令 [1]
-
-    QShortcut* shortcutG = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_2), this);
-    shortcutG->setContext(Qt::WindowShortcut);
-    connect(shortcutG, &QShortcut::activated, m_actGMode, &QAction::trigger);
-
-    QShortcut* shortcutList = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_3), this);
-    shortcutList->setContext(Qt::WindowShortcut);
-    connect(shortcutList, &QShortcut::activated, m_actListMode, &QAction::trigger);
 }
 
 ScanDialog::~ScanDialog() {
@@ -2224,6 +2208,25 @@ void ScanDialog::onCopyTriggered(bool isCut) {
 
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
+    // 2026-07-10 新增：专属 ScanDialog 主窗口的两段式 Esc 处理（对应用户原话：“当在ScanDialog窗口首次按下键时”）
+    if (event->key() == Qt::Key_Escape) {
+        bool searchNotEmpty = m_searchEdit && !m_searchEdit->text().isEmpty();
+        bool extNotEmpty = m_extEdit && !m_extEdit->text().isEmpty();
+
+        // 1. 若至少有一个输入框不为空，则优先执行一键全部重置清空文字（对应用户原话：“应该先清空ScanDialog主窗口所有输入框的文字”）
+        if (searchNotEmpty || extNotEmpty) {
+            if (m_searchEdit) m_searchEdit->clear();
+            if (m_extEdit) m_extEdit->clear();
+            event->accept();
+            return; // 消费按键，拦截阻止其传播至基类直接关闭窗口
+        }
+        
+        // 2. 若所有输入框均已经处于清空重置状态，则直接关闭 ScanDialog 主窗口（对应用户原话：“所有输入框都已经处于清空文字状态情况下则直接关闭ScanDialog窗口”）
+        reject();
+        event->accept();
+        return;
+    }
+
     if (event->key() == Qt::Key_Space) {
         auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
         QModelIndex idx = view->currentIndex();
