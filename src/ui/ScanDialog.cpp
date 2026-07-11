@@ -1044,7 +1044,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:vertical {
             border: none;
             background: transparent;
-            width: 7px;
+            width: 10px;
             margin: 0px;
         }
         QScrollBar::handle:vertical {
@@ -1065,7 +1065,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:horizontal {
             border: none;
             background: transparent;
-            height: 7px;
+            height: 10px;
             margin: 0px;
         }
         QScrollBar::handle:horizontal {
