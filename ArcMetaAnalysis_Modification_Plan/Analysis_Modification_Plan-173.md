@@ -1,152 +1,123 @@
-# 网格自适应视图下文件名不超过2行重构 —— Analysis_Modification_Plan-173.md
+# 无边框窗口边缘拉伸与光标切换方案 —— Analysis_Modification_Plan-173.md
 
 ## 1. 任务背景
-在自适应（JustifiedMode）与网格（GridMode，对应用户上传的图片 `image.png` 中红圈及箭头指向部分）排版模式下，项目名称存在溢出显示为 3 行的问题（对应用户原话：“在前几任对话中，我曾要求显示项目的名称不可超过2行，但实际却显示为3行，所以需要扩大范围排查，到底是什么原因？”）。本方案旨在全面排查并重构文件名渲染与换行机制，通过引入精准的 QTextLayout 双行排版切割技术（对应用户原话：“方案A”），从根本上阻断第 3 行及以上的文本显示，保证文件名在任何拉伸或缩放场景下均严格限制在最多 2 行。
+在当前 FERREX-META 客户端中，基于 `FramelessDialog` 基类的所有对话框（如 `ScanDialog` 和 `FramelessInputDialog`）均采用了自定义的扁平化无边框（`Qt::FramelessWindowHint`）设计。虽然该设计带来了极具现代感的视觉外观与 Windows 11 圆角适配，但也由于脱离了操作系统的原生边框托管，导致了鼠标移动到窗口边缘及四个角部时无法显示双向调整大小的光标（对应用户原话：“当鼠标移动到窗口边缘时也没有出现双向箭头”），同时用户也无法通过按住边缘拖拉的方式拉伸和缩放窗口（对应用户原话：“导致无法通过拖拉方式调整窗口大小”）。本次分析旨在设计一套跨平台且兼顾性能的非侵入式鼠标边缘检测、动态光标更新和实时拖拉缩放计算方案，彻底解决此交互硬伤。
 
 ## 2. 问题定位
-* **关键源文件**：`src/ui/ThumbnailDelegate.cpp`
-* **关键函数**：`ThumbnailDelegate::paint`
-* **问题成因**：
-  1. **字符测量乘数猜测机制缺陷**：
-     在 `ThumbnailDelegate::paint` 绘制文件名（对应用户原话：“显示项目的名称”）时，采用了以下代码：
-     ```cpp
-     option.fontMetrics.elidedText(displayName, Qt::ElideMiddle, m.textRect.width() * 2)
-     ```
-     `fontMetrics.elidedText` 测量的是单行非换行文本的物理像素宽度。这里传入 `width() * 2`，意图是获取最多能显示两行长度的文字。
-  2. **零宽空格折行失控**：
-     为了在文件名较长时能够顺利换行，系统将下划线、句点替换成了带有零宽空格的字符（如 `_\u200B` 和 `.\u200B`）。当返回的“2倍宽度单行文字”由于零宽空格在 `drawText(..., Qt::TextWordWrap)` 的自动换行逻辑作用下绘制时，如果由于单词切割导致了 3 次折行，就会渲染出 3 行（对应图片中红圈标出的 `justify-co...start.svg` 的 3 行显示）。
-  3. **文字区域高度冗余**：
-     文字渲染区域 `m.textRect` 的高度硬编码为了 `36px`（对应 PointSize 8 字体下单行约 11~12px，足以挤下 3 行），并且由于 `drawText` 本身不具有物理行数限制，因此只要没有发生垂直裁剪，第 3 行便会堂而皇之地显示在卡片下方（对应用户原话：“但实际却显示为3行”）。
+* **缺失的鼠标追踪机制 (`mouseTracking`)**：
+  在 Qt 中，若子部件没有启用鼠标追踪（`setMouseTracking(true)`），则只有在按住鼠标按键时，窗口才会收到 `mouseMoveEvent` 事件。目前 `FramelessDialog` 虽调用了 `setMouseTracking(true)`，但其子部件（如主布局中的各种控件、视图容器）默认并未启用追踪，导致当鼠标仅移动、不按下键时，主窗口无法在全局拦截并捕获边缘位置以更新光标。
+* **缺失的边缘区域状态划分与判定算法**：
+  现有代码中没有定义窗口边缘的触发判定带宽（如边界像素宽度 `PADDING`），无法识别当前鼠标是处于左边缘、右边缘、上边缘、下边缘，还是四个拐角（左上、右上、左下、右下）或正常的窗口内部区域。
+* **缺失的手动拉伸事件循环逻辑**：
+  在 `mousePressEvent`、`mouseMoveEvent`、`mouseReleaseEvent` 中，只有当点击标题栏拖拽移动窗口的逻辑，完全没有检测到边缘时启动缩放拉伸窗口的物理处理（通过 `setGeometry()` 并配合 `minimumSize()` 计算），导致即使拖拽边缘也无任何反应。
 
 ## 3. 强制对照表
 
 | 编号 | 用户原话 / 我的理解 | 方案对应点 | 是否一致 |
 |------|---------------------|------------|----------|
-| 1    | 显示项目的名称不可超过2行，但实际却显示为3行 | 引入 `QTextLayout` 对文件名进行双行排版控制，严格物理限制最多显示两行 | ✅ 一致 |
-| 2    | 方案A | 采用 QTextLayout 进行精准的“两行物理修剪”和“第二行末尾省略”的算法重构（方案 A） | ✅ 一致 |
+| 1    | 当鼠标移动到窗口边缘时也没有出现双向箭头 | 在 `FramelessDialog` 边缘及四个拐角定义检测带（对应用户原话：“当鼠标移动到窗口边缘时”），并在 `mouseMoveEvent` 中实时分析并调用 `setCursor` 改变光标为对应的双向调整剪头（对应用户原话：“出现双向箭头”） | ✅       |
+| 2    | 导致无法通过拖拉方式调整窗口大小 | 在 `mousePressEvent` 中捕获边缘点击状态并缓存初始边界信息，在 `mouseMoveEvent` 中根据鼠标偏移差值（对应用户原话：“通过拖拉方式”）实时重算并更新窗口的几何包围盒（对应用户原话：“调整窗口大小”） | ✅       |
 
 ## 4. 详细解决方案
 
-在 `src/ui/ThumbnailDelegate.cpp` 中，废除原有的 `fontMetrics.elidedText(displayName, Qt::ElideMiddle, m.textRect.width() * 2)` 乘数猜测法绘制逻辑，改用基于 `QTextLayout` 的高精度双行切割绘制算法。
-
-### 核心计算流程：
-1. **构建并初始化 `QTextLayout`**：
-   将转换后的 `displayName` 传入 `QTextLayout`，设置其字体与 `option.font` 对齐。
-2. **启用软换行规则**：
-   通过 `QTextOption` 设置其换行模式为 `QTextOption::WrapAtWordBoundaryOrAnywhere`。
-3. **行排版循环切分**：
-   在 `m.textRect.width()` 的物理宽度约束下对文本进行折行排版。
-4. **双行裁剪与主动省略算法**：
-   - 若排版出的行数 **不超过 2 行**（对应用户原话：“不可超过2行”）：直接使用 `painter->drawText` 逐行渲染各行文本。
-   - 若排版出的行数 **超过 2 行**：
-     - 第一行正常保留并绘制。
-     - 获取第二行原始文本在整体字符串中的物理起始偏移，从该偏移起截取剩余的所有文本（包含可能原本属于第三行、第四行的全部长尾内容）。
-     - 将截取出的长尾文本，在第二行的物理宽度（`m.textRect.width()`）下，利用 `option.fontMetrics.elidedText(..., Qt::ElideMiddle, ...)` 进行强制的物理省略（Elide），生成带有省略号的第二行文本并绘制。
-     - 强行停止排版，舍弃并阻断后续任何行的物理绘制，从而将总行数绝对锁死在两行。
-
-### 核心伪代码设计：
+### 4.1 核心边界定义与枚举设计
+定义无边框边缘检测带的触发像素宽度 `PADDING = 6`。将窗口边缘区域划分为 9 个状态：
 ```cpp
-// 替换原有 drawText 渲染流程
-painter->save();
-QString name = index.data(Qt::DisplayRole).toString();
-painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
-
-if (m_managedRole != -1 && !isSelected && !index.data(m_managedRole).toBool()) {
-    painter->setPen(QColor(238, 238, 238, 120));
-}
-
-QFont textFont = painter->font();
-textFont.setPointSize(8);
-painter->setFont(textFont);
-
-QString displayName = name;
-displayName.replace("_", "_\u200B");
-displayName.replace(".", ".\u200B");
-
-// 采用方案 A：使用 QTextLayout 进行精准的双行物理修剪与第二行末尾省略
-QTextLayout textLayout(displayName, painter->font());
-QTextOption textOption;
-textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-textOption.setAlignment(Qt::AlignCenter);
-textLayout.setTextOption(textOption);
-
-textLayout.beginLayout();
-int lineCount = 0;
-int textWidth = m.textRect.width() - 8; // 两侧留出 4px 安全边距 (对应 adjusted(4, 0, -4, 0))
-int currentY = m.textRect.top();
-int fontHeight = option.fontMetrics.height();
-
-// 存储切分出的各行
-struct RenderLine {
-    QString text;
-    int y;
+enum ResizeDir {
+    DIR_NONE = 0,
+    DIR_TOP,
+    DIR_BOTTOM,
+    DIR_LEFT,
+    DIR_RIGHT,
+    DIR_TOPLEFT,
+    DIR_TOPRIGHT,
+    DIR_BOTTOMLEFT,
+    DIR_BOTTOMRIGHT
 };
-QList<RenderLine> linesToRender;
-
-while (true) {
-    QTextLine line = textLayout.createLine();
-    if (!line.isValid()) {
-        break;
-    }
-    line.setLineWidth(textWidth);
-    lineCount++;
-
-    if (lineCount == 1) {
-        // 第一行完整保留
-        int start = line.textStart();
-        int len = line.textLength();
-        linesToRender.append({displayName.mid(start, len), currentY});
-        currentY += fontHeight;
-    } else if (lineCount == 2) {
-        // 关键路径：检查是否存在第三行
-        QTextLine nextLine = textLayout.createLine();
-        if (nextLine.isValid()) {
-            // 确实存在第三行或更多，第二行必须承接全部剩余的长尾内容，并做 ElideMiddle 裁剪
-            int start = line.textStart();
-            QString remainingText = displayName.mid(start);
-            // 物理省略
-            QString elidedRemaining = option.fontMetrics.elidedText(remainingText, Qt::ElideMiddle, textWidth);
-            linesToRender.append({elidedRemaining, currentY});
-        } else {
-            // 没有第三行，第二行正常显示
-            int start = line.textStart();
-            int len = line.textLength();
-            linesToRender.append({displayName.mid(start, len), currentY});
-        }
-        break; // 绝对阻断第三行，退出排版循环
-    }
-}
-textLayout.endLayout();
-
-// 物理渲染
-for (const auto& rLine : linesToRender) {
-    QRect lineRect(m.textRect.left() + 4, rLine.y, textWidth, fontHeight);
-    painter->drawText(lineRect, Qt::AlignCenter, rLine.text);
-}
-
-painter->restore();
 ```
+
+### 4.2 边缘区域碰撞判定算法
+在接收到局部坐标（`event->pos()`）时，通过以下逻辑动态计算所属区域：
+```cpp
+ResizeDir getResizeDir(const QPoint& pos) {
+    int x = pos.x();
+    int y = pos.y();
+    int w = this->width();
+    int h = this->height();
+
+    bool left = (x >= 0 && x <= PADDING);
+    bool right = (x >= w - PADDING && x <= w);
+    bool top = (y >= 0 && y <= PADDING);
+    bool bottom = (y >= h - PADDING && y <= h);
+
+    if (left && top) return DIR_TOPLEFT;
+    if (right && top) return DIR_TOPRIGHT;
+    if (left && bottom) return DIR_BOTTOMLEFT;
+    if (right && bottom) return DIR_BOTTOMRIGHT;
+    if (left) return DIR_LEFT;
+    if (right) return DIR_RIGHT;
+    if (top) return DIR_TOP;
+    if (bottom) return DIR_BOTTOM;
+
+    return DIR_NONE;
+}
+```
+
+### 4.3 动态光标设置与状态同步
+在 `mouseMoveEvent` 阶段，如果用户当前未处于拖拽状态（既没有拖动窗口，也没有拉伸边缘），则实时检测鼠标位置并更换鼠标光标样式。
+* `DIR_LEFT` / `DIR_RIGHT` $\rightarrow$ `Qt::SizeHorCursor` (水平双向箭头)
+* `DIR_TOP` / `DIR_BOTTOM` $\rightarrow$ `Qt::SizeVerCursor` (垂直双向箭头)
+* `DIR_TOPLEFT` / `DIR_BOTTOMRIGHT` $\rightarrow$ `Qt::SizeFDiagCursor` (斜向对角线双向箭头)
+* `DIR_TOPRIGHT` / `DIR_BOTTOMLEFT` $\rightarrow$ `Qt::SizeBDiagCursor` (反斜向对角线双向箭头)
+* `DIR_NONE` $\rightarrow$ `Qt::ArrowCursor` (标准箭头)
+
+### 4.4 鼠标事件流（拉伸缩放计算公式）
+* **在 `mousePressEvent` 中**：
+  若鼠标处于边缘（`getResizeDir(pos) != DIR_NONE`），则记录当前的拉伸方向 `m_resizeDir`，并缓存当前鼠标的全局起始坐标 `m_startGlobalPos = event->globalPosition().toPoint()` 及窗口的初始几何大小 `m_startGeometry = geometry()`。
+* **在 `mouseMoveEvent` 中**：
+  若 `m_resizeDir != DIR_NONE`，计算当前全局鼠标的偏移量：
+  $$\Delta x = \text{currentGlobalPos.x()} - \text{m\_startGlobalPos.x()}$$
+  $$\Delta y = \text{currentGlobalPos.y()} - \text{m\_startGlobalPos.y()}$$
+  根据 `m_resizeDir` 分别重算窗口的新几何区域（`newGeom`）。
+  
+  **四周边线计算法则（需严格遵循 `setMinimumSize` 物理限制）**：
+  * **DIR_RIGHT**：
+    $$newWidth = \max(minWidth, m\_startGeometry.width() + \Delta x)$$
+    $$newGeom = (x, y, newWidth, height)$$
+  * **DIR_BOTTOM**：
+    $$newHeight = \max(minHeight, m\_startGeometry.height() + \Delta y)$$
+    $$newGeom = (x, y, width, newHeight)$$
+  * **DIR_LEFT** (向左拉伸，其右侧边线固定，左侧物理移动)：
+    $$newWidth = \max(minWidth, m\_startGeometry.width() - \Delta x)$$
+    $$newX = m\_startGeometry.right() - newWidth + 1$$
+    $$newGeom = (newX, y, newWidth, height)$$
+  * **DIR_TOP** (向上拉伸，其下侧边线固定，上侧物理移动)：
+    $$newHeight = \max(minHeight, m\_startGeometry.height() - \Delta y)$$
+    $$newY = m\_startGeometry.bottom() - newHeight + 1$$
+    $$newGeom = (x, newY, width, newHeight)$$
+  * **角部拉伸（DIR_TOPLEFT, DIR_TOPRIGHT, DIR_BOTTOMLEFT, DIR_BOTTOMRIGHT）**：
+    正交合并上述法则即可。最后调用 `setGeometry(newGeom)` 刷新布局。
 
 ## 5. 修改边界声明【红线】
 
 **本次方案涉及范围：**
-- [ ] `src/ui/ThumbnailDelegate.cpp`：物理重构 `paint` 函数中的文件名渲染段，使用双行 `QTextLayout` 替代原有的 `drawText` 与 `width() * 2`。
+- [ ] 模块/文件：`src/ui/FramelessDialog.h` （追加拉伸方向枚举、变量、核心位置计算函数声明）
+- [ ] 模块/文件：`src/ui/FramelessDialog.cpp` （实现边缘动态判定、更新光标形态、点击抓取以及重算 `setGeometry` 尺寸拉伸流）
 
 **明确禁止越界修改的范围：**
-- [ ] 禁止修改除 `ThumbnailDelegate.cpp` 以外的任何界面文件、核心控制逻辑或多线程扫描器。
-- [ ] 严禁修改 `JustifiedView.cpp` 中已经对齐的卡片间距和 `GridMode` 算法逻辑。
+- [ ] 明确禁止在不改变基类的情况下直接在 `ScanDialog` 中重写一套边缘检测。必须在基类 `FramelessDialog` 中全局实现，使其他所有无边框输入框对话框均能秒级同步获得拉伸缩放及光标悬停更新能力。
 
 ## 6. 实现准则与预警【核心】
-1. **依赖头文件**：必须引入 `<QTextLayout>` 与 `<QTextOption>` 头文件，确保其物理类型在 `ThumbnailDelegate.cpp` 中定义。
-2. **文字水平居中对齐**：使用 `textOption.setAlignment(Qt::AlignCenter)` 以及在 `drawText` 绘制时保持 `Qt::AlignCenter`，确保文件名在卡片中央完美水平居中。
-3. **安全间距处理**：输入框和绘制文字的安全边距物理宽度应保持 `m.textRect.width() - 8`，从而与输入重命名时的 `editorGeometry` 保持高精度对齐，避免重命名编辑框发生视觉像素跳变。
+1. **子控件鼠标事件遮挡问题预警**：
+   无边框窗口中最经典的缺陷是，当鼠标移动到由于有布局管理器填充的子控件（如输入框、按钮、甚至主体容器 `m_container`）上方时，因为子控件没有开启 `setMouseTracking(true)` 且各自拦截了鼠标移动事件，导致主窗口的 `mouseMoveEvent` 根本无法被触发。
+   * **解决方案**：在基类 `FramelessDialog` 构造函数中，对容器 `m_container` 以及所有后期添加的核心边缘子部件安装事件过滤器 `installEventFilter(this)`。在 `eventFilter` 中拦截 `QEvent::HoverMove` 或 `QEvent::MouseMove`，并统一派发、路由回主窗体的边缘区域判定模块，确保光标刷新 100% 灵敏、绝无视觉死角。
+2. **圆角切割与边缘检测偏移问题**：
+   因为使用了 `DwmSetWindowAttribute` 开启了 Windows 11 的物理原生圆角（6px 到 12px 弧度），窗口四周的最外侧四个像素角已被透明化。如果 `PADDING` 判定带设置得太窄（如只有 2-3 像素），在圆角区域鼠标会提前滑出窗口导致无法检测到。因此 `PADDING` 应锁定在 6 至 8 像素之间，确保圆角弧度区域也能完美触发拉伸指针。
 
 ## 7. Memories.md 合规检查
 
 | 组件 / 模式 | Memories.md 规范要求 | 本方案是否符合 |
 |-------------|----------------------|----------------|
-| UI考古原则 | 样式、命名、渲染风格需与现有视图高度一致，避免引入未知样式 | ✅ 符合，完美契合现有 `textRect` 像素布局 |
-| 呼吸窗口与性能 | 在百万级渲染方案（Plan-150）中，应尽可能规避同步计算损耗 | ✅ 符合，本双行排版仅对当前视口可见元素执行，计算复杂度为 O(1)，无假死风险 |
-
-## 8. 待确认事项
-* 无。采用 QTextLayout 物理阻断是解决自动换行不受控最彻底、最优雅的工业级方案。
+| **呼吸窗口/耗时操作** | 数据库等重型耗时操作需释放 CPU 锁防界面卡死 | **不涉及**（本方案纯属于边缘图形交互拉伸逻辑，不触碰任何数据库操作） |
+| **标题栏按钮/UI尺寸** | 标题栏按钮及组件样式尺寸对标规范 | ✅（完全基于现有的 20x20 按钮及 1px 物理分割线，绝不改动任何按钮基础排版与背景色样式） |
+| **极致性能** | 零分配、避免在循环内构造临时对象 | ✅（边缘区域计算全部使用高效的常数级算术整型、QPoint、QRect 物理操作，不产生任何堆内存分配与性能抖动） |

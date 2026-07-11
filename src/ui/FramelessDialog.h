@@ -21,6 +21,18 @@ namespace FERREX {
 class FramelessDialog : public QDialog {
     Q_OBJECT
 public:
+    enum ResizeDir {
+        DIR_NONE = 0,
+        DIR_TOP,
+        DIR_BOTTOM,
+        DIR_LEFT,
+        DIR_RIGHT,
+        DIR_TOPLEFT,
+        DIR_TOPRIGHT,
+        DIR_BOTTOMLEFT,
+        DIR_BOTTOMRIGHT
+    };
+
     explicit FramelessDialog(const QString& title, QWidget* parent = nullptr);
     virtual ~FramelessDialog() = default;
 
@@ -33,6 +45,9 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
+
+    ResizeDir getResizeDir(const QPoint& pos) const;
+    void updateCursorShape(ResizeDir dir);
 
     QWidget* m_contentArea;
     QVBoxLayout* m_mainLayout;
@@ -47,6 +62,11 @@ protected:
 private:
     QPoint m_dragPos;
     bool m_isDragging = false;
+
+    ResizeDir m_resizeDir = DIR_NONE;
+    QPoint m_startGlobalPos;
+    QRect m_startGeometry;
+    static const int PADDING = 6;
 };
 
 /**

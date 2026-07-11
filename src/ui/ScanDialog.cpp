@@ -1044,13 +1044,13 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:vertical {
             border: none;
             background: transparent;
-            width: 4px;
+            width: 10px;
             margin: 0px;
         }
         QScrollBar::handle:vertical {
             background: #333333;
             min-height: 20px;
-            border-radius: 2px;
+            border-radius: 3px;
         }
         QScrollBar::handle:vertical:hover {
             background: #444444;
@@ -1065,13 +1065,13 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:horizontal {
             border: none;
             background: transparent;
-            height: 4px;
+            height: 10px;
             margin: 0px;
         }
         QScrollBar::handle:horizontal {
             background: #333333;
             min-width: 20px;
-            border-radius: 2px;
+            border-radius: 3px;
         }
         QScrollBar::handle:horizontal:hover {
             background: #444444;
