@@ -2683,16 +2683,16 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
 
             QModelIndex idx = view->indexAt(posInViewport);
             if (idx != m_hoveredIndex) {
-                m_itemToolTipTimer->stop();
+                if (m_itemToolTipTimer) m_itemToolTipTimer->stop();
                 ToolTipOverlay::hideTip();
                 m_hoveredIndex = idx;
                 if (idx.isValid()) {
                     m_hoveredGlobalPos = me->globalPosition().toPoint();
-                    m_itemToolTipTimer->start(2000); // 严格等待 2 秒（2000 毫秒）以上显示
+                    if (m_itemToolTipTimer) m_itemToolTipTimer->start(2000); // 严格等待 2 秒（2000 毫秒）以上显示
                 }
             }
         } else if (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress) {
-            m_itemToolTipTimer->stop();
+            if (m_itemToolTipTimer) m_itemToolTipTimer->stop();
             ToolTipOverlay::hideTip();
             m_hoveredIndex = QModelIndex();
         } else if (event->type() == QEvent::ToolTip) {
