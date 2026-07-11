@@ -1067,19 +1067,9 @@ ScanDialog::ScanDialog(QWidget* parent)
                 "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
             );
             connect(rulesBtn, &QPushButton::clicked, this, [this]() {
-                PreviewRulesDialog dlg(m_config, this);
+                PreviewRulesDialog dlg(m_config, nullptr);
                 if (dlg.exec() == QDialog::Accepted) {
                     m_config.save();
-                }
-
-                // [窗口独立性修复] 子窗口关闭后，不管 Qt/Windows 内部发生了什么，
-                // 强制让 ScanDialog 重新夺回操作系统窗口激活状态和表格输入焦点，
-                // 确保两个窗口之间不会产生残留干扰。
-                this->activateWindow();
-                this->raise();
-                this->setFocus();
-                if (m_resultView) {
-                    m_resultView->setFocus();
                 }
             });
             
