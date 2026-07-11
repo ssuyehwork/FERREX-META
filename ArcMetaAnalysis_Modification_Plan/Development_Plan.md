@@ -7,7 +7,7 @@
 - **核心病因**：
     1. 读写锁竞争：写锁优先导致 UI 读请求被后台搜索长时间阻塞。
     2. 任务溢出：搜索任务不可中途取消，导致线程池被旧任务塞满。
-    3. 哈希构建成本：ResultSet 中 200 万项的 `unordered_map` 构建耗时过长。
+    3. 哈希构建成本：ResultSet 中 200万项的 `unordered_map` 构建耗时过长。
     4. 内存抖动：循环内频繁构造 QString 对象。
 - **建议方案**：实施无锁快照搜索与零分配筛选。
 
@@ -35,45 +35,38 @@
 ### 5. 视图排版交互重构 (Plan-159)
 - **目标**：彻底移除菜单中冗余离散的图标尺寸级别选项（超大/大/中图标），重构视图控制，使其精简为“自适应、网格、列表”三大纯排版模式。
 - **核心要求**：
-    - 图标大小由标记为①的滑块独占控制，移除标记为② of the menus items.
+    - 图标大小由标记为①的滑块独占控制，移除标记为②的菜单选项。
     - 重组菜单结构，将“自适应”、“网格”、“列表”设为平级单选切换。
     - 确保配置同步（`viewMode`, `layoutMode`）及对 `m_sizeSlider` 事件处理、滑动调节功能的完整兼容。
 
-### 6. ScanDialog 主界面无边框窗口边缘检测与拉伸缩放支持 (Plan-175)
-- **目标**：参考 ArcMeta 架构，解决 ScanDialog 主界面由于子控件事件拦截导致无法边缘拖拽调整大小以及未显示双向箭头光标的问题。
+### 6. 无边框窗口边缘检测与拉伸缩放支持 (Plan-173)
+- **目标**：解决无边框窗口无法通过拖拽边缘调整大小以及悬停时未显示双向箭头光标的问题。
 - **核心要求**：
-    - 移植并实现全局应用级事件过滤器 `ResizeEventFilter`，通过 `QCoreApplication::instance()->installEventFilter(m_resizeFilter)` 机制，彻底绕过 ScanDialog 内部所有子控件（如输入框、按钮、表格视图等）对鼠标移动事件的拦截遮挡，实现全局、高灵敏度的边缘悬停与双向光标（SizeHorCursor/SizeVerCursor/SizeFDiagCursor/SizeBDiagCursor）实时刷新（对应用户原话：“当鼠标移动到窗口边缘时也没有出现双向箭头”）。
-    - 在 `ScanDialog` 类中，重写 `mousePressEvent`、`mouseMoveEvent`、`mouseReleaseEvent` 鼠标事件处理虚函数，加入 DPI 自适应的检测阈值 `getResizeDirection` 与光标刷新 `updateCursorShape` 函数。
-    - 在 `ScanDialog` 事件响应中集成完美的拖拽包围盒几何拉伸计算（对应用户原话：“导致无法通过拖拉方式调整窗口大小”），同时在拉伸计算中对最小尺寸限制（`setMinimumSize`）进行严格遵循与集成。
+    - 在鼠标移动到窗口边缘及四个角部时，实时判定鼠标所在区域，并正确切换为对应的双向剪头光标（如水平、垂直、倾斜剪头）（对应用户原话：“当鼠标移动到窗口边缘时也没有出现双向箭头”）。
+    - 实现完美的边缘检测算法，判定边缘判定带（Border Margin）宽度（如 6px 至 8px 之间）。
+    - 支持按住鼠标左键拖拽边缘流畅进行窗口拉伸（对应用户原话：“导致无法通过拖拉方式调整窗口大小”），同时需要对最小尺寸限制（`setMinimumSize`）进行良好集成。
 
-### 7. 全局滚动条宽度样式优化 (Plan-174)
-- **目标**：解决滚动条过窄导致鼠标拖拽和操作困难的问题。
+### 7. 下拉面板历史选项删除按钮重构 (Plan-181)
+- **目标**：在双击输入框弹出的历史记录下拉面板（QMenu）中，为每一个选项右侧提供一个精致的“×”删除按钮，供用户单独移除某条记录（对应用户原话：“下来面板的每一个选项右侧都应该有一个“×”，这样的话用户就可以轻松移除某个选项了”）。
 - **核心要求**：
-    - 优化 `ScanDialog.cpp` 的全局 QSS 样式。将垂直滚动条（`QScrollBar:vertical`）的宽度（width）从默认 of 4px 调整至 7px（对应用户原话：“将其宽度调整为7像素”），以此解决操作吃力的问题（对应用户原话：“滚动条的宽度过于太窄了，导致操作吃力”）。
-    - 将水平滚动条（`QScrollBar:horizontal`）的高度（height）同步从 4px 调整至 7px。
-    - 将滚动条拖拽手柄（`QScrollBar::handle`）的圆角半径（`border-radius`）从原先的 2px 调整为 3px，以实现视觉与可用性的平衡。
+    - 使用 `QWidgetAction` 替代原有的 `menu.addAction(item, ...)`，以便定制其内部填充控件。
+    - 实现辅助的轻量型控件 `HistoryItemWidget`，在极右侧集成“×”按钮。
+    - 在右侧“×”按钮点击时执行对应搜索/后缀历史记录过滤、本地存盘、关闭并安全异步重新开启该菜单，达到极致无缝流畅度。
 
-### 8. 物理清除冗余快捷键绑定 (Plan-176)
-- **目标**：彻底、干净地移除 `ScanDialog` 中不再需要的 `Ctrl+Shift+1 - 3` 快捷键注册，简化代码，杜绝底层热键冲突风险。
+### 8. “预览规则配置”窗口非模态重构 (Plan-182)
+- **目标**：废除“预览规则配置”窗口 `exec()` 导致的模态阻塞，提升用户交互体验（对应用户原话：““预览规则配置”窗口，禁止采用 exec() 这种模态阻塞的傻逼方式”）。
 - **核心要求**：
-    - 从 `ScanDialog.cpp` 中彻底物理剔除三个视图 Action（`m_actJMode`, `m_actGMode`, `m_actListMode`）的快捷键显示文本设定（即彻底删除所有的 `setShortcut(QKeySequence(...))` 逻辑）。
-    - 物理删除三个底层 `QShortcut` 对象的动态创建、上下文绑定以及对应的槽函数 `trigger` 信号连接，彻底杜绝代码残留。
+    - 废除在槽函数中通过栈对象调用 `exec()` 的逻辑。
+    - 改造为堆分配的 `PreviewRulesDialog* dlg = new PreviewRulesDialog(m_config, this)`。
+    - 通过设置 `Qt::WA_DeleteOnClose` 属性，保证该窗口在关闭时能够自动、安全地析构释放，彻底根除内存泄露。
+    - 监听 `QDialog::accepted` 信号（或 `finished` 信号），在其成功被确认（Accepted）时执行配置写入并调用 `m_config.save()`，保证非阻塞状态下的配置落盘事务一致性。
+    - 改造为非模态窗口：在构造后调用 `dlg->show()` 以替代阻塞式的 `exec()`。
 
-### 9. ScanDialog / FramelessDialog 无边框最大化与状态恢复重构 (Plan-177)
-- **目标**：彻底解决无边框主界面最大化后无法双击还原、无法拖拽还原、以及点击按钮或快捷键状态不一致的问题。
+### 9. 物理移植与集成 ToolTipOverlay 统一气泡机制 (Plan-183)
+- **目标**：彻底解决原生 ToolTip 黑条、遮挡与系统样式不匹配问题（对应用户原话：“这里存在傻逼逻辑架构，Tooltip都显示了什么？完全看不到，而且其他按钮也没有采用Tooltip ... 去参考ArcMeta版本来实现ToolTipOverlay”）。
 - **核心要求**：
-    - **双击标题栏响应**：在 `FramelessDialog` 中重写 `mouseDoubleClickEvent`（对应用户原话：“双击标题栏也恢复不了窗口”）。判断点击若在标题栏且非按钮上，则自动切换最大化与常规（Normal）状态。
-    - **最大化拖拽过渡还原**：在 `mouseMoveEvent` 拖动标题栏时，若检测到当前窗口是最大化状态（对应用户原话：“拖动标题栏也无法恢复窗口”），先自动触发 `showNormal()`，并根据常规窗口尺寸计算出当前鼠标按下的新相对位置，实现流畅无缝的“拖拽自动还原且跟随移动”。
-    - **窗口状态变更全同步**：重写 `changeEvent` 并捕捉 `QEvent::WindowStateChange` 事件（对应用户原话：“点击恢复按钮有时无法恢复”），精准感知系统级（如 Win+Up/Down 快捷键、Win11 贴靠布局）触发的状态改变，并自动更新最大化/还原按钮的图标样式，杜绝任何状态不同步引起的失效。
-
-### 10. Ctrl+W 全局支持与 Esc 两段式清空关闭机制重构 (Plan-178)
-- **目标**：支持任何界面按下 Ctrl+W 关闭窗口，同时将 ScanDialog 的 Esc 逻辑升级为两段式清空后再关闭。
-- **核心要求**：
-    - **Ctrl+W 全窗口物理通配**：在无边框对话框基类 `FramelessDialog` 的 `keyPressEvent` 与空格预览窗口 `QuickLookWindow` 的 `keyPressEvent` 中追加对 `Ctrl+W` 按键序列的统一拦截（对应用户原话：“我期望整个应用的任何界面都必须支持Ctrl+W关闭窗口”），拦截成功后执行 `reject()` 或 `close()` 关闭窗口，并阻止事件冒泡。
-    - **ScanDialog 专属 Esc 两段式分发**：重写 `ScanDialog` 的 `keyPressEvent` 中 `Qt::Key_Escape` 分支的物理处理（对应用户原话：“在ScanDialog窗口首次按下键时”）。在 Esc 触发时，若 `m_searchEdit` 或 `m_extEdit` 两个核心输入框中有任意一个内容非空，则先执行一键全部清空（`clear()`）（对应用户原话：“应该先清空ScanDialog主窗口所有输入框的文字”）；只有当两个输入框本就全空时，再次按下 Esc 才执行物理关闭（`reject()` / `close()`）动作（对应用户原话：“如果首次按下Esc键时，所有输入框都已经处于清空文字状态情况下则直接关闭ScanDialog窗口”）。
-
-### 11. 空格预览顶层准入前置拦截重构 (Plan-179)
-- **目标**：改变“先弹出预览窗，加载失败才提示无法预览”的后置逻辑，物理移植 ArcMeta 的前置属性白名单拦截规则。
-- **核心要求**：
-    - **空格键触发前置校验**：在 `ScanDialog::keyPressEvent` 与 `ScanDialog::eventFilter` 捕获空格键触发预览前，通过静态函数 `isPathPreviewable` 对目标文件路径进行先期探测（对应用户原话：“先判断项目属性”）。
-    - **双轨黑白名单过滤**：对文件夹及压缩包/可执行等黑名单类型（`exe`, `dll`, `zip`, `rar`, `7z` 等）执行绝对阻断，仅对受支持的白名单格式（常用图像、音视频、代码文本等）放行呼叫 `m_quickLook->preview(path)`；对于无法预览的项直接拦截并 `Return`，彻底杜绝闪烁和加载抛错（对应用户原话：“无法预览的可直接不用打开预览界面，直接Return即可”）。
+    - 从 `ArcMeta` 物理移植 `ToolTipOverlay.h`、`ToolTipOverlay.cpp` 和 `HoverEventFilter.h`、`HoverEventFilter.cpp`。
+    - 将上述类的命名空间统一适配至本项目的 `FERREX`。
+    - 在 CMake 构建文件 `CMakeLists.txt` 中引入这些新文件。
+    - 在主界面初始化阶段对 `ToolTipOverlay` 进行预热（winId() 结合 HWND_TOPMOST 的 Win32 SetWindowPos 实现）。
+    - 禁绝所有的原生 `setToolTip()`，改用 `HoverEventFilter` 与属性 `tooltipText` 对所有主界面控制按钮（`viewBtn`、`rulesBtn` 等）进行悬停事件监听与无痕气泡弹出，达到完美的像素级交互对齐。
