@@ -2632,6 +2632,12 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                 "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; padding: 4px 0; }"
                 "QMenu::separator { height: 1px; background: #333; margin: 4px 0; }"
             );
+
+            // 使下拉面板的宽度与输入框的宽度保持一致
+            QWidget* editWidget = static_cast<QWidget*>(watched);
+            if (editWidget) {
+                menu.setFixedWidth(editWidget->width());
+            }
             
             // 使用 QWidgetAction 为每一条历史记录嵌入带有“×”的交互式控件 (对应用户原话：“每个选项右侧都应该有一个“×”……轻松移除某个选项”)
             for (const QString& item : history) {
