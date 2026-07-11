@@ -27,6 +27,8 @@
 #include <QSortFilterProxyModel>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QScreen>
+#include <QWindow>
 #include <QStyle>
 #include <QDateTime>
 #include <algorithm>
@@ -62,6 +64,7 @@
 #include "JustifiedView.h"
 #include "ThumbnailDelegate.h"
 #include "QuickLookWindow.h"
+#include "ResizeEventFilter.h"
 #include <memory>
 #include <algorithm>
 
@@ -774,6 +777,10 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
 {
+    // 2026-07-10 参考 ArcMeta 重构：在 UI 构造的最前期创建并注册全局事件过滤器
+    m_resizeFilter = new ResizeEventFilter(this);
+    QCoreApplication::instance()->installEventFilter(m_resizeFilter);
+
     if (!UiHelper::isRunAsAdmin()) {
         QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
@@ -1223,9 +1230,118 @@ ScanDialog::ScanDialog(QWidget* parent)
 }
 
 ScanDialog::~ScanDialog() {
+    if (m_resizeFilter) {
+        QCoreApplication::instance()->removeEventFilter(m_resizeFilter);
+    }
     // 2026-06-xx 内存优化专项：按照用户要求实现“按需加载、及时卸载”。
     // 关闭搜索窗口时物理卸载 MFT 索引，释放可能高达数百 MB 的内存占用。
     MftReader::instance().clear();
+}
+
+// 2026-07-10 物理移植自 ArcMeta：DPI 自适应感应宽度检测
+ScanDialog::ResizeDirection ScanDialog::getResizeDirection(const QPoint& pos) const {
+    int m = kResizeMargin;
+    if (windowHandle()) {
+        m = qRound(windowHandle()->screen()->logicalDotsPerInch() / 96.0 * (double)kResizeMargin);
+    }
+    const int w = width(), h = height();
+    bool left   = pos.x() < m;
+    bool right  = pos.x() > w - m;
+    bool top    = pos.y() < m;
+    bool bottom = pos.y() > h - m;
+
+    if (top    && left)  return TopLeft;
+    if (top    && right) return TopRight;
+    if (bottom && left)  return BottomLeft;
+    if (bottom && right) return BottomRight;
+    if (left)   return Left;
+    if (right)  return Right;
+    if (top)    return Top;
+    if (bottom) return Bottom;
+    return None;
+}
+
+// 2026-07-10 物理移植自 ArcMeta：实时光标形状更新
+void ScanDialog::updateCursorShape(ResizeDirection dir) {
+    switch (dir) {
+        case Left:        case Right:       setCursor(Qt::SizeHorCursor);  break;
+        case Top:         case Bottom:      setCursor(Qt::SizeVerCursor);  break;
+        case TopLeft:     case BottomRight: setCursor(Qt::SizeFDiagCursor); break;
+        case TopRight:    case BottomLeft:  setCursor(Qt::SizeBDiagCursor); break;
+        default:                            setCursor(Qt::ArrowCursor);    break;
+    }
+}
+
+// 1. 鼠标按下事件：锁定边缘区域拉伸模式，或退化至标题栏拖拽
+void ScanDialog::mousePressEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton) return;
+
+    const QPoint localPos = event->position().toPoint();
+    ResizeDirection dir = getResizeDirection(localPos);
+
+    if (dir != None) {
+        m_isResizing = true;
+        m_isDragging = false;
+        m_resizeDir = dir;
+        m_resizeStartGlobal   = event->globalPosition().toPoint();
+        m_resizeStartGeometry = geometry();
+        event->accept();
+        return;
+    }
+
+    // 拖动逻辑：判断是否在标题栏区域（高度小于等于 34px）
+    if (localPos.y() <= 34) {
+        m_isDragging = true;
+        m_dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        event->accept();
+    }
+}
+
+// 2. 鼠标移动事件：执行实时多维度高阶包围盒计算与位置调整
+void ScanDialog::mouseMoveEvent(QMouseEvent* event) {
+    // A. 正在执行边缘拉伸
+    if (m_isResizing) {
+        const QPoint delta = event->globalPosition().toPoint() - m_resizeStartGlobal;
+        QRect r = m_resizeStartGeometry;
+
+        if (m_resizeDir == Left || m_resizeDir == TopLeft || m_resizeDir == BottomLeft)
+            r.setLeft(r.left() + delta.x());
+        if (m_resizeDir == Right || m_resizeDir == TopRight || m_resizeDir == BottomRight)
+            r.setRight(r.right() + delta.x());
+        if (m_resizeDir == Top || m_resizeDir == TopLeft || m_resizeDir == TopRight)
+            r.setTop(r.top() + delta.y());
+        if (m_resizeDir == Bottom || m_resizeDir == BottomLeft || m_resizeDir == BottomRight)
+            r.setBottom(r.bottom() + delta.y());
+
+        // 严格遵循窗口自身的最小尺寸边界
+        if (r.width() >= minimumWidth() && r.height() >= minimumHeight()) {
+            setGeometry(r);
+        }
+
+        event->accept();
+        return;
+    }
+
+    // B. 正在执行标题栏移动窗口
+    if (m_isDragging && (event->buttons() & Qt::LeftButton)) {
+        move(event->globalPosition().toPoint() - m_dragPosition);
+        event->accept();
+        return;
+    }
+
+    // C. 无操作悬停：由事件过滤器提供持续、平滑的光标联动更新
+    if (!m_isDragging) {
+        updateCursorShape(getResizeDirection(event->position().toPoint()));
+    }
+}
+
+// 3. 鼠标释放事件：清空所有状态机变量，还原光标
+void ScanDialog::mouseReleaseEvent(QMouseEvent* event) {
+    Q_UNUSED(event);
+    m_isDragging  = false;
+    m_isResizing  = false;
+    m_resizeDir   = None;
+    setCursor(Qt::ArrowCursor);
 }
 
 void ScanDialog::closeEvent(QCloseEvent* event) {

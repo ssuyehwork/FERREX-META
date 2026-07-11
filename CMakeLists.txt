@@ -81,6 +81,8 @@ set(SOURCES
     src/ui/JustifiedView.h
     src/ui/QuickLookWindow.cpp
     src/ui/QuickLookWindow.h
+    src/ui/ResizeEventFilter.cpp
+    src/ui/ResizeEventFilter.h
     src/ui/ThumbnailDelegate.cpp
     src/ui/ThumbnailDelegate.h
     src/ui/TrayController.cpp
