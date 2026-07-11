@@ -170,6 +170,12 @@ private slots:
     void onCopyTriggered(bool isCut = false);
 
 public:
+    // 2026-07-11 下拉面板历史单项“×”删除辅助操作链 (对应用户原话：“每个选项右侧都应该有一个“×”……轻松移除某个选项”)
+    void setHistoryText(const QString& text, bool isQuery);
+    void removeHistoryItem(const QString& text, bool isQuery);
+    void reopenHistoryMenu(bool isQuery);
+
+public:
     // 定义物理拉伸的 8 方向枚举与空状态 (对标 ArcMeta 规范)
     enum ResizeDirection {
         None = 0,
