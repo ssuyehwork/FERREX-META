@@ -764,7 +764,12 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return 0;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
-        return m_aspectRatios.value(key, 1.0);
+        // 2026-07-xx 物理修复：改用与缩略图缓存一致的复合 cacheKey（含 size/mtime），
+        // 避免 NTFS 回收复用 FRN 后，新文件误读到旧文件遗留的宽高比缓存。
+        int64_t size = reader.getSize(actualIndex);
+        int64_t mtime = reader.getModifyTime(actualIndex);
+        QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+        return m_aspectRatios.value(cacheKey, 1.0);
     }
     return QVariant();
 }
@@ -929,7 +934,7 @@ void ScanTableModel::processThumbQueue() {
                         m_thumbCache.insert(cacheKey, new QPixmap(pix));
                         m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
                     }
-                    m_aspectRatios[key] = ar;
+                    m_aspectRatios[cacheKey] = ar; // 2026-07-xx 物理修复：改用含 size/mtime 的复合键，避免 FRN 复用污染
 
                     auto snapshot = m_controller->snapshot();
                     auto itPos = snapshot->keyToPos.find(key);

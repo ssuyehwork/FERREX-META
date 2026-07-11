@@ -131,7 +131,9 @@ private:
     mutable QCache<QString, QPixmap> m_lastPixmapCache; // 2026-07-xx 渐进式占位双轨缓存 (Key 为 QString::number(key))
     mutable QSet<uint64_t> m_requestedThumbs;
     mutable QSet<uint64_t> m_failedThumbs; // 记录由于格式损坏或物理错误导致提取失败的 FRN key，避免重复开销并允许兜底退化
-    mutable QMap<uint64_t, double> m_aspectRatios; // 存储宽高比
+    mutable QMap<QString, double> m_aspectRatios; // 存储宽高比，Key 与 m_thumbCache 一致，
+                                                    // 均为 "%1_%2_%3"(key, size, mtime) 复合键，
+                                                    // 避免 FRN 复用导致的宽高比脏读
     
     // 2026-06-xx 极致架构：并行批处理缩略图队列
     struct ThumbTask {
