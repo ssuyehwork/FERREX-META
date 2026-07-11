@@ -82,6 +82,29 @@
 
 namespace FERREX {
 
+// ============================================================================
+// [选择诊断] 临时全局鼠标点击监听器，问题定位完成后应整体删除
+// ============================================================================
+class DebugClickWatcher : public QObject {
+public:
+    explicit DebugClickWatcher(QObject* parent = nullptr) : QObject(parent) {}
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            QWidget* w = qobject_cast<QWidget*>(watched);
+            qDebug() << "[选择诊断][全局点击]"
+                     << "目标对象:" << (watched ? watched->metaObject()->className() : "null")
+                     << "| objectName:" << (watched ? watched->objectName() : "null")
+                     << "| 全局坐标:" << me->globalPosition().toPoint()
+                     << "| isEnabled:" << (w ? w->isEnabled() : false)
+                     << "| isVisible:" << (w ? w->isVisible() : false)
+                     << "| 顶层窗口 isActiveWindow:" << (w && w->window() ? w->window()->isActiveWindow() : false);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
 // 2026-07-11 物理移植自 ArcMeta (Plan-179)：出厂默认配置
 static const QSet<QString> DEFAULT_BLACKLIST = {
     // 系统 / 可执行 / 压缩
@@ -887,6 +910,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_resizeFilter = new ResizeEventFilter(this);
     QCoreApplication::instance()->installEventFilter(m_resizeFilter);
 
+    // [选择诊断] 临时安装全局点击监听器，问题定位完成后需要删除这两行
+    auto* debugClickWatcher = new DebugClickWatcher(this);
+    QCoreApplication::instance()->installEventFilter(debugClickWatcher);
+
     if (!UiHelper::isRunAsAdmin()) {
         QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
@@ -1040,7 +1067,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
             );
             connect(rulesBtn, &QPushButton::clicked, this, [this]() {
-                PreviewRulesDialog dlg(m_config, this);
+                PreviewRulesDialog dlg(m_config, nullptr);
                 if (dlg.exec() == QDialog::Accepted) {
                     m_config.save();
                 }
@@ -1383,6 +1410,13 @@ void ScanDialog::updateCursorShape(ResizeDirection dir) {
 
 // 1. 鼠标按下事件：锁定边缘区域拉伸模式，或退化至标题栏拖拽
 void ScanDialog::mousePressEvent(QMouseEvent* event) {
+    qDebug() << "[选择诊断] ScanDialog::mousePressEvent 触发"
+             << "| isActiveWindow:" << this->isActiveWindow()
+             << "| hasFocus:" << this->hasFocus()
+             << "| QApplication::focusWidget:" << QApplication::focusWidget()
+             << "| m_resultView->hasFocus:" << (m_resultView ? m_resultView->hasFocus() : false)
+             << "| m_resultView->isEnabled:" << (m_resultView ? m_resultView->isEnabled() : false);
+
     if (event->button() != Qt::LeftButton) return;
 
     const QPoint localPos = event->position().toPoint();
@@ -1658,7 +1692,10 @@ void ScanDialog::setupUi() {
     
     connect(m_resultView, &QTableView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
     connect(m_resultView, &QTableView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
-    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
+    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
+        qDebug() << "[选择诊断] selectionChanged 触发，当前选中行数:" << m_resultView->selectionModel()->selectedRows().size();
+        onSelectionChanged();
+    });
     
     // 2026-05-16 交互优化：开启行内编辑触发器 (双击或按F2)
     m_resultView->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
@@ -2562,12 +2599,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     layout->setSpacing(10);
 
     // 1. Whitelist label and editor
-    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以空格或逗号分隔):");
+    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以中英文逗号分隔):");
     lblWhite->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
     layout->addWidget(lblWhite);
 
     m_whitelistEdit = new QTextEdit();
-    m_whitelistEdit->setPlaceholderText("例如: jpg png txt cpp h py");
+    m_whitelistEdit->setPlaceholderText("例如: jpg, png, txt, cpp, h, py");
     m_whitelistEdit->setStyleSheet(
         "QTextEdit {"
         "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
@@ -2579,12 +2616,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     layout->addWidget(m_whitelistEdit);
 
     // 2. Blacklist label and editor
-    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以空格或逗号分隔):");
+    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以中英文逗号分隔):");
     lblBlack->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
     layout->addWidget(lblBlack);
 
     m_blacklistEdit = new QTextEdit();
-    m_blacklistEdit->setPlaceholderText("例如: exe dll zip rar mp4");
+    m_blacklistEdit->setPlaceholderText("例如: exe, dll, zip, rar, mp4");
     m_blacklistEdit->setStyleSheet(
         "QTextEdit {"
         "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
@@ -2599,12 +2636,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     QStringList whiteList;
     for (const auto& ext : m_config.previewWhitelist) whiteList.append(ext);
     whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(" "));
+    m_whitelistEdit->setPlainText(whiteList.join(", "));
 
     QStringList blackList;
     for (const auto& ext : m_config.previewBlacklist) blackList.append(ext);
     blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(" "));
+    m_blacklistEdit->setPlainText(blackList.join(", "));
 
     // 3. Buttons row
     auto* btnLayout = new QHBoxLayout();
@@ -2628,7 +2665,10 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
         "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
         "QPushButton:hover { color: #EEE; background-color: #333; }"
     );
-    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(btnCancel, &QPushButton::clicked, this, [this]() {
+        qDebug() << "[选择诊断] PreviewRulesDialog 取消关闭";
+        reject();
+    });
     btnLayout->addWidget(btnCancel);
 
     auto* btnOk = new QPushButton("确定");
@@ -2648,23 +2688,27 @@ void PreviewRulesDialog::onRestoreDefaults() {
     QStringList whiteList;
     for (const auto& ext : DEFAULT_WHITELIST) whiteList.append(ext);
     whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(" "));
+    m_whitelistEdit->setPlainText(whiteList.join(", "));
 
     QStringList blackList;
     for (const auto& ext : DEFAULT_BLACKLIST) blackList.append(ext);
     blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(" "));
+    m_blacklistEdit->setPlainText(blackList.join(", "));
 }
 
 void PreviewRulesDialog::onConfirm() {
     auto parseExtensions = [](const QString& text) -> QSet<QString> {
         QSet<QString> set;
         QString temp = text;
-        temp.replace(',', ' ');
-        temp.replace('\n', ' ');
-        temp.replace('\r', ' ');
-        QStringList list = temp.split(' ', Qt::SkipEmptyParts);
+        // 1. 将中文逗号、回车、换行全部统一替换为西文逗号（对应用户原话：“支持中英文逗号分割”）
+        temp.replace(QString::fromUtf8("，"), ",");
+        temp.replace('\n', ',');
+        temp.replace('\r', ',');
+        
+        // 2. 严格按逗号进行物理分割，而不是空格分割（对应用户原话：“采用逗号分割……而不是空格分割”）
+        QStringList list = temp.split(',', Qt::SkipEmptyParts);
         for (const QString& item : list) {
+            // 去除多余的空格（例如逗号后的空格）
             QString clean = item.trimmed().toLower();
             if (clean.startsWith('.')) {
                 clean = clean.mid(1);
@@ -2679,6 +2723,7 @@ void PreviewRulesDialog::onConfirm() {
     m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
     m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
 
+    qDebug() << "[选择诊断] PreviewRulesDialog 确定关闭";
     accept();
 }
 
