@@ -4,6 +4,7 @@
 #include <QKeyEvent>
 #include <QTimer>
 #include <QApplication>
+#include <windows.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 
@@ -89,9 +90,16 @@ FramelessDialog::FramelessDialog(const QString& title, QWidget* parent)
     connect(m_pinBtn, &QPushButton::toggled, this, [this](bool checked) {
         m_pinBtn->setIcon(UiHelper::getIcon(checked ? "pin_vertical" : "pin_tilted", 
                                             checked ? QColor("#FF551C") : QColor("#CCCCCC"), 18));
-        // 设置/取消置顶
-        setWindowFlag(Qt::WindowStaysOnTopHint, checked);
-        show();
+        // 严格遵循 AGENTS.md 规范：
+        // 5.3 窗口置顶 唯一标准：一律使用 Win32 原生 SetWindowPos（HWND_TOPMOST / HWND_NOTOPMOST）
+        // 严禁使用 setWindowFlag(Qt::WindowStaysOnTopHint) 或任何导致窗口重建的操作
+        // 调用时必须配合 SWP_NOSENDCHANGING 标志
+        HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (checked) {
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOSENDCHANGING);
+        } else {
+            SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOSENDCHANGING);
+        }
     });
 
     m_minBtn = createTitleBtn("minimize", "最小化", "#333333");
