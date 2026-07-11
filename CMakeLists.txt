@@ -83,6 +83,10 @@ set(SOURCES
     src/ui/QuickLookWindow.h
     src/ui/ResizeEventFilter.cpp
     src/ui/ResizeEventFilter.h
+    src/ui/ToolTipOverlay.cpp
+    src/ui/ToolTipOverlay.h
+    src/ui/HoverEventFilter.cpp
+    src/ui/HoverEventFilter.h
     src/ui/ThumbnailDelegate.cpp
     src/ui/ThumbnailDelegate.h
     src/ui/TrayController.cpp

@@ -66,6 +66,8 @@
 #include "ThumbnailDelegate.h"
 #include "QuickLookWindow.h"
 #include "ResizeEventFilter.h"
+#include "ToolTipOverlay.h"
+#include "HoverEventFilter.h"
 #include <memory>
 #include <algorithm>
 #include <QWidgetAction>
@@ -1010,13 +1012,18 @@ ScanDialog::ScanDialog(QWidget* parent)
             
             titleLayout->insertStretch(titleLayout->indexOf(m_pinBtn));
 
+            // 构造全局气泡 Hover 事件过滤器
+            auto* hoverFilter = new HoverEventFilter(this);
+
             // ① 视图切换按钮 (标记 2)
             QPushButton* viewBtn = new QPushButton(); 
             viewBtn->setFixedSize(20, 20); // 严格锁定 20x20
             viewBtn->setIcon(UiHelper::getIcon("grid", QColor("#CCCCCC"), 16)); // 严格锁定图标 16x16
             viewBtn->setIconSize(QSize(16, 16));
             viewBtn->setCursor(Qt::PointingHandCursor); 
-            viewBtn->setToolTip(""); // 禁止原生 ToolTip
+            viewBtn->setToolTip(""); // 物理禁止原生 ToolTip，防范系统黑块
+            viewBtn->setProperty("tooltipText", "切换视图排版模式"); // 完美对接高级属性
+            viewBtn->installEventFilter(hoverFilter); // 接管悬停管线
             viewBtn->setStyleSheet( 
                 "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }" 
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }" 
@@ -1109,7 +1116,9 @@ ScanDialog::ScanDialog(QWidget* parent)
             rulesBtn->setIcon(UiHelper::getIcon("settings", QColor("#CCCCCC"), 16));
             rulesBtn->setIconSize(QSize(16, 16));
             rulesBtn->setCursor(Qt::PointingHandCursor);
-            rulesBtn->setToolTip("预览规则配置");
+            rulesBtn->setToolTip(""); // 彻底切除原生阻塞黑色气泡 (对应用户原话：“其他按钮也没有采用Tooltip ... Tooltip都显示了什么？完全看不到”)
+            rulesBtn->setProperty("tooltipText", "预览规则配置"); // 统一改用自定义属性气泡驱动 (对应用户原话：“去参考ArcMeta版本来实现ToolTipOverlay”)
+            rulesBtn->installEventFilter(hoverFilter); // 接管悬停管线
             rulesBtn->setStyleSheet(
                 "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }"
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }"
@@ -1145,14 +1154,25 @@ ScanDialog::ScanDialog(QWidget* parent)
                 if (!btn) continue;
                 btn->setFixedSize(20, 20);
                 btn->setIconSize(QSize(16, 16));
-                btn->setToolTip("");
+                btn->setToolTip(""); // 原生禁绝
+
+                // 完美赋予自定义 ToolTipOverlay 支持
                 if (btn == m_pinBtn) {
-                     btn->setStyleSheet(
+                    btn->setProperty("tooltipText", "切换窗口置顶状态");
+                    btn->installEventFilter(hoverFilter);
+                    btn->setStyleSheet(
                         "QPushButton { background: transparent; border: none; border-radius: 4px; } "
                         "QPushButton:hover { background: rgba(255, 255, 255, 0.1); } "
                         "QPushButton:checked { background: rgba(255, 85, 28, 0.2); }"
                     );
                 } else {
+                    if (btn == m_minBtn) {
+                        btn->setProperty("tooltipText", "最小化");
+                        btn->installEventFilter(hoverFilter);
+                    } else if (btn == m_maxBtn) {
+                        btn->setProperty("tooltipText", "最大化");
+                        btn->installEventFilter(hoverFilter);
+                    }
                     btn->setStyleSheet(
                         "QPushButton { background: transparent; border: none; border-radius: 4px; } "
                         "QPushButton:hover { background: rgba(255, 255, 255, 0.1); } "
