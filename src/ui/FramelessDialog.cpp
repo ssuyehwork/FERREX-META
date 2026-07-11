@@ -409,8 +409,15 @@ void FramelessDialog::changeEvent(QEvent* event) {
 
 
 void FramelessDialog::keyPressEvent(QKeyEvent* event) {
+    // 2026-07-10 新增：整个应用的任何无边框对话框界面，皆支持 Ctrl+W 关闭窗口（对应用户原话：“我期望整个应用的任何界面都必须支持Ctrl+W关闭窗口”）
+    if (event->key() == Qt::Key_W && (event->modifiers() & Qt::ControlModifier)) {
+        reject();
+        event->accept();
+        return;
+    }
+
     if (event->key() == Qt::Key_Escape) {
-        // 物理还原两段式 UX：若有非空输入框则先清空，否则关闭
+        // 物理还原普通对话框两段式 UX：若有非空输入框则先清空，否则关闭
         QLineEdit* edit = findChild<QLineEdit*>();
         if (edit && edit->isVisible() && !edit->text().isEmpty()) {
             edit->clear();

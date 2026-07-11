@@ -1051,7 +1051,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:vertical {
             border: none;
             background: transparent;
-            width: 10px;
+            width: 7px;
             margin: 0px;
         }
         QScrollBar::handle:vertical {
@@ -1072,7 +1072,7 @@ ScanDialog::ScanDialog(QWidget* parent)
         QScrollBar:horizontal {
             border: none;
             background: transparent;
-            height: 10px;
+            height: 7px;
             margin: 0px;
         }
         QScrollBar::handle:horizontal {
@@ -2208,6 +2208,25 @@ void ScanDialog::onCopyTriggered(bool isCut) {
 
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
+    // 2026-07-10 新增：专属 ScanDialog 主窗口的两段式 Esc 处理（对应用户原话：“当在ScanDialog窗口首次按下键时”）
+    if (event->key() == Qt::Key_Escape) {
+        bool searchNotEmpty = m_searchEdit && !m_searchEdit->text().isEmpty();
+        bool extNotEmpty = m_extEdit && !m_extEdit->text().isEmpty();
+
+        // 1. 若至少有一个输入框不为空，则优先执行一键全部重置清空文字（对应用户原话：“应该先清空ScanDialog主窗口所有输入框的文字”）
+        if (searchNotEmpty || extNotEmpty) {
+            if (m_searchEdit) m_searchEdit->clear();
+            if (m_extEdit) m_extEdit->clear();
+            event->accept();
+            return; // 消费按键，拦截阻止其传播至基类直接关闭窗口
+        }
+
+        // 2. 若所有输入框均已经处于清空重置状态，则直接关闭 ScanDialog 主窗口（对应用户原话：“所有输入框都已经处于清空文字状态情况下则直接关闭ScanDialog窗口”）
+        reject();
+        event->accept();
+        return;
+    }
+
     if (event->key() == Qt::Key_Space) {
         auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
         QModelIndex idx = view->currentIndex();
