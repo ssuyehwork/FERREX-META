@@ -1,6 +1,8 @@
 #include "ThumbnailDelegate.h"
 #include <QPainter>
 #include <QPainterPath>
+#include <QHelpEvent>
+#include "ToolTipOverlay.h"
 #include <QIcon>
 #include <QPixmap>
 #include <QStyleOptionViewItem>
@@ -317,8 +319,28 @@ bool ThumbnailDelegate::eventFilter(QObject* obj, QEvent* event) {
     return QStyledItemDelegate::eventFilter(obj, event); 
 } 
 
+bool ThumbnailDelegate::helpEvent(QHelpEvent* event, QAbstractItemView* view, 
+                                  const QStyleOptionViewItem& option, const QModelIndex& index) {
+    if (!event || !view || !index.isValid()) {
+        return QStyledItemDelegate::helpEvent(event, view, option, index);
+    }
+
+    if (event->type() == QEvent::ToolTip) {
+        // 直接读取模型精心组装完毕的 ToolTip 级文本
+        QString tipText = index.data(Qt::ToolTipRole).toString();
+        if (!tipText.isEmpty()) {
+            // 通过高对比度自定义窗口渲染，timeout = 0
+            ToolTipOverlay::instance()->showText(event->globalPos(), tipText, 0);
+        } else {
+            ToolTipOverlay::hideTip();
+        }
+        return true; // 返回 true 阻断原生
+    }
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
+}
+
 bool ThumbnailDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) {
-    // 2026-07-xx 重构：星级已不再使用，不拦截任何鼠标按下事件修改星级，直接走基类逻辑 [1]
+    // 2026-07-xx 重构：星级已不再使用，不拦截 any 鼠标按下事件修改星级，直接走基类逻辑 [1]
     return QStyledItemDelegate::editorEvent(event, model, option, index);
 }
 

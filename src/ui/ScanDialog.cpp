@@ -82,10 +82,16 @@ public:
     HistoryItemWidget(const QString& text, bool isQuery, QMenu* parentMenu, ScanDialog* dialog, QWidget* parent = nullptr)
         : QWidget(parent), m_text(text), m_isQuery(isQuery), m_parentMenu(parentMenu), m_dialog(dialog)
     {
-        // 采用极致扁平与紧凑的布局结构
+        // 开启整行悬停高亮样式
+        this->setStyleSheet(
+            "HistoryItemWidget { background-color: transparent; } "
+            "HistoryItemWidget:hover { background-color: #2A2A2A; }"
+        );
+
+        // 采用极致扁平与紧凑的布局结构，为窄下拉框（如 120px 的后缀框）腾出完美空间
         auto* layout = new QHBoxLayout(this);
-        layout->setContentsMargins(8, 2, 8, 2);
-        layout->setSpacing(8);
+        layout->setContentsMargins(6, 1, 4, 1);
+        layout->setSpacing(4);
 
         // A. 左侧：条目文本按钮（扁平设计，点击后将内容填入主搜索框，并执行搜索）
         auto* btnText = new QPushButton(m_text, this);
@@ -256,6 +262,26 @@ static bool isPathPreviewable(const QString& path, const ScanConfig& config) {
 class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+
+    // 物理拦截原生的列表项 ToolTip 询问事件，转向 ToolTipOverlay (对应用户原话：“鼠标悬停在某个项目时显示的Tooltip仍然在使用原生的ToolTip ... 彻底替换成ToolTipOverlay”)
+    bool helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option, const QModelIndex& index) override {
+        if (!event || !view || !index.isValid()) {
+            return QStyledItemDelegate::helpEvent(event, view, option, index);
+        }
+
+        if (event->type() == QEvent::ToolTip) {
+            // 获取项目在 ToolTipRole 中由模型已经处理好的完整高清晰文本（包含路径、备注和标签等）
+            QString tipText = index.data(Qt::ToolTipRole).toString();
+            if (!tipText.isEmpty()) {
+                // 使用 timeout = 0（非自动关闭，跟随鼠标运动并在移出时被 hide 事件闭合）
+                ToolTipOverlay::instance()->showText(event->globalPos(), tipText, 0);
+            } else {
+                ToolTipOverlay::hideTip();
+            }
+            return true; // 极其重要：返回 true 阻止 Qt 底层触发原生的黑色小气泡弹窗
+        }
+        return QStyledItemDelegate::helpEvent(event, view, option, index);
+    }
 
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         painter->save();
@@ -2617,6 +2643,12 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
+    // 当鼠标彻底离开详情列表或网格卡片视图时，必须同步调用 hideTip 使得气泡自然退隐，杜绝残留悬浮
+    if ((watched == m_resultView || watched == m_iconView) && 
+        (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress)) {
+        ToolTipOverlay::hideTip();
+    }
+
     if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::Wheel) {
         QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & Qt::ControlModifier) {
@@ -2662,8 +2694,11 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
         if (!history.isEmpty()) {
             QMenu menu(this);
             // 升级样式：加入对 QWidgetAction 自定义组件的 QMenu 内部样式修饰，保持 1A1A1A 深色系的高级感
+            // 特别添加 "QMenu::item { padding: 0px 0px; background: transparent; }"，彻底干掉 Qt 默认保留的高宽度 Gutter 图标槽，
+            // 让我们的自定义组件能够完整占据 120px 宽度，从而完美露出极右侧的“×”删除按钮！
             menu.setStyleSheet(
                 "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; padding: 4px 0; }"
+                "QMenu::item { padding: 0px 0px; background: transparent; }"
                 "QMenu::separator { height: 1px; background: #333; margin: 4px 0; }"
             );
 
