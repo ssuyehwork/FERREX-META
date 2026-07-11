@@ -20,6 +20,7 @@
 #include <QCloseEvent>
 #include <QWheelEvent>
 #include <QLineEdit>
+#include <QTextEdit>
 #include <QTableView>
 #include <QAbstractTableModel>
 #include <QSvgRenderer>
@@ -80,6 +81,99 @@
 
 
 namespace FERREX {
+
+// 2026-07-11 物理移植自 ArcMeta (Plan-179)：出厂默认配置
+static const QSet<QString> DEFAULT_BLACKLIST = {
+    // 系统 / 可执行 / 压缩
+    "exe", "dll", "sys", "bin", "dat", "lib", "obj", "msi", "com",
+    "zip", "rar", "7z", "iso", "tar", "gz", "bz2", "dmg", "pkg",
+    // 音频类（由默认播放器处理）
+    "mp3", "wav", "wma", "flac", "aac", "ogg", "m4a", "ape", "opus", "aiff", "amr",
+    // 视频类（由默认播放器处理）
+    "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
+};
+
+static const QSet<QString> DEFAULT_WHITELIST = {
+    // 图像类
+    "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
+    // 纯文本 / 标记语言
+    "txt", "md", "markdown", "rst", "log", "nfo", "tex", "latex", "diff", "patch",
+    "csv", "tsv", "html", "htm", "xhtml", "xml", "xsl", "xslt", "svg", "xaml",
+    "json", "json5", "toml", "yaml", "yml", "ini", "conf", "cfg", "properties", "env",
+    // C / C++ 系
+    "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
+    // C# / .NET
+    "cs", "csx", "vb", "vbs", "vba",
+    // Java / Kotlin / Scala / Groovy
+    "java", "kt", "kts", "scala", "sc", "groovy", "gradle",
+    // Web 前端
+    "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte",
+    "css", "scss", "sass", "less", "styl",
+    "php", "php3", "php4", "php5", "phtml",
+    // 脚本语言
+    "py", "pyw", "pyi",          // Python
+    "rb", "rbw", "rake",          // Ruby
+    "pl", "pm", "pod", "t",       // Perl / Raku
+    "lua",                         // Lua
+    "tcl", "tk",                   // TCL
+    "r", "rmd",                    // R
+    "m",                           // MATLAB / Objective-C
+    "jl",                          // Julia
+    // 系统 / 自动化脚本
+    "sh", "bash", "zsh", "fish", "ksh", "csh",   // Shell
+    "bat", "cmd",                                   // Windows Batch
+    "ps1", "psm1", "psd1", "ps1xml",              // PowerShell
+    "ahk", "ahk2",                                 // AutoHotkey
+    "au3",                                         // AutoIt
+    "nsi", "nsh",                                  // NSIS
+    "iss",                                         // Inno Setup
+    "reg",                                         // Windows Registry
+    // 系统 / 编译工具
+    "cmake", "make", "mk", "makefile",
+    "dockerfile",
+    // 数据库
+    "sql", "mysql", "pgsql", "plsql",
+    // 函数式 / 其他语言
+    "hs", "lhs",                   // Haskell
+    "erl", "hrl",                  // Erlang
+    "clj", "cljs", "cljc",         // Clojure
+    "lisp", "el", "scm", "ss",     // Lisp / Scheme
+    "f", "for", "f90", "f95", "f03", // Fortran
+    "d",                            // D
+    "pas", "pp", "inc",            // Pascal / Delphi
+    "swift",                        // Swift
+    "go",                           // Go
+    "rs",                           // Rust
+    "dart",                         // Dart
+    "zig",                          // Zig
+    "nim",                          // Nim
+    "cr",                           // Crystal
+    "ex", "exs",                    // Elixir
+    "coffee",                       // CoffeeScript
+    "as",                           // ActionScript
+    "ada", "adb", "ads",           // Ada
+    "asm", "s", "nasm",            // Assembly
+    "v", "sv", "svh",              // Verilog / SystemVerilog
+    "vhd", "vhdl",                 // VHDL
+    "pro",                          // Prolog
+    "sas",                          // SAS
+    "matlab",                       // MATLAB (alt)
+    "cob", "cbl",                  // COBOL
+    "bas", "frm", "cls",           // VB Classic / FreeBasic
+    "asp", "aspx",                 // ASP
+    "jsp",                          // JSP
+};
+
+// 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置文件类型准入哨兵
+// 按下空格键时，先通过此函数判断文件是否支持预览，不支持则直接 return，绝不弹出预览窗
+static bool isPathPreviewable(const QString& path, const ScanConfig& config) {
+    QFileInfo info(path);
+    if (info.isDir()) return false; // 文件夹直接拦截
+
+    QString ext = info.suffix().toLower();
+    if (config.previewBlacklist.contains(ext)) return false;
+    return config.previewWhitelist.contains(ext);
+}
 
 class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
@@ -206,6 +300,10 @@ public:
 // --- ScanConfig Implementation ---
 
 void ScanConfig::load() {
+    // 2026-07-11 新增：预初始化为出厂默认黑白名单，若配置文件中无此键值对则在此兜底
+    previewBlacklist = DEFAULT_BLACKLIST;
+    previewWhitelist = DEFAULT_WHITELIST;
+
     QFile file("FERREX_scan_config.json");
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -229,6 +327,10 @@ void ScanConfig::load() {
         QJsonArray eArr = obj["extHistory"].toArray();
         for (const auto& v : eArr) extHistory.append(v.toString());
         
+        // 2026-07-11 物理移植 (Plan-179)：从配置加载动态黑白名单（若存在）
+        if (obj.contains("previewBlacklist")) loadSet("previewBlacklist", previewBlacklist);
+        if (obj.contains("previewWhitelist")) loadSet("previewWhitelist", previewWhitelist);
+
         // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
@@ -270,6 +372,10 @@ void ScanConfig::save() {
         QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
         obj["extHistory"] = eArr;
         
+        // 2026-07-11 物理移植 (Plan-179)：持久化动态黑白名单
+        saveSet("previewBlacklist", previewBlacklist);
+        saveSet("previewWhitelist", previewWhitelist);
+
         // 2026-05-16 持久化存盘
         obj["viewMode"] = viewMode;
         obj["iconSize"] = iconSize;
@@ -922,8 +1028,27 @@ ScanDialog::ScanDialog(QWidget* parent)
                 m_config.save(); 
             }); 
             
+            QPushButton* rulesBtn = new QPushButton();
+            rulesBtn->setFixedSize(20, 20);
+            rulesBtn->setIcon(UiHelper::getIcon("settings", QColor("#CCCCCC"), 16));
+            rulesBtn->setIconSize(QSize(16, 16));
+            rulesBtn->setCursor(Qt::PointingHandCursor);
+            rulesBtn->setToolTip("预览规则配置");
+            rulesBtn->setStyleSheet(
+                "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }"
+                "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }"
+                "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
+            );
+            connect(rulesBtn, &QPushButton::clicked, this, [this]() {
+                PreviewRulesDialog dlg(m_config, this);
+                if (dlg.exec() == QDialog::Accepted) {
+                    m_config.save();
+                }
+            });
+            
             titleLayout->insertWidget(titleLayout->indexOf(m_pinBtn), viewBtn);
-            titleLayout->insertWidget(titleLayout->indexOf(viewBtn), m_sizeSlider);
+            titleLayout->insertWidget(titleLayout->indexOf(viewBtn), rulesBtn);
+            titleLayout->insertWidget(titleLayout->indexOf(rulesBtn), m_sizeSlider);
 
             // 更新现有控制按钮样式以对标规范
             for (auto* btn : {m_pinBtn, m_minBtn, m_maxBtn}) {
@@ -2235,6 +2360,8 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
                 m_quickLook->closePreview();
             } else {
                 QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                // 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置属性准入判断，文件夹/黑名单直接 return 阻断
+                if (!isPathPreviewable(path, m_config)) return;
                 m_quickLook->preview(path);
             }
         }
@@ -2375,6 +2502,8 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                     m_quickLook->closePreview();
                 } else {
                     QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
+                    // 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置属性准入判断，文件夹/黑名单直接 return 阻断
+                    if (!isPathPreviewable(path, m_config)) return true;
                     m_quickLook->preview(path);
                 }
             }
@@ -2417,6 +2546,140 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
         }
     }
     return FramelessDialog::eventFilter(watched, event);
+}
+
+// ============================================================================
+// PreviewRulesDialog 实现
+// ============================================================================
+PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
+    : FramelessDialog("预览规则配置", parent), m_config(config)
+{
+    resize(600, 480);
+    setMinimumSize(500, 400);
+
+    auto* layout = new QVBoxLayout(m_contentArea);
+    layout->setContentsMargins(20, 15, 20, 20);
+    layout->setSpacing(10);
+
+    // 1. Whitelist label and editor
+    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以空格或逗号分隔):");
+    lblWhite->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
+    layout->addWidget(lblWhite);
+
+    m_whitelistEdit = new QTextEdit();
+    m_whitelistEdit->setPlaceholderText("例如: jpg png txt cpp h py");
+    m_whitelistEdit->setStyleSheet(
+        "QTextEdit {"
+        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
+        "  padding: 8px; color: white; selection-background-color: #3498db;"
+        "  font-size: 13px; line-height: 1.4;"
+        "}"
+        "QTextEdit:focus { border: 1px solid #3498db; }"
+    );
+    layout->addWidget(m_whitelistEdit);
+
+    // 2. Blacklist label and editor
+    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以空格或逗号分隔):");
+    lblBlack->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
+    layout->addWidget(lblBlack);
+
+    m_blacklistEdit = new QTextEdit();
+    m_blacklistEdit->setPlaceholderText("例如: exe dll zip rar mp4");
+    m_blacklistEdit->setStyleSheet(
+        "QTextEdit {"
+        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
+        "  padding: 8px; color: white; selection-background-color: #3498db;"
+        "  font-size: 13px; line-height: 1.4;"
+        "}"
+        "QTextEdit:focus { border: 1px solid #3498db; }"
+    );
+    layout->addWidget(m_blacklistEdit);
+
+    // Populate data
+    QStringList whiteList;
+    for (const auto& ext : m_config.previewWhitelist) whiteList.append(ext);
+    whiteList.sort();
+    m_whitelistEdit->setPlainText(whiteList.join(" "));
+
+    QStringList blackList;
+    for (const auto& ext : m_config.previewBlacklist) blackList.append(ext);
+    blackList.sort();
+    m_blacklistEdit->setPlainText(blackList.join(" "));
+
+    // 3. Buttons row
+    auto* btnLayout = new QHBoxLayout();
+    
+    auto* btnRestore = new QPushButton("恢复默认");
+    btnRestore->setFixedSize(100, 32);
+    btnRestore->setCursor(Qt::PointingHandCursor);
+    btnRestore->setStyleSheet(
+        "QPushButton { background-color: transparent; color: #FF8C00; border: 1px solid #FF8C00; border-radius: 4px; } "
+        "QPushButton:hover { background-color: rgba(255, 140, 0, 0.1); }"
+    );
+    connect(btnRestore, &QPushButton::clicked, this, &PreviewRulesDialog::onRestoreDefaults);
+    btnLayout->addWidget(btnRestore);
+
+    btnLayout->addStretch();
+    
+    auto* btnCancel = new QPushButton("取消");
+    btnCancel->setFixedSize(80, 32);
+    btnCancel->setCursor(Qt::PointingHandCursor);
+    btnCancel->setStyleSheet(
+        "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
+        "QPushButton:hover { color: #EEE; background-color: #333; }"
+    );
+    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
+    btnLayout->addWidget(btnCancel);
+
+    auto* btnOk = new QPushButton("确定");
+    btnOk->setFixedSize(80, 32);
+    btnOk->setCursor(Qt::PointingHandCursor);
+    btnOk->setStyleSheet(
+        "QPushButton { background-color: #3498db; color: white; border: none; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #1a7abf; }" 
+    );
+    connect(btnOk, &QPushButton::clicked, this, &PreviewRulesDialog::onConfirm);
+    btnLayout->addWidget(btnOk);
+
+    layout->addLayout(btnLayout);
+}
+
+void PreviewRulesDialog::onRestoreDefaults() {
+    QStringList whiteList;
+    for (const auto& ext : DEFAULT_WHITELIST) whiteList.append(ext);
+    whiteList.sort();
+    m_whitelistEdit->setPlainText(whiteList.join(" "));
+
+    QStringList blackList;
+    for (const auto& ext : DEFAULT_BLACKLIST) blackList.append(ext);
+    blackList.sort();
+    m_blacklistEdit->setPlainText(blackList.join(" "));
+}
+
+void PreviewRulesDialog::onConfirm() {
+    auto parseExtensions = [](const QString& text) -> QSet<QString> {
+        QSet<QString> set;
+        QString temp = text;
+        temp.replace(',', ' ');
+        temp.replace('\n', ' ');
+        temp.replace('\r', ' ');
+        QStringList list = temp.split(' ', Qt::SkipEmptyParts);
+        for (const QString& item : list) {
+            QString clean = item.trimmed().toLower();
+            if (clean.startsWith('.')) {
+                clean = clean.mid(1);
+            }
+            if (!clean.isEmpty()) {
+                set.insert(clean);
+            }
+        }
+        return set;
+    };
+
+    m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
+    m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
+
+    accept();
 }
 
 } // namespace FERREX

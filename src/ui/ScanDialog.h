@@ -32,6 +32,7 @@
 #include <atomic>
 
 #include "ScanController.h"
+class QTextEdit;
 namespace FERREX {
 
 class JustifiedView;
@@ -43,6 +44,9 @@ struct ScanConfig {
     QSet<QString> defaultDrives;
     QStringList queryHistory;
     QStringList extHistory;
+    
+    QSet<QString> previewBlacklist;
+    QSet<QString> previewWhitelist;
     
     int viewMode = 0;   // 0: Details, 1: Icons
     int iconSize = 128; // 256, 128, 64
@@ -59,6 +63,21 @@ struct ScanConfig {
 
     void load();
     void save();
+};
+
+class PreviewRulesDialog : public FramelessDialog {
+    Q_OBJECT
+public:
+    explicit PreviewRulesDialog(ScanConfig& config, QWidget* parent = nullptr);
+
+private slots:
+    void onRestoreDefaults();
+    void onConfirm();
+
+private:
+    ScanConfig& m_config;
+    QTextEdit* m_whitelistEdit = nullptr;
+    QTextEdit* m_blacklistEdit = nullptr;
 };
 
 
