@@ -150,11 +150,40 @@ private slots:
     void onRenameTriggered();
     void onCopyTriggered(bool isCut = false);
 
+public:
+    // 定义物理拉伸的 8 方向枚举与空状态 (对标 ArcMeta 规范)
+    enum ResizeDirection {
+        None = 0,
+        Left, Right, Top, Bottom,
+        TopLeft, TopRight, BottomLeft, BottomRight
+    };
+
+    // 公开暴露供事件过滤器调用
+    ResizeDirection getResizeDirection(const QPoint& localPos) const;
+    void updateCursorShape(ResizeDirection dir);
+
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
+    // 重写三大鼠标底层事件，承接窗口边缘拉伸拖拽逻辑
+    void mousePressEvent(QMouseEvent* event) override;
+    void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
+
 private:
+    // 拉伸状态机核心变量
+    ResizeDirection m_resizeDir = None;
+    bool m_isResizing = false;
+    bool m_isDragging = false;             // 控制标题栏拖拽状态
+    QPoint m_resizeStartGlobal;
+    QRect  m_resizeStartGeometry;
+    QPoint m_dragPosition;                 // 标题栏拖动起始差值
+
+    static constexpr int kResizeMargin = 6; // DPI 基准热区像素宽度
+
+    class ResizeEventFilter* m_resizeFilter = nullptr; // 全局拦截事件过滤器
+
     void setupUi();
     void showDriveLoading();
     void refreshDriveList(bool forceProbe = false);
