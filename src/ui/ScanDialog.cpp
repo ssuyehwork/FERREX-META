@@ -68,6 +68,82 @@
 #include "ResizeEventFilter.h"
 #include <memory>
 #include <algorithm>
+#include <QWidgetAction>
+
+namespace FERREX {
+
+// ============================================================================
+// [历史重构] 专门用于下来面板中展示历史选项和右侧删除按钮的自定义微控件
+// ============================================================================
+class HistoryItemWidget : public QWidget {
+public:
+    HistoryItemWidget(const QString& text, bool isQuery, QMenu* parentMenu, ScanDialog* dialog, QWidget* parent = nullptr)
+        : QWidget(parent), m_text(text), m_isQuery(isQuery), m_parentMenu(parentMenu), m_dialog(dialog)
+    {
+        // 采用极致扁平与紧凑的布局结构
+        auto* layout = new QHBoxLayout(this);
+        layout->setContentsMargins(8, 2, 8, 2);
+        layout->setSpacing(8);
+
+        // A. 左侧：条目文本按钮（扁平设计，点击后将内容填入主搜索框，并执行搜索）
+        auto* btnText = new QPushButton(m_text, this);
+        btnText->setCursor(Qt::PointingHandCursor);
+        btnText->setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #CCCCCC; text-align: left; font-size: 12px; padding: 4px 0; } "
+            "QPushButton:hover { color: #FFFFFF; }"
+        );
+        connect(btnText, &QPushButton::clicked, this, &HistoryItemWidget::onSelectTriggered);
+        layout->addWidget(btnText, 1); // 占据所有的剩余伸缩空间
+
+        // B. 右侧：精致的 “×” 单项删除按钮 (对应用户原话：“下来面板的每一个选项右侧都应该有一个“×”，这样的话用户就可以轻松移除某个选项了”)
+        auto* btnDelete = new QPushButton("×", this);
+        btnDelete->setFixedSize(18, 18);
+        btnDelete->setCursor(Qt::PointingHandCursor);
+        btnDelete->setToolTip("移除该历史记录");
+        btnDelete->setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #888888; font-size: 14px; font-weight: bold; border-radius: 3px; line-height: 18px; } "
+            "QPushButton:hover { color: #FFFFFF; background-color: #E81123; }" // 悬停显红
+        );
+        connect(btnDelete, &QPushButton::clicked, this, &HistoryItemWidget::onDeleteTriggered);
+        layout->addWidget(btnDelete);
+    }
+
+private:
+    void onSelectTriggered() {
+        if (m_dialog) {
+            m_dialog->setHistoryText(m_text, m_isQuery);
+        }
+        if (m_parentMenu) {
+            m_parentMenu->close(); // 选中后关闭下拉菜单
+        }
+    }
+
+    void onDeleteTriggered() {
+        if (m_dialog) {
+            m_dialog->removeHistoryItem(m_text, m_isQuery);
+        }
+        if (m_parentMenu) {
+            m_parentMenu->close(); // 删除后立即关闭旧菜单，外界会重新唤醒最新菜单以完成无缝重绘
+            // 2026-07-11 优化：使用异步 QTimer 触发重新打开，使当前 QMenu::exec 循环能够完全平稳退出，避免嵌套事件循环风险
+            // 为避免 QMenu 析构导致 itemWidget (this) 被销毁从而引发 Use-After-Free 崩溃，
+            // 此处必须按值捕获 isQuery 和 dialog，而不是捕获 this 指针。
+            bool isQuery = m_isQuery;
+            ScanDialog* dialog = m_dialog;
+            if (dialog) {
+                QTimer::singleShot(50, dialog, [dialog, isQuery]() {
+                    dialog->reopenHistoryMenu(isQuery);
+                });
+            }
+        }
+    }
+
+    QString m_text;
+    bool m_isQuery;
+    QMenu* m_parentMenu;
+    ScanDialog* m_dialog;
+};
+
+} // namespace FERREX
 
 #ifdef min
 #undef min
@@ -81,29 +157,6 @@
 
 
 namespace FERREX {
-
-// ============================================================================
-// [选择诊断] 临时全局鼠标点击监听器，问题定位完成后应整体删除
-// ============================================================================
-class DebugClickWatcher : public QObject {
-public:
-    explicit DebugClickWatcher(QObject* parent = nullptr) : QObject(parent) {}
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        if (event->type() == QEvent::MouseButtonPress) {
-            QMouseEvent* me = static_cast<QMouseEvent*>(event);
-            QWidget* w = qobject_cast<QWidget*>(watched);
-            qDebug() << "[选择诊断][全局点击]"
-                     << "目标对象:" << (watched ? watched->metaObject()->className() : "null")
-                     << "| objectName:" << (watched ? watched->objectName() : "null")
-                     << "| 全局坐标:" << me->globalPosition().toPoint()
-                     << "| isEnabled:" << (w ? w->isEnabled() : false)
-                     << "| isVisible:" << (w ? w->isVisible() : false)
-                     << "| 顶层窗口 isActiveWindow:" << (w && w->window() ? w->window()->isActiveWindow() : false);
-        }
-        return QObject::eventFilter(watched, event);
-    }
-};
 
 // 2026-07-11 物理移植自 ArcMeta (Plan-179)：出厂默认配置
 static const QSet<QString> DEFAULT_BLACKLIST = {
@@ -910,10 +963,6 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_resizeFilter = new ResizeEventFilter(this);
     QCoreApplication::instance()->installEventFilter(m_resizeFilter);
 
-    // [选择诊断] 临时安装全局点击监听器，问题定位完成后需要删除这两行
-    auto* debugClickWatcher = new DebugClickWatcher(this);
-    QCoreApplication::instance()->installEventFilter(debugClickWatcher);
-
     if (!UiHelper::isRunAsAdmin()) {
         QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
         QTimer::singleShot(0, qApp, &QCoreApplication::quit);
@@ -1067,7 +1116,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
             );
             connect(rulesBtn, &QPushButton::clicked, this, [this]() {
-                PreviewRulesDialog dlg(m_config, nullptr);
+                PreviewRulesDialog dlg(m_config, this);
                 if (dlg.exec() == QDialog::Accepted) {
                     m_config.save();
                 }
@@ -1410,13 +1459,6 @@ void ScanDialog::updateCursorShape(ResizeDirection dir) {
 
 // 1. 鼠标按下事件：锁定边缘区域拉伸模式，或退化至标题栏拖拽
 void ScanDialog::mousePressEvent(QMouseEvent* event) {
-    qDebug() << "[选择诊断] ScanDialog::mousePressEvent 触发"
-             << "| isActiveWindow:" << this->isActiveWindow()
-             << "| hasFocus:" << this->hasFocus()
-             << "| QApplication::focusWidget:" << QApplication::focusWidget()
-             << "| m_resultView->hasFocus:" << (m_resultView ? m_resultView->hasFocus() : false)
-             << "| m_resultView->isEnabled:" << (m_resultView ? m_resultView->isEnabled() : false);
-
     if (event->button() != Qt::LeftButton) return;
 
     const QPoint localPos = event->position().toPoint();
@@ -1692,10 +1734,7 @@ void ScanDialog::setupUi() {
     
     connect(m_resultView, &QTableView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
     connect(m_resultView, &QTableView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
-    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
-        qDebug() << "[选择诊断] selectionChanged 触发，当前选中行数:" << m_resultView->selectionModel()->selectedRows().size();
-        onSelectionChanged();
-    });
+    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
     
     // 2026-05-16 交互优化：开启行内编辑触发器 (双击或按F2)
     m_resultView->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
@@ -2368,6 +2407,33 @@ void ScanDialog::onCopyTriggered(bool isCut) {
     QApplication::clipboard()->setMimeData(mimeData);
 }
 
+void ScanDialog::setHistoryText(const QString& text, bool isQuery) {
+    if (isQuery) {
+        m_searchEdit->setText(text);
+    } else {
+        m_extEdit->setText(text);
+    }
+    onTriggerSearch();
+}
+
+void ScanDialog::removeHistoryItem(const QString& text, bool isQuery) {
+    if (isQuery) {
+        m_config.queryHistory.removeAll(text);
+    } else {
+        m_config.extHistory.removeAll(text);
+    }
+    m_config.save(); // 保存最新的去重单项状态
+}
+
+void ScanDialog::reopenHistoryMenu(bool isQuery) {
+    // 重新模拟鼠标双击从而完美重新唤醒刷新后的最新下拉面板，提供完美无感动画
+    QWidget* target = isQuery ? static_cast<QWidget*>(m_searchEdit) : static_cast<QWidget*>(m_extEdit);
+    if (target) {
+        QMouseEvent me(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(target, &me);
+    }
+}
+
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
     // 2026-07-10 新增：专属 ScanDialog 主窗口的两段式 Esc 处理（对应用户原话：“当在ScanDialog窗口首次按下键时”）
@@ -2561,22 +2627,36 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
         
         if (!history.isEmpty()) {
             QMenu menu(this);
-            menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
+            // 升级样式：加入对 QWidgetAction 自定义组件的 QMenu 内部样式修饰，保持 1A1A1A 深色系的高级感
+            menu.setStyleSheet(
+                "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; padding: 4px 0; }"
+                "QMenu::separator { height: 1px; background: #333; margin: 4px 0; }"
+            );
+
+            // 使下拉面板的宽度与输入框的宽度保持一致
+            QWidget* editWidget = static_cast<QWidget*>(watched);
+            if (editWidget) {
+                menu.setFixedWidth(editWidget->width());
+            }
             
+            // 使用 QWidgetAction 为每一条历史记录嵌入带有“×”的交互式控件 (对应用户原话：“每个选项右侧都应该有一个“×”……轻松移除某个选项”)
             for (const QString& item : history) {
-                menu.addAction(item, [this, isQuery, item]() {
-                    if (isQuery) m_searchEdit->setText(item);
-                    else m_extEdit->setText(item);
-                    onTriggerSearch();
-                });
+                auto* wa = new QWidgetAction(&menu);
+                auto* itemWidget = new HistoryItemWidget(item, isQuery, &menu, this, &menu);
+                wa->setDefaultWidget(itemWidget);
+                menu.addAction(wa);
             }
             
             menu.addSeparator();
-            menu.addAction("清空历史记录", [this, isQuery]() {
+            
+            // 保留一键清空机制，同样以 QWidgetAction 来适配高阶菜单视觉
+            auto* clearAction = menu.addAction("清空历史记录", [this, isQuery, &menu]() {
                 if (isQuery) m_config.queryHistory.clear();
                 else m_config.extHistory.clear();
                 m_config.save();
+                menu.close();
             });
+            clearAction->setIcon(UiHelper::getIcon("close", QColor("#FF4444"), 12));
             
             menu.exec(static_cast<QWidget*>(watched)->mapToGlobal(QPoint(0, static_cast<QWidget*>(watched)->height())));
             return true;
@@ -2599,12 +2679,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     layout->setSpacing(10);
 
     // 1. Whitelist label and editor
-    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以中英文逗号分隔):");
+    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以空格或逗号分隔):");
     lblWhite->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
     layout->addWidget(lblWhite);
 
     m_whitelistEdit = new QTextEdit();
-    m_whitelistEdit->setPlaceholderText("例如: jpg, png, txt, cpp, h, py");
+    m_whitelistEdit->setPlaceholderText("例如: jpg png txt cpp h py");
     m_whitelistEdit->setStyleSheet(
         "QTextEdit {"
         "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
@@ -2616,12 +2696,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     layout->addWidget(m_whitelistEdit);
 
     // 2. Blacklist label and editor
-    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以中英文逗号分隔):");
+    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以空格或逗号分隔):");
     lblBlack->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
     layout->addWidget(lblBlack);
 
     m_blacklistEdit = new QTextEdit();
-    m_blacklistEdit->setPlaceholderText("例如: exe, dll, zip, rar, mp4");
+    m_blacklistEdit->setPlaceholderText("例如: exe dll zip rar mp4");
     m_blacklistEdit->setStyleSheet(
         "QTextEdit {"
         "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
@@ -2636,12 +2716,12 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
     QStringList whiteList;
     for (const auto& ext : m_config.previewWhitelist) whiteList.append(ext);
     whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(", "));
+    m_whitelistEdit->setPlainText(whiteList.join(" "));
 
     QStringList blackList;
     for (const auto& ext : m_config.previewBlacklist) blackList.append(ext);
     blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(", "));
+    m_blacklistEdit->setPlainText(blackList.join(" "));
 
     // 3. Buttons row
     auto* btnLayout = new QHBoxLayout();
@@ -2665,10 +2745,7 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
         "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
         "QPushButton:hover { color: #EEE; background-color: #333; }"
     );
-    connect(btnCancel, &QPushButton::clicked, this, [this]() {
-        qDebug() << "[选择诊断] PreviewRulesDialog 取消关闭";
-        reject();
-    });
+    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
     btnLayout->addWidget(btnCancel);
 
     auto* btnOk = new QPushButton("确定");
@@ -2688,27 +2765,23 @@ void PreviewRulesDialog::onRestoreDefaults() {
     QStringList whiteList;
     for (const auto& ext : DEFAULT_WHITELIST) whiteList.append(ext);
     whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(", "));
+    m_whitelistEdit->setPlainText(whiteList.join(" "));
 
     QStringList blackList;
     for (const auto& ext : DEFAULT_BLACKLIST) blackList.append(ext);
     blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(", "));
+    m_blacklistEdit->setPlainText(blackList.join(" "));
 }
 
 void PreviewRulesDialog::onConfirm() {
     auto parseExtensions = [](const QString& text) -> QSet<QString> {
         QSet<QString> set;
         QString temp = text;
-        // 1. 将中文逗号、回车、换行全部统一替换为西文逗号（对应用户原话：“支持中英文逗号分割”）
-        temp.replace(QString::fromUtf8("，"), ",");
-        temp.replace('\n', ',');
-        temp.replace('\r', ',');
-        
-        // 2. 严格按逗号进行物理分割，而不是空格分割（对应用户原话：“采用逗号分割……而不是空格分割”）
-        QStringList list = temp.split(',', Qt::SkipEmptyParts);
+        temp.replace(',', ' ');
+        temp.replace('\n', ' ');
+        temp.replace('\r', ' ');
+        QStringList list = temp.split(' ', Qt::SkipEmptyParts);
         for (const QString& item : list) {
-            // 去除多余的空格（例如逗号后的空格）
             QString clean = item.trimmed().toLower();
             if (clean.startsWith('.')) {
                 clean = clean.mid(1);
@@ -2723,7 +2796,6 @@ void PreviewRulesDialog::onConfirm() {
     m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
     m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
 
-    qDebug() << "[选择诊断] PreviewRulesDialog 确定关闭";
     accept();
 }
 
