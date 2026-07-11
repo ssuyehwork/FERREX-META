@@ -82,6 +82,29 @@
 
 namespace FERREX {
 
+// ============================================================================
+// [选择诊断] 临时全局鼠标点击监听器，问题定位完成后应整体删除
+// ============================================================================
+class DebugClickWatcher : public QObject {
+public:
+    explicit DebugClickWatcher(QObject* parent = nullptr) : QObject(parent) {}
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::MouseButtonPress) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            QWidget* w = qobject_cast<QWidget*>(watched);
+            qDebug() << "[选择诊断][全局点击]"
+                     << "目标对象:" << (watched ? watched->metaObject()->className() : "null")
+                     << "| objectName:" << (watched ? watched->objectName() : "null")
+                     << "| 全局坐标:" << me->globalPosition().toPoint()
+                     << "| isEnabled:" << (w ? w->isEnabled() : false)
+                     << "| isVisible:" << (w ? w->isVisible() : false)
+                     << "| 顶层窗口 isActiveWindow:" << (w && w->window() ? w->window()->isActiveWindow() : false);
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
 // 2026-07-11 物理移植自 ArcMeta (Plan-179)：出厂默认配置
 static const QSet<QString> DEFAULT_BLACKLIST = {
     // 系统 / 可执行 / 压缩
@@ -886,6 +909,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     // 2026-07-10 参考 ArcMeta 重构：在 UI 构造的最前期创建并注册全局事件过滤器
     m_resizeFilter = new ResizeEventFilter(this);
     QCoreApplication::instance()->installEventFilter(m_resizeFilter);
+
+    // [选择诊断] 临时安装全局点击监听器，问题定位完成后需要删除这两行
+    auto* debugClickWatcher = new DebugClickWatcher(this);
+    QCoreApplication::instance()->installEventFilter(debugClickWatcher);
 
     if (!UiHelper::isRunAsAdmin()) {
         QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
