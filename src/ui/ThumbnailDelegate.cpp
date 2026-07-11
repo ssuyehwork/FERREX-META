@@ -105,7 +105,10 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
             
-            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
+            // 物理性能调优比例一致性 (对应用户原话：“为什么有的图标显示得很小，有的却是正常的”)
+            // 彻底废除不协调的 0.6 (60%) 因子限制，改用饱满张力的 0.85 (85%) 图标比例系数，
+            // 确保在无专用缩略图时，系统关联图标也能够饱满充盈、端庄优雅，解决冰火两重天的微型不连续感
+            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.85;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,
                            iconSize, iconSize);
