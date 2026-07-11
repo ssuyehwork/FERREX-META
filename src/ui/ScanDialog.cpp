@@ -82,10 +82,16 @@ public:
     HistoryItemWidget(const QString& text, bool isQuery, QMenu* parentMenu, ScanDialog* dialog, QWidget* parent = nullptr)
         : QWidget(parent), m_text(text), m_isQuery(isQuery), m_parentMenu(parentMenu), m_dialog(dialog)
     {
-        // 采用极致扁平与紧凑的布局结构
+        // 开启整行悬停高亮样式
+        this->setStyleSheet(
+            "HistoryItemWidget { background-color: transparent; } "
+            "HistoryItemWidget:hover { background-color: #2A2A2A; }"
+        );
+
+        // 采用极致扁平与紧凑的布局结构，为窄下拉框（如 120px 的后缀框）腾出完美空间
         auto* layout = new QHBoxLayout(this);
-        layout->setContentsMargins(8, 2, 8, 2);
-        layout->setSpacing(8);
+        layout->setContentsMargins(6, 1, 4, 1);
+        layout->setSpacing(4);
 
         // A. 左侧：条目文本按钮（扁平设计，点击后将内容填入主搜索框，并执行搜索）
         auto* btnText = new QPushButton(m_text, this);
@@ -1022,7 +1028,7 @@ ScanDialog::ScanDialog(QWidget* parent)
             viewBtn->setIconSize(QSize(16, 16));
             viewBtn->setCursor(Qt::PointingHandCursor); 
             viewBtn->setToolTip(""); // 物理禁止原生 ToolTip，防范系统黑块
-            viewBtn->setProperty("tooltipText", "切换视图排版模式"); // 完美对接高级属性
+            viewBtn->setProperty("tooltipText", "排列方式"); // 完美对接高级属性
             viewBtn->installEventFilter(hoverFilter); // 接管悬停管线
             viewBtn->setStyleSheet( 
                 "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }" 
@@ -1117,7 +1123,7 @@ ScanDialog::ScanDialog(QWidget* parent)
             rulesBtn->setIconSize(QSize(16, 16));
             rulesBtn->setCursor(Qt::PointingHandCursor);
             rulesBtn->setToolTip(""); // 彻底切除原生阻塞黑色气泡 (对应用户原话：“其他按钮也没有采用Tooltip ... Tooltip都显示了什么？完全看不到”)
-            rulesBtn->setProperty("tooltipText", "预览规则配置"); // 统一改用自定义属性气泡驱动 (对应用户原话：“去参考ArcMeta版本来实现ToolTipOverlay”)
+            rulesBtn->setProperty("tooltipText", "预览配置"); // 统一改用自定义属性气泡驱动 (对应用户原话：“去参考ArcMeta版本来实现ToolTipOverlay”)
             rulesBtn->installEventFilter(hoverFilter); // 接管悬停管线
             rulesBtn->setStyleSheet(
                 "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }"
@@ -1158,7 +1164,7 @@ ScanDialog::ScanDialog(QWidget* parent)
 
                 // 完美赋予自定义 ToolTipOverlay 支持
                 if (btn == m_pinBtn) {
-                    btn->setProperty("tooltipText", "切换窗口置顶状态");
+                    btn->setProperty("tooltipText", "置顶");
                     btn->installEventFilter(hoverFilter);
                     btn->setStyleSheet(
                         "QPushButton { background: transparent; border: none; border-radius: 4px; } "
@@ -2662,8 +2668,11 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
         if (!history.isEmpty()) {
             QMenu menu(this);
             // 升级样式：加入对 QWidgetAction 自定义组件的 QMenu 内部样式修饰，保持 1A1A1A 深色系的高级感
+            // 特别添加 "QMenu::item { padding: 0px 0px; background: transparent; }"，彻底干掉 Qt 默认保留的高宽度 Gutter 图标槽，
+            // 让我们的自定义组件能够完整占据 120px 宽度，从而完美露出极右侧的“×”删除按钮！
             menu.setStyleSheet(
                 "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; padding: 4px 0; }"
+                "QMenu::item { padding: 0px 0px; background: transparent; }"
                 "QMenu::separator { height: 1px; background: #333; margin: 4px 0; }"
             );
 
@@ -2703,7 +2712,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
 // PreviewRulesDialog 实现
 // ============================================================================
 PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
-    : FramelessDialog("预览规则配置", parent), m_config(config)
+    : FramelessDialog("预览配置", parent), m_config(config)
 {
     resize(600, 480);
     setMinimumSize(500, 400);
