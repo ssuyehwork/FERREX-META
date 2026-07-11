@@ -2429,7 +2429,7 @@ void ScanDialog::reopenHistoryMenu(bool isQuery) {
     // 重新模拟鼠标双击从而完美重新唤醒刷新后的最新下拉面板，提供完美无感动画
     QWidget* target = isQuery ? static_cast<QWidget*>(m_searchEdit) : static_cast<QWidget*>(m_extEdit);
     if (target) {
-        QMouseEvent me(QEvent::MouseButtonDblClick, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent me(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
         QCoreApplication::sendEvent(target, &me);
     }
 }
