@@ -318,6 +318,28 @@ void FramelessDialog::mouseMoveEvent(QMouseEvent* event) {
     }
 
     if (m_isDragging && (event->buttons() & Qt::LeftButton)) {
+        // 2026-07-10 核心重构：支持最大化拖拽向下自适应还原并跟随移动（对应用户原话：“拖动标题栏也无法恢复窗口”）
+        if (isMaximized()) {
+            // A. 保存最大化时鼠标在标题栏的横向位置
+            QPoint globalPos = event->globalPosition().toPoint();
+            double relativeRatio = (double)event->pos().x() / (double)width(); // 获取相对宽度的百分比
+
+            // B. 触发还原
+            showNormal();
+
+            // C. 重新计算还原后窗口由于变小，m_dragPos 相对标题栏横向应处于的新等比例坐标
+            int newDragX = qRound(relativeRatio * width());
+
+            // 纵向通常高度保持固定（17px 即标题栏中线上），横向按比例定位
+            m_dragPos = QPoint(newDragX, 17);
+
+            // D. 根据新偏移重算窗口还原后的物理起始左上角
+            move(globalPos - m_dragPos);
+            event->accept();
+            return;
+        }
+
+        // 常规状态下的拖动
         move(event->globalPosition().toPoint() - m_dragPos);
         event->accept();
         return;
@@ -335,6 +357,54 @@ void FramelessDialog::mouseReleaseEvent(QMouseEvent* event) {
     m_resizeDir = DIR_NONE;
     updateCursorShape(getResizeDir(event->pos()));
     QDialog::mouseReleaseEvent(event);
+}
+
+// 2026-07-10 新增：物理支持双击自定义标题栏最大化/常规还原（对应用户原话：“双击标题栏也恢复不了窗口”）
+void FramelessDialog::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton) {
+        QWidget* child = childAt(event->pos());
+        if (child) {
+            bool inTitleBar = false;
+            QWidget* p = child;
+            while (p && p != m_container) {
+                if (p->objectName() == "TitleBar") {
+                    inTitleBar = true;
+                    break;
+                }
+                p = p->parentWidget();
+            }
+
+            // 排除标题栏中的按钮，确保不会在双击置顶/最小化/最大化按钮时引起误判
+            if (inTitleBar && !qobject_cast<QPushButton*>(child)) {
+                if (isMaximized()) {
+                    showNormal();
+                } else {
+                    showMaximized();
+                }
+                event->accept();
+                return;
+            }
+        }
+    }
+    QDialog::mouseDoubleClickEvent(event);
+}
+
+// 2026-07-10 新增：全面监听系统级窗口状态改变事件，确保按钮形态完美对齐（对应用户原话：“点击恢复按钮有时无法恢复”）
+void FramelessDialog::changeEvent(QEvent* event) {
+    if (event->type() == QEvent::WindowStateChange) {
+        if (m_maxBtn) {
+            if (isMaximized()) {
+                // 如果当前为最大化，按钮应渲染为“常规/恢复（restore_line）”图标，其 tooltip 变更为“向下还原”
+                m_maxBtn->setIcon(UiHelper::getIcon("restore_line", QColor("#CCCCCC"), 16));
+                m_maxBtn->setProperty("tooltipText", "向下还原");
+            } else {
+                // 如果当前恢复为常规，按钮应渲染为“最大化（maximize）”图标，其 tooltip 变更为“最大化”
+                m_maxBtn->setIcon(UiHelper::getIcon("maximize", QColor("#CCCCCC"), 16));
+                m_maxBtn->setProperty("tooltipText", "最大化");
+            }
+        }
+    }
+    QDialog::changeEvent(event);
 }
 
 
