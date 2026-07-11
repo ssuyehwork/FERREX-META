@@ -1383,6 +1383,13 @@ void ScanDialog::updateCursorShape(ResizeDirection dir) {
 
 // 1. 鼠标按下事件：锁定边缘区域拉伸模式，或退化至标题栏拖拽
 void ScanDialog::mousePressEvent(QMouseEvent* event) {
+    qDebug() << "[选择诊断] ScanDialog::mousePressEvent 触发"
+             << "| isActiveWindow:" << this->isActiveWindow()
+             << "| hasFocus:" << this->hasFocus()
+             << "| QApplication::focusWidget:" << QApplication::focusWidget()
+             << "| m_resultView->hasFocus:" << (m_resultView ? m_resultView->hasFocus() : false)
+             << "| m_resultView->isEnabled:" << (m_resultView ? m_resultView->isEnabled() : false);
+
     if (event->button() != Qt::LeftButton) return;
 
     const QPoint localPos = event->position().toPoint();
@@ -1658,7 +1665,10 @@ void ScanDialog::setupUi() {
     
     connect(m_resultView, &QTableView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
     connect(m_resultView, &QTableView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
-    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
+    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() {
+        qDebug() << "[选择诊断] selectionChanged 触发，当前选中行数:" << m_resultView->selectionModel()->selectedRows().size();
+        onSelectionChanged();
+    });
     
     // 2026-05-16 交互优化：开启行内编辑触发器 (双击或按F2)
     m_resultView->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
@@ -2628,7 +2638,10 @@ PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
         "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
         "QPushButton:hover { color: #EEE; background-color: #333; }"
     );
-    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
+    connect(btnCancel, &QPushButton::clicked, this, [this]() {
+        qDebug() << "[选择诊断] PreviewRulesDialog 取消关闭";
+        reject();
+    });
     btnLayout->addWidget(btnCancel);
 
     auto* btnOk = new QPushButton("确定");
@@ -2683,6 +2696,7 @@ void PreviewRulesDialog::onConfirm() {
     m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
     m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
 
+    qDebug() << "[选择诊断] PreviewRulesDialog 确定关闭";
     accept();
 }
 
