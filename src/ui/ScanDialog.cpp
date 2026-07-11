@@ -764,6 +764,23 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return 0;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
+        // 2026-07-11 物理重构：自适应模式仅限于视频和图形图像文件，文件夹与其余常规文件直接返回 -1.0 禁用自适应拉伸 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
+        if (reader.isDirectory(actualIndex)) {
+            return -1.0;
+        }
+
+        QString ext = reader.getExtQString(actualIndex).toLower();
+        static const QSet<QString> mediaExts = {
+            // 图形图像类
+            "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
+            // 视频类
+            "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
+        };
+
+        if (!mediaExts.contains(ext)) {
+            return -1.0; // 常规文件类型，不提供有效正数宽高比，禁用自适应拉伸
+        }
+
         return m_aspectRatios.value(key, 1.0);
     }
     return QVariant();
