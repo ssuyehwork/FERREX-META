@@ -1071,6 +1071,16 @@ ScanDialog::ScanDialog(QWidget* parent)
                 if (dlg.exec() == QDialog::Accepted) {
                     m_config.save();
                 }
+
+                // [窗口独立性修复] 子窗口关闭后，不管 Qt/Windows 内部发生了什么，
+                // 强制让 ScanDialog 重新夺回操作系统窗口激活状态和表格输入焦点，
+                // 确保两个窗口之间不会产生残留干扰。
+                this->activateWindow();
+                this->raise();
+                this->setFocus();
+                if (m_resultView) {
+                    m_resultView->setFocus();
+                }
             });
             
             titleLayout->insertWidget(titleLayout->indexOf(m_pinBtn), viewBtn);
