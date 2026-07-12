@@ -327,7 +327,15 @@ bool MftReader::loadFromCache() {
                     pd.sizes.push_back(pkg.size);
                     pd.timestamps.push_back(pkg.timestamp);
                     pd.attributes.push_back(pkg.attributes);
-                    pd.metadata_fetched.push_back(pkg.metadata_fetched);
+
+                    // 2026-07-11 极致性能重构 (对应用户原话：“既然已经存入到了bin数据库里...显示却非常缓慢”)：
+                    // 彻底消除由于早期默认状态标记 0，导致列表模式渲染被迫抛弃缓存、频繁对数万个文件重新发起 Windows API 物理磁盘 IO 的架构缺陷。
+                    // 如果缓存中的文件记录已具备非零的大小或有效时间戳，说明元数据早已就绪，在读入内存 SoA 数组时，直接将其状态标记强制升级为已就绪状态（2）。
+                    if (pkg.size > 0 || pkg.timestamp > 0) {
+                        pd.metadata_fetched.push_back(2);
+                    } else {
+                        pd.metadata_fetched.push_back(pkg.metadata_fetched);
+                    }
                     
                     pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
                     pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
@@ -461,7 +469,15 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
         pd.sizes.push_back(pkg.size);
         pd.timestamps.push_back(pkg.timestamp);
         pd.attributes.push_back(pkg.attributes);
-        pd.metadata_fetched.push_back(pkg.metadata_fetched);
+
+        // 2026-07-11 极致性能重构 (对应用户原话：“既然已经存入到了bin数据库里...显示却非常缓慢”)：
+        // 彻底消除由于早期默认状态标记 0，导致列表模式渲染被迫抛弃缓存、频繁对数万个文件重新发起 Windows API 物理磁盘 IO 的架构缺陷。
+        // 如果缓存中的文件记录已具备非零的大小或有效时间戳，说明元数据早已就绪，在读入内存 SoA 数组时，直接将其状态标记强制升级为已就绪状态（2）。
+        if (pkg.size > 0 || pkg.timestamp > 0) {
+            pd.metadata_fetched.push_back(2);
+        } else {
+            pd.metadata_fetched.push_back(pkg.metadata_fetched);
+        }
         
         pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
         pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
