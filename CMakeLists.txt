@@ -95,6 +95,15 @@ set(SOURCES
     src/ui/ScanController.h
     src/ui/ScanDialog.cpp
     src/ui/ScanDialog.h
+    src/ui/IScanResultView.h
+    src/ui/ListResultView.cpp
+    src/ui/ListResultView.h
+    src/ui/JustifiedResultView.cpp
+    src/ui/JustifiedResultView.h
+    src/ui/GridResultView.cpp
+    src/ui/GridResultView.h
+    src/ui/ConfigManager.cpp
+    src/ui/ConfigManager.h
     src/ui/UiHelper.h
     FERREX.rc
     resources/resources.qrc
