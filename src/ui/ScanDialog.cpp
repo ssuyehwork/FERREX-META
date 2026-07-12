@@ -1953,10 +1953,12 @@ void ScanDialog::setupUi() {
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
         updateStatus("就绪");
+        refreshVisibleMetadataRange();
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
         updateStatus("就绪");
+        refreshVisibleMetadataRange();
     });
 
     showDriveLoading();
@@ -2468,6 +2470,26 @@ void ScanDialog::updateStatusBar() {
     // 2026-07-07 架构优化：将全局索引总数下放至状态栏辅助信息 (Analysis_Modification_Plan-154.md)
     m_statLabelMemory->setText(QString("索引总量: %1 | 数据占用: %2 MB").arg(formatNumber(dbTotal)).arg(memoryMb, 0, 'f', 1));
 
+}
+
+void ScanDialog::refreshVisibleMetadataRange() {
+    if (!m_tableModel || !m_viewStack) return;
+
+    int top = 0, bottom = -1;
+    if (m_viewStack->currentIndex() == 0) {
+        if (!m_resultView) return;
+        top = m_resultView->rowAt(0);
+        bottom = m_resultView->rowAt(m_resultView->viewport()->height());
+        if (top == -1) top = 0;
+        if (bottom == -1) bottom = m_tableModel->rowCount() - 1;
+    } else {
+        if (!m_iconView) return;
+        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
+        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
+        top = topIdx.isValid() ? topIdx.row() : 0;
+        bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
+    }
+    m_tableModel->setVisibleRange(top, bottom);
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
