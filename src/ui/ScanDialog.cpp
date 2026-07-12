@@ -1173,6 +1173,13 @@ ScanDialog::ScanDialog(QWidget* parent)
             connect(m_sizeSlider, &QSlider::valueChanged, this, [this](int v) { 
                 m_config.iconSize = v; 
                 m_resultView->verticalHeader()->setDefaultSectionSize(v); 
+
+                // 【核心修复】：在列表模式下调节尺寸时，名称列宽度按 2.5 倍行高比例同步拓宽（限制下限 260px）
+                if (m_viewStack->currentIndex() == 0) {
+                    int targetCol0Width = qMax(260, qRound(v * 2.5));
+                    m_resultView->setColumnWidth(0, targetCol0Width);
+                }
+
                 m_iconView->setTargetRowHeight(v); 
                 m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
                 m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
@@ -1398,6 +1405,10 @@ ScanDialog::ScanDialog(QWidget* parent)
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); // 启动时读取持久化尺寸
+
+        // 【核心修复】：根据持久化高度，正比例初始化名称列的宽度（限制下限 260px）
+        int targetCol0Width = qMax(260, qRound(m_config.iconSize * 2.5));
+        m_resultView->setColumnWidth(0, targetCol0Width);
     } else {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
     }
