@@ -150,5 +150,9 @@ int main(int argc, char *argv[]) {
 
     int ret = a.exec();
 
+    // 在主程序完全退出时，进行全局单例销毁和索引释放
+    FERREX::MftReader::instance().clear();
+    CoUninitialize();
+
     return ret;
 }

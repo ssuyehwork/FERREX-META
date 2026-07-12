@@ -2,6 +2,10 @@
 #define NOMINMAX
 #endif
 #include "ScanDialog.h"
+#include "IScanResultView.h"
+#include "ListResultView.h"
+#include "JustifiedResultView.h"
+#include "GridResultView.h"
 #include <QDataStream>
 #include "../core/CacheManager.h"
 #include <QPainter>
@@ -259,226 +263,7 @@ static bool isPathPreviewable(const QString& path, const ScanConfig& config) {
     return config.previewWhitelist.contains(ext);
 }
 
-class ListThumbnailDelegate : public QStyledItemDelegate {
-public:
-    using QStyledItemDelegate::QStyledItemDelegate;
 
-    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
-        painter->setRenderHint(QPainter::SmoothPixmapTransform);
-
-        // 1. 绘制高亮背景与悬停背景
-        bool isSelected = (option.state & QStyle::State_Selected);
-        if (isSelected) {
-            painter->fillRect(option.rect, QColor("#094771")); // 使用项目标准高亮蓝
-        } else if (option.state & QStyle::State_MouseOver) {
-            painter->fillRect(option.rect, QColor("#2A2A2A")); // 悬停深灰
-        }
-
-        // 2. 计算正方形几何体 (上下预留 3px 的 padding)
-        int padding = 3;
-        int side = option.rect.height() - (padding * 2);
-        if (side <= 0) side = 16; // 兜底保护
-
-        // 卡片正方形左边界留出 6px 的视觉间距
-        QRect squareRect(option.rect.left() + 6, option.rect.top() + padding, side, side);
-
-        // 3. 绘制正方形背景容器（圆角 4px）
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor("#2d2d2d"));
-        QPainterPath cardPath;
-        cardPath.addRoundedRect(squareRect, 4, 4);
-        painter->drawPath(cardPath);
-
-        // 4. 获取并渲染缩略图或默认图标
-        QVariant decoData = index.data(Qt::DecorationRole);
-
-        if (decoData.canConvert<QPixmap>()) {
-            QPixmap thumb = decoData.value<QPixmap>();
-            if (!thumb.isNull()) {
-                // 强制使用 KeepAspectRatio (Contain 模式) 不失真地自适应填充正方形容器
-                QPixmap scaled = thumb.scaled(squareRect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-                int x = squareRect.center().x() - scaled.width() / 2;
-                int y = squareRect.center().y() - scaled.height() / 2;
-                painter->drawPixmap(x, y, scaled);
-            }
-        } else {
-            QIcon icon = qvariant_cast<QIcon>(decoData);
-            if (!icon.isNull()) {
-                int iconSize = side * 0.6; // 默认图标占正方形容器的 60%
-                QRect iconRect(squareRect.center().x() - iconSize / 2,
-                               squareRect.center().y() - iconSize / 2,
-                               iconSize, iconSize);
-                icon.paint(painter, iconRect);
-            }
-        }
-
-        // 5. 绘制右侧文字 (文件名)
-        QString name = index.data(Qt::DisplayRole).toString();
-        // 原项目设定：第0列强制显示为蓝色（未选中时）
-        QColor textColor = isSelected ? QColor("#FFFFFF") : QColor("#3498db");
-
-        painter->setPen(textColor);
-        painter->setFont(option.font);
-
-        // 文字区域左边线对齐到：正方形右边线 + 10px 间距
-        QRect textRect = option.rect;
-        textRect.setLeft(squareRect.right() + 10);
-
-        QString elidedText = option.fontMetrics.elidedText(name, Qt::ElideMiddle, textRect.width() - 10);
-        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, elidedText);
-
-        painter->restore();
-    }
-
-    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-        QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
-        if (editor) {
-            editor->setStyleSheet(
-                "background-color: #2D2D2D; color: white; "
-                "selection-background-color: #3498db; "
-                "border: 1px solid #3498db; border-radius: 4px; padding: 0 4px;"
-            );
-        }
-        return editor;
-    }
-
-    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
-        QString value = index.model()->data(index, Qt::EditRole).toString();
-        QLineEdit* lineEdit = qobject_cast<QLineEdit*>(editor); 
-        if (lineEdit) {
-            lineEdit->setText(value); 
-            int lastDot = value.lastIndexOf('.'); 
-            if (lastDot > 0) { 
-                lineEdit->setSelection(0, lastDot); 
-            } else { 
-                lineEdit->selectAll(); 
-            }
-        }
-    }
-
-    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option, const QModelIndex& /*index*/) const override {
-        int padding = 3;
-        int side = option.rect.height() - (padding * 2);
-        if (side <= 0) side = 16;
-
-        // 1. 精确计算输入框的左侧水平起点 (左边距 6px + 缩略图边长 + 间距 10px) [1]
-        int textLeft = option.rect.left() + 6 + side + 10;
-        
-        // 2. 物理锁定编辑框高度为 28 像素，杜绝其随滚轮无限膨胀 [1]
-        const int targetEditorHeight = 28;
-        
-        // 3. 数学垂直居中对齐计算： y_offset = (当前行高 - 目标编辑框高度) / 2 [1]
-        int yOffset = (option.rect.height() - targetEditorHeight) / 2;
-        int editorTop = option.rect.top() + yOffset;
-
-        // 4. 构建完美垂直居中的 QRect 区域，右侧保留 10 像素安全边距
-        int editorWidth = option.rect.width() - (textLeft - option.rect.left()) - 10;
-        QRect editorRect(textLeft, editorTop, editorWidth, targetEditorHeight);
-
-        editor->setGeometry(editorRect);
-    }
-};
-
-// --- ScanConfig Implementation ---
-
-void ScanConfig::load() {
-    // 2026-07-11 新增：预初始化为出厂默认黑白名单，若配置文件中无此键值对则在此兜底
-    previewBlacklist = DEFAULT_BLACKLIST;
-    previewWhitelist = DEFAULT_WHITELIST;
-
-    QFile file("FERREX_scan_config.json");
-    if (file.open(QIODevice::ReadOnly)) {
-        QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-        QJsonObject root = doc.object();
-        
-        // Plan-136: 使用 ScanDialog 独享配置域
-        QJsonObject obj = root["ScanDialog"].toObject();
-        if (obj.isEmpty()) obj = root; // 兼容旧版
-        
-        auto loadSet = [&](const QString& key, QSet<QString>& set) {
-            set.clear();
-            QJsonArray arr = obj[key].toArray();
-            for (const auto& v : arr) set.insert(v.toString());
-        };
-        
-        loadSet("activeDrives", activeDrives);
-        loadSet("defaultDrives", defaultDrives);
-        
-        QJsonArray qArr = obj["queryHistory"].toArray();
-        for (const auto& v : qArr) queryHistory.append(v.toString());
-        QJsonArray eArr = obj["extHistory"].toArray();
-        for (const auto& v : eArr) extHistory.append(v.toString());
-        
-        // 2026-07-11 物理移植 (Plan-179)：从配置加载动态黑白名单（若存在）
-        if (obj.contains("previewBlacklist")) loadSet("previewBlacklist", previewBlacklist);
-        if (obj.contains("previewWhitelist")) loadSet("previewWhitelist", previewWhitelist);
-
-        // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
-        if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
-        if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
-        if (obj.contains("layoutMode")) layoutMode = obj["layoutMode"].toInt();
-        if (obj.contains("sortColumn")) sortColumn = obj["sortColumn"].toInt();
-        if (obj.contains("sortOrder")) sortOrder = obj["sortOrder"].toInt();
-
-        if (obj.contains("useRegex")) useRegex = obj["useRegex"].toBool();
-        if (obj.contains("caseSensitive")) caseSensitive = obj["caseSensitive"].toBool();
-        if (obj.contains("includeHidden")) includeHidden = obj["includeHidden"].toBool();
-        if (obj.contains("includeSystem")) includeSystem = obj["includeSystem"].toBool();
-        if (obj.contains("includeDollar")) includeDollar = obj["includeDollar"].toBool();
-        if (obj.contains("autoDisplay")) autoDisplay = obj["autoDisplay"].toBool();
-    }
-}
-
-void ScanConfig::save() {
-    QJsonObject root;
-    QFile readFile("FERREX_scan_config.json");
-    if (readFile.open(QIODevice::ReadOnly)) {
-        root = QJsonDocument::fromJson(readFile.readAll()).object();
-        readFile.close();
-    }
-
-    QFile file("FERREX_scan_config.json");
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        QJsonObject obj;
-        auto saveSet = [&](const QString& key, const QSet<QString>& set) {
-            QJsonArray arr;
-            for (const auto& v : set) arr.append(v);
-            obj[key] = arr;
-        };
-        
-        saveSet("activeDrives", activeDrives);
-        saveSet("defaultDrives", defaultDrives);
-        
-        QJsonArray qArr; for (const auto& v : queryHistory) qArr.append(v);
-        obj["queryHistory"] = qArr;
-        QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
-        obj["extHistory"] = eArr;
-        
-        // 2026-07-11 物理移植 (Plan-179)：持久化动态黑白名单
-        saveSet("previewBlacklist", previewBlacklist);
-        saveSet("previewWhitelist", previewWhitelist);
-
-        // 2026-05-16 持久化存盘
-        obj["viewMode"] = viewMode;
-        obj["iconSize"] = iconSize;
-        obj["layoutMode"] = layoutMode;
-        obj["sortColumn"] = sortColumn;
-        obj["sortOrder"] = sortOrder;
-
-        obj["useRegex"] = useRegex;
-        obj["caseSensitive"] = caseSensitive;
-        obj["includeHidden"] = includeHidden;
-        obj["includeSystem"] = includeSystem;
-        obj["includeDollar"] = includeDollar;
-        obj["autoDisplay"] = autoDisplay;
-        
-        // Plan-136: 写入 ScanDialog 独享配置域
-        root["ScanDialog"] = obj;
-        file.write(QJsonDocument(root).toJson());
-    }
-}
 
 // --- ScanTableModel Implementation ---
 
@@ -1014,7 +799,7 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 // --- ScanDialog Implementation ---
 
 ScanDialog::ScanDialog(QWidget* parent)
-    : FramelessDialog("FERREX-META", parent) 
+    : FramelessDialog("FERREX-META", parent), m_config(ConfigManager::instance().getConfig())
 {
     // 安全启动保障：将 m_itemToolTipTimer 初始化提升到构造函数最顶端
     m_itemToolTipTimer = new QTimer(this);
@@ -1129,27 +914,13 @@ ScanDialog::ScanDialog(QWidget* parent)
 
                 // 各项单选槽连接，使选择彻底正交 
                 connect(jModeAct, &QAction::triggered, this, [this]() { 
-                    m_viewStack->setCurrentIndex(1); 
-                    m_config.viewMode = 1; 
-                    m_config.layoutMode = 0; 
-                    m_iconView->setLayoutMode(JustifiedView::JustifiedMode); 
-                    m_tableModel->updateResults(); 
-                    m_config.save(); 
+                    switchToView(1, 0);
                 }); 
                 connect(gModeAct, &QAction::triggered, this, [this]() { 
-                    m_viewStack->setCurrentIndex(1); 
-                    m_config.viewMode = 1; 
-                    m_config.layoutMode = 1; 
-                    m_iconView->setLayoutMode(JustifiedView::GridMode); 
-                    m_tableModel->updateResults(); 
-                    m_config.save(); 
+                    switchToView(1, 1);
                 }); 
                 connect(listModeAct, &QAction::triggered, this, [this]() { 
-                    m_viewStack->setCurrentIndex(0); 
-                    m_config.viewMode = 0; 
-                    m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); 
-                    m_tableModel->updateResults(); 
-                    m_config.save(); 
+                    switchToView(0, 0);
                 }); 
 
                 menu->exec(viewBtn->mapToGlobal(QPoint(0, viewBtn->height() + 2))); 
@@ -1172,15 +943,19 @@ ScanDialog::ScanDialog(QWidget* parent)
             ); 
             connect(m_sizeSlider, &QSlider::valueChanged, this, [this](int v) { 
                 m_config.iconSize = v; 
-                m_resultView->verticalHeader()->setDefaultSectionSize(v); 
+                if (m_currentActiveView) {
+                    m_currentActiveView->setIconSize(v);
+                }
                 
                 // 在列表模式下调节尺寸时，自适应计算并拓宽名称列 [1]
-                if (m_viewStack->currentIndex() == 0) {
-                    int minWidth = calculateNameColumnMinimumWidth();
-                    m_resultView->setColumnWidth(0, minWidth);
+                if (m_config.viewMode == 0 && m_listResultView) {
+                    auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
+                    if (resultTableView) {
+                        int minWidth = calculateNameColumnMinimumWidth();
+                        resultTableView->setColumnWidth(0, minWidth);
+                    }
                 }
 
-                m_iconView->setTargetRowHeight(v); 
                 m_tableModel->clearThumbCache(true); 
                 m_tableModel->updateResults(); 
                 m_config.save(); 
@@ -1402,25 +1177,15 @@ ScanDialog::ScanDialog(QWidget* parent)
     )");
 
     // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
-        m_viewStack->setCurrentIndex(m_config.viewMode);
-    if (m_config.viewMode == 0) {
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
-        // 初始化时同步自适应计算并固定列宽，确保出厂即整齐 [1]
-        int initMinWidth = calculateNameColumnMinimumWidth();
-        m_resultView->setColumnWidth(0, initMinWidth);
-    } else {
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
-    }
-    if (m_config.viewMode == 1) { // 图标模式
-        m_iconView->setTargetRowHeight(m_config.iconSize);
-    }
-    // 恢复排版模式：0 -> JustifiedMode, 1 -> GridMode
-    if (m_iconView) {
-        m_iconView->setLayoutMode(m_config.layoutMode == 1 ? JustifiedView::GridMode : JustifiedView::JustifiedMode);
-    }
+    switchToView(m_config.viewMode, m_config.layoutMode);
     
     // 恢复排序状态 (同时作用于模型和表头视觉)
-    m_resultView->horizontalHeader()->setSortIndicator(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
+    if (m_listResultView) {
+        auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
+        if (resultTableView) {
+            resultTableView->horizontalHeader()->setSortIndicator(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
+        }
+    }
     m_tableModel->sort(m_config.sortColumn, static_cast<Qt::SortOrder>(m_config.sortOrder));
 
     // 2026-06-xx 物理对标：监听引擎加载信号，实现“更新数据中...”的体感同步
@@ -1490,33 +1255,19 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_actJMode = new QAction("自适应(A)", this);
     m_actJMode->setCheckable(true);
     connect(m_actJMode, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(1);
-        m_config.viewMode = 1;
-        m_config.layoutMode = 0;
-        m_iconView->setLayoutMode(JustifiedView::JustifiedMode);
-        m_tableModel->updateResults();
-        m_config.save();
+        switchToView(1, 0);
     });
 
     m_actGMode = new QAction("网格(G)", this);
     m_actGMode->setCheckable(true);
     connect(m_actGMode, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(1);
-        m_config.viewMode = 1;
-        m_config.layoutMode = 1;
-        m_iconView->setLayoutMode(JustifiedView::GridMode);
-        m_tableModel->updateResults();
-        m_config.save();
+        switchToView(1, 1);
     });
 
     m_actListMode = new QAction("列表(L)", this);
     m_actListMode->setCheckable(true);
     connect(m_actListMode, &QAction::triggered, this, [this]() {
-        m_viewStack->setCurrentIndex(0);
-        m_config.viewMode = 0;
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
-        m_tableModel->updateResults();
-        m_config.save();
+        switchToView(0, 0);
     });
 
     // 2. 通过 QActionGroup 保持物理单选互斥
@@ -1530,115 +1281,29 @@ ScanDialog::~ScanDialog() {
     if (m_resizeFilter) {
         QCoreApplication::instance()->removeEventFilter(m_resizeFilter);
     }
-    // 2026-06-xx 内存优化专项：按照用户要求实现“按需加载、及时卸载”。
-    // 关闭搜索窗口时物理卸载 MFT 索引，释放可能高达数百 MB 的内存占用。
-    MftReader::instance().clear();
 }
 
-// 2026-07-10 物理移植自 ArcMeta：DPI 自适应感应宽度检测
-ScanDialog::ResizeDirection ScanDialog::getResizeDirection(const QPoint& pos) const {
-    int m = kResizeMargin;
-    if (windowHandle()) {
-        m = qRound(windowHandle()->screen()->logicalDotsPerInch() / 96.0 * (double)kResizeMargin);
-    }
-    const int w = width(), h = height();
-    bool left   = pos.x() < m;
-    bool right  = pos.x() > w - m;
-    bool top    = pos.y() < m;
-    bool bottom = pos.y() > h - m;
 
-    if (top    && left)  return TopLeft;
-    if (top    && right) return TopRight;
-    if (bottom && left)  return BottomLeft;
-    if (bottom && right) return BottomRight;
-    if (left)   return Left;
-    if (right)  return Right;
-    if (top)    return Top;
-    if (bottom) return Bottom;
-    return None;
-}
+void ScanDialog::switchToView(int viewMode, int layoutMode) {
+    m_config.viewMode = viewMode;
+    m_config.layoutMode = layoutMode;
 
-// 2026-07-10 物理移植自 ArcMeta：实时光标形状更新
-void ScanDialog::updateCursorShape(ResizeDirection dir) {
-    switch (dir) {
-        case Left:        case Right:       setCursor(Qt::SizeHorCursor);  break;
-        case Top:         case Bottom:      setCursor(Qt::SizeVerCursor);  break;
-        case TopLeft:     case BottomRight: setCursor(Qt::SizeFDiagCursor); break;
-        case TopRight:    case BottomLeft:  setCursor(Qt::SizeBDiagCursor); break;
-        default:                            setCursor(Qt::ArrowCursor);    break;
-    }
-}
-
-// 1. 鼠标按下事件：锁定边缘区域拉伸模式，或退化至标题栏拖拽
-void ScanDialog::mousePressEvent(QMouseEvent* event) {
-    if (event->button() != Qt::LeftButton) return;
-
-    const QPoint localPos = event->position().toPoint();
-    ResizeDirection dir = getResizeDirection(localPos);
-
-    if (dir != None) {
-        m_isResizing = true;
-        m_isDragging = false;
-        m_resizeDir = dir;
-        m_resizeStartGlobal   = event->globalPosition().toPoint();
-        m_resizeStartGeometry = geometry();
-        event->accept();
-        return;
+    if (viewMode == 0) {
+        m_currentActiveView = m_listResultView;
+    } else if (layoutMode == 0) {
+        m_currentActiveView = m_justifiedResultView;
+    } else {
+        m_currentActiveView = m_gridResultView;
     }
 
-    // 拖动逻辑：判断是否在标题栏区域（高度小于等于 34px）
-    if (localPos.y() <= 34) {
-        m_isDragging = true;
-        m_dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
-        event->accept();
-    }
-}
-
-// 2. 鼠标移动事件：执行实时多维度高阶包围盒计算与位置调整
-void ScanDialog::mouseMoveEvent(QMouseEvent* event) {
-    // A. 正在执行边缘拉伸
-    if (m_isResizing) {
-        const QPoint delta = event->globalPosition().toPoint() - m_resizeStartGlobal;
-        QRect r = m_resizeStartGeometry;
-
-        if (m_resizeDir == Left || m_resizeDir == TopLeft || m_resizeDir == BottomLeft)
-            r.setLeft(r.left() + delta.x());
-        if (m_resizeDir == Right || m_resizeDir == TopRight || m_resizeDir == BottomRight)
-            r.setRight(r.right() + delta.x());
-        if (m_resizeDir == Top || m_resizeDir == TopLeft || m_resizeDir == TopRight)
-            r.setTop(r.top() + delta.y());
-        if (m_resizeDir == Bottom || m_resizeDir == BottomLeft || m_resizeDir == BottomRight)
-            r.setBottom(r.bottom() + delta.y());
-
-        // 严格遵循窗口自身的最小尺寸边界
-        if (r.width() >= minimumWidth() && r.height() >= minimumHeight()) {
-            setGeometry(r);
-        }
-
-        event->accept();
-        return;
+    if (m_currentActiveView) {
+        m_viewStack->setCurrentWidget(m_currentActiveView->getWidget());
+        m_currentActiveView->setIconSize(m_config.iconSize);
+        m_currentActiveView->refreshLayout();
     }
 
-    // B. 正在执行标题栏移动窗口
-    if (m_isDragging && (event->buttons() & Qt::LeftButton)) {
-        move(event->globalPosition().toPoint() - m_dragPosition);
-        event->accept();
-        return;
-    }
-
-    // C. 无操作悬停：由事件过滤器提供持续、平滑的光标联动更新
-    if (!m_isDragging) {
-        updateCursorShape(getResizeDirection(event->position().toPoint()));
-    }
-}
-
-// 3. 鼠标释放事件：清空所有状态机变量，还原光标
-void ScanDialog::mouseReleaseEvent(QMouseEvent* event) {
-    Q_UNUSED(event);
-    m_isDragging  = false;
-    m_isResizing  = false;
-    m_resizeDir   = None;
-    setCursor(Qt::ArrowCursor);
+    m_tableModel->updateResults();
+    m_config.save();
 }
 
 void ScanDialog::closeEvent(QCloseEvent* event) {
@@ -1779,104 +1444,58 @@ void ScanDialog::setupUi() {
 
     mainLayout->addWidget(searchContainer);
 
-    m_resultView = new QTableView();
-    m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
-    m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
-    
-    // 【核心修复】：安装拖拽红线拦截器。当用户拖窄第0列小于物理下限时，强行恢复 [1]
-    connect(m_resultView->horizontalHeader(), &QHeaderView::sectionResized, this, [this](int logicalIndex, int /*oldSize*/, int newSize) {
-        if (logicalIndex == 0 && m_tableModel) {
-            int minWidth = calculateNameColumnMinimumWidth();
-            if (newSize < minWidth) {
-                // 必须临时阻塞信号，防止 QHeaderView 递归触发产生栈溢出（Stack Overflow）崩溃 [1]
-                m_resultView->horizontalHeader()->blockSignals(true);
-                m_resultView->setColumnWidth(0, minWidth);
-                m_resultView->horizontalHeader()->blockSignals(false);
-            }
-        }
-    });
-
     m_controller = new ScanController(this);
     m_tableModel = new ScanTableModel(m_controller, this);
-    m_resultView->setModel(m_tableModel);
-    m_resultView->setContextMenuPolicy(Qt::CustomContextMenu);
-    
-    // 2026-05-14视觉优化：基于色码分析，将斑马纹调整为深灰色 (#1E1E1E) 与纯黑色 (#000000) 搭配
-    // 2026-06-xx 按照用户要求：设置左侧 10px 间距，确保坐标校准，同时修正表头首列偏移
-    m_resultView->setStyleSheet(
-        "QTableView { "
-        "background-color: #1E1E1E; "
-        "alternate-background-color: #000000; "
-        "border: 1px solid #333; "
-        "color: #D4D4D4; "
-        "selection-background-color: #094771; "
-        "selection-color: #FFFFFF; "
-        "outline: none; "
-        "gridline-color: transparent; "
-        "padding: 10px 0 0 10px; "
-        "}"
-        "QTableView::item { border-bottom: 1px solid #252526; }"
-        "QHeaderView::section { background-color: #252526; color: #888; border: none; border-right: 1px solid #333; padding: 4px; height: 24px; }"
-        "QHeaderView::section:horizontal:first { padding-left: 14px; }" // 10px 基础 + 4px 原有内边距
-        "QHeaderView { background-color: #252526; border: none; }"
-    );
-    
-    m_resultView->horizontalHeader()->setStretchLastSection(false); 
-    m_resultView->horizontalHeader()->setMinimumSectionSize(60);
-    // 2026-05-14 物理修正：强制列标题水平居中对齐
-    m_resultView->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
-    
-    m_resultView->setColumnWidth(0, 260); 
-    m_resultView->setColumnWidth(2, 100); 
-    m_resultView->setColumnWidth(3, 140); 
-    
-    m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
-    m_resultView->viewport()->installEventFilter(this);
-    m_resultView->viewport()->setMouseTracking(true);
-    
-    m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
-    m_resultView->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
-    m_resultView->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
 
-    m_resultView->verticalHeader()->setVisible(false);
+    m_listResultView = new ListResultView(this);
+    m_justifiedResultView = new JustifiedResultView(this);
+    m_gridResultView = new GridResultView(this);
 
-    connect(m_resultView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
-        int topRow = m_resultView->rowAt(0);
-        int bottomRow = m_resultView->rowAt(m_resultView->viewport()->height());
-        if (bottomRow == -1) bottomRow = m_tableModel->rowCount() - 1;
-        m_tableModel->setVisibleRange(topRow, bottomRow);
-    });
+    m_listResultView->setModel(m_tableModel);
+    m_justifiedResultView->setModel(m_tableModel);
+    m_gridResultView->setModel(m_tableModel);
 
-    m_resultView->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_resultView->setSelectionMode(QAbstractItemView::ExtendedSelection); // 显式启用多选
-    m_resultView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    
-    // 2026-06-xx 按照用户要求：开启 TableView 拖拽导出功能
-    m_resultView->setDragEnabled(true);
-    m_resultView->setDragDropMode(QAbstractItemView::DragOnly);
-    m_resultView->setDefaultDropAction(Qt::CopyAction);
+    auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
 
-    m_resultView->setShowGrid(false);
-    m_resultView->setAlternatingRowColors(true);
-    
-    connect(m_resultView, &QTableView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
-    connect(m_resultView, &QTableView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
-    connect(m_resultView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
-    
-    // 2026-05-16 交互优化：开启行内编辑触发器 (双击或按F2)
-    m_resultView->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
-    
-    // 虚拟化加载已由 QAbstractItemModel::fetchMore 处理，无需手动 loadMore
-    
-    // --- 2026-05-16 多态视图重构：引入 QStackedWidget 与 QListView (IconMode) ---
+    // Apply the header drag and width auto-restoration constraint on resultTableView [1]
+    if (resultTableView) {
+        connect(resultTableView->horizontalHeader(), &QHeaderView::sectionResized, this, [this, resultTableView](int logicalIndex, int /*oldSize*/, int newSize) {
+            if (logicalIndex == 0 && m_tableModel) {
+                int minWidth = calculateNameColumnMinimumWidth();
+                if (newSize < minWidth) {
+                    resultTableView->horizontalHeader()->blockSignals(true);
+                    resultTableView->setColumnWidth(0, minWidth);
+                    resultTableView->horizontalHeader()->blockSignals(false);
+                }
+            }
+        });
+    }
+
     m_viewStack = new QStackedWidget();
     m_viewStack->setObjectName("ViewStack");
-    m_viewStack->addWidget(m_resultView);
-    
+    m_viewStack->addWidget(m_listResultView->getWidget());
+    m_viewStack->addWidget(m_justifiedResultView->getWidget());
+    m_viewStack->addWidget(m_gridResultView->getWidget());
+
+    for (auto* resView : {m_listResultView, m_justifiedResultView, m_gridResultView}) {
+        QAbstractItemView* base = resView->getBaseView();
+
+        base->installEventFilter(this);
+        base->viewport()->installEventFilter(this);
+        base->viewport()->setMouseTracking(true);
+
+        connect(base->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+            refreshVisibleMetadataRange();
+        });
+
+        connect(base, &QAbstractItemView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
+        connect(base, &QAbstractItemView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
+        connect(base->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
+    }
+
     m_quickLook = new QuickLookWindow(this);
     connect(m_quickLook, &QuickLookWindow::prevRequested, this, [this]() {
-        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        auto* view = m_currentActiveView->getBaseView();
         int row = view->currentIndex().row();
         if (row > 0) {
             QModelIndex nextIdx = m_tableModel->index(row - 1, 0);
@@ -1886,7 +1505,7 @@ void ScanDialog::setupUi() {
         }
     });
     connect(m_quickLook, &QuickLookWindow::nextRequested, this, [this]() {
-        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        auto* view = m_currentActiveView->getBaseView();
         int row = view->currentIndex().row();
         if (row < m_tableModel->rowCount() - 1) {
             QModelIndex nextIdx = m_tableModel->index(row + 1, 0);
@@ -1896,43 +1515,6 @@ void ScanDialog::setupUi() {
         }
     });
 
-    m_iconView = new JustifiedView();
-    m_iconView->setModel(m_tableModel);
-    m_iconView->setItemDelegate(new ThumbnailDelegate(this));
-    m_iconView->setTargetRowHeight(m_config.iconSize);
-    m_iconView->setSelectionMode(QAbstractItemView::ExtendedSelection); // 显式启用多选
-    m_iconView->setContextMenuPolicy(Qt::CustomContextMenu);
-    m_iconView->setEditTriggers(QAbstractItemView::EditKeyPressed);
-    
-    // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
-    m_iconView->setDragEnabled(true);
-    m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
-    m_iconView->viewport()->installEventFilter(this);
-    m_iconView->viewport()->setMouseTracking(true);
-
-    // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
-    m_iconView->setStyleSheet(
-        "background-color: #1E1E1E; border: 1px solid #333; color: #D4D4D4; outline: none;"
-    );
-
-    connect(m_iconView->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
-        if (m_viewStack->currentIndex() != 1) return;
-        // 图标模式下使用 indexAt 探测视口首尾
-        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
-        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
-        
-        int top = topIdx.isValid() ? topIdx.row() : 0;
-        int bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
-        m_tableModel->setVisibleRange(top, bottom);
-    });
-    
-    connect(m_iconView, &QListView::doubleClicked, this, &ScanDialog::onItemDoubleClicked);
-    connect(m_iconView, &QListView::customContextMenuRequested, this, &ScanDialog::onCustomContextMenu);
-    connect(m_iconView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ScanDialog::onSelectionChanged);
-    
-    m_viewStack->addWidget(m_iconView);
-    m_viewStack->setCurrentIndex(0); // 默认详情视图
-    
     mainLayout->addWidget(m_viewStack);
 
     auto* statusContainer = new QWidget();
@@ -1980,8 +1562,11 @@ void ScanDialog::setupUi() {
         refreshVisibleMetadataRange();
         
         // 在列表激活状态下，检索完成后自动撑开列宽 [1]
-        if (m_viewStack->currentIndex() == 0) {
-            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+        if (m_config.viewMode == 0 && m_listResultView) {
+            auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
+            if (resultTableView) {
+                resultTableView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+            }
         }
     });
 
@@ -1990,8 +1575,11 @@ void ScanDialog::setupUi() {
         refreshVisibleMetadataRange();
 
         // 在列表激活状态下，检索完成后自动撑开列宽 [1]
-        if (m_viewStack->currentIndex() == 0) {
-            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+        if (m_config.viewMode == 0 && m_listResultView) {
+            auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
+            if (resultTableView) {
+                resultTableView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+            }
         }
     });
 
@@ -2223,7 +1811,8 @@ void ScanDialog::onDriveContextMenu(const QString& drive, const QPoint& /*pos*/)
 }
 
 void ScanDialog::onCustomContextMenu(const QPoint& pos) {
-    QAbstractItemView* activeView = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    if (!m_currentActiveView) return;
+    QAbstractItemView* activeView = m_currentActiveView->getBaseView();
     
     // 2026-05-16 空间感知修正：优先探测点击位置
     QModelIndex indexAtPos = activeView->indexAt(pos);
@@ -2334,25 +1923,34 @@ void ScanDialog::onCustomContextMenu(const QPoint& pos) {
     for (int i = 0; i < sortOptions.size(); ++i) {
         QAction* act = sortMenu->addAction(sortOptions[i]);
         connect(act, &QAction::triggered, this, [this, i]() {
-            Qt::SortOrder order = m_resultView->horizontalHeader()->sortIndicatorOrder();
-            m_resultView->sortByColumn(i, order);
-            m_config.sortColumn = i;
-            m_config.sortOrder = static_cast<int>(order);
-            m_config.save();
+            auto* resultTableView = m_listResultView ? qobject_cast<QTableView*>(m_listResultView->getBaseView()) : nullptr;
+            if (resultTableView) {
+                Qt::SortOrder order = resultTableView->horizontalHeader()->sortIndicatorOrder();
+                resultTableView->sortByColumn(i, order);
+                m_config.sortColumn = i;
+                m_config.sortOrder = static_cast<int>(order);
+                m_config.save();
+            }
         });
     }
     sortMenu->addSeparator();
     QAction* ascAction = sortMenu->addAction("升序(A)");
     QAction* descAction = sortMenu->addAction("降序(D)");
     connect(ascAction, &QAction::triggered, this, [this]() { 
-        m_resultView->sortByColumn(m_resultView->horizontalHeader()->sortIndicatorSection(), Qt::AscendingOrder); 
-        m_config.sortOrder = 0;
-        m_config.save();
+        auto* resultTableView = m_listResultView ? qobject_cast<QTableView*>(m_listResultView->getBaseView()) : nullptr;
+        if (resultTableView) {
+            resultTableView->sortByColumn(resultTableView->horizontalHeader()->sortIndicatorSection(), Qt::AscendingOrder);
+            m_config.sortOrder = 0;
+            m_config.save();
+        }
     });
     connect(descAction, &QAction::triggered, this, [this]() { 
-        m_resultView->sortByColumn(m_resultView->horizontalHeader()->sortIndicatorSection(), Qt::DescendingOrder); 
-        m_config.sortOrder = 1;
-        m_config.save();
+        auto* resultTableView = m_listResultView ? qobject_cast<QTableView*>(m_listResultView->getBaseView()) : nullptr;
+        if (resultTableView) {
+            resultTableView->sortByColumn(resultTableView->horizontalHeader()->sortIndicatorSection(), Qt::DescendingOrder);
+            m_config.sortOrder = 1;
+            m_config.save();
+        }
     });
 
     QAction* refreshAction = menu.addAction("刷新(R)");
@@ -2469,7 +2067,8 @@ void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalC
 }
 
 void ScanDialog::updateStatusBar() {
-    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    if (!m_currentActiveView) return;
+    auto view = m_currentActiveView->getBaseView();
     auto selectedRows = view->selectionModel()->selectedRows();
     
     int totalMatch = m_controller->resultCount();
@@ -2507,34 +2106,33 @@ void ScanDialog::updateStatusBar() {
 }
 
 void ScanDialog::refreshVisibleMetadataRange() {
-    if (!m_tableModel || !m_viewStack) return;
+    if (!m_tableModel || !m_currentActiveView) return;
+    QAbstractItemView* view = m_currentActiveView->getBaseView();
 
-    int top = 0, bottom = -1;
-    if (m_viewStack->currentIndex() == 0) {
-        if (!m_resultView) return;
-        top = m_resultView->rowAt(0);
-        bottom = m_resultView->rowAt(m_resultView->viewport()->height());
-        if (top == -1) top = 0;
-        if (bottom == -1) bottom = m_tableModel->rowCount() - 1;
-    } else {
-        if (!m_iconView) return;
-        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
-        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
-        top = topIdx.isValid() ? topIdx.row() : 0;
-        bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
-    }
+    // 自动多态计算可视行
+    int top = 0;
+    int bottom = m_tableModel->rowCount() - 1;
+
+    QModelIndex topIdx = view->indexAt(QPoint(10, 10));
+    QModelIndex bottomIdx = view->indexAt(QPoint(view->viewport()->width() - 10, view->viewport()->height() - 10));
+
+    if (topIdx.isValid()) top = topIdx.row();
+    if (bottomIdx.isValid()) bottom = bottomIdx.row();
+
     m_tableModel->setVisibleRange(top, bottom);
 }
 
 int ScanDialog::calculateNameColumnMinimumWidth() const {
-    if (!m_tableModel || !m_resultView) return 260;
+    if (!m_tableModel || !m_listResultView) return 260;
+    auto* resultTableView = m_listResultView->getBaseView();
+    if (!resultTableView) return 260;
 
     int rowHeight = m_config.iconSize;
     int cardWidth = rowHeight - 6; // 还原 ListThumbnailDelegate 内部计算的侧边长 [1]
     int basePadding = 6 + 10 + 10; // 左侧内边距(6px) + 间隙(10px) + 右侧文字边缘安全保护(10px) [1]
 
     // 获取 QTableView 当前使用的字体度量器
-    QFontMetrics fm = m_resultView->fontMetrics();
+    QFontMetrics fm = resultTableView->fontMetrics();
     int maxTextWidth = 100; // 给文字留出基础的 100 像素安全区域
 
     // 平衡性能与精度：仅遍历当前结果集中的前 1000 个项目，防止大集合（如 200万数据）在主线程产生卡顿
@@ -2577,7 +2175,8 @@ QString ScanDialog::formatSize(int64_t bytes) {
 }
 
 void ScanDialog::onRenameTriggered() {
-    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    if (!m_currentActiveView) return;
+    auto view = m_currentActiveView->getBaseView();
     auto selection = view->selectionModel()->selectedRows();
     if (selection.isEmpty()) return;
     
@@ -2586,7 +2185,8 @@ void ScanDialog::onRenameTriggered() {
 }
 
 void ScanDialog::onCopyTriggered(bool isCut) {
-    auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+    if (!m_currentActiveView) return;
+    auto view = m_currentActiveView->getBaseView();
     auto selectedIndexes = view->selectionModel()->selectedIndexes();
     if (selectedIndexes.isEmpty()) return;
 
@@ -2652,7 +2252,8 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
     }
 
     if (event->key() == Qt::Key_Space) {
-        auto* view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+        if (!m_currentActiveView) return;
+        auto* view = m_currentActiveView->getBaseView();
         QModelIndex idx = view->currentIndex();
         if (idx.isValid()) {
             if (m_quickLook->isVisible()) {
@@ -2696,7 +2297,8 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
         if (m_searchEdit->hasFocus() || m_extEdit->hasFocus()) {
             onTriggerSearch();
         } else {
-            auto view = (m_viewStack->currentIndex() == 0) ? static_cast<QAbstractItemView*>(m_resultView) : static_cast<QAbstractItemView*>(m_iconView);
+            if (!m_currentActiveView) return;
+            auto view = m_currentActiveView->getBaseView();
             auto index = view->currentIndex();
             if (index.isValid()) onItemDoubleClicked(index);
         }
@@ -2712,9 +2314,8 @@ void ScanDialog::selectAllResults() {
     int total = m_tableModel->rowCount();
     if (total <= 0) return;
 
-    auto view = (m_viewStack->currentIndex() == 0) 
-        ? static_cast<QAbstractItemView*>(m_resultView) 
-        : static_cast<QAbstractItemView*>(m_iconView);
+    if (!m_currentActiveView) return;
+    auto view = m_currentActiveView->getBaseView();
 
     // 直接构建覆盖全量行的 QItemSelection，绕过视图布局依赖
     QItemSelection selection(
@@ -2780,17 +2381,23 @@ void ScanDialog::triggerWarmup() {
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
     // 启动安全防御：严格的空指针保障检测
-    if (!m_resultView || !m_iconView || !m_itemToolTipTimer || !m_tableModel) {
+    if (!m_listResultView || !m_justifiedResultView || !m_gridResultView || !m_itemToolTipTimer || !m_tableModel) {
         return FramelessDialog::eventFilter(watched, event);
     }
 
-    bool isViewOrViewport = (watched == m_resultView || watched == m_resultView->viewport() ||
-                             watched == m_iconView || watched == m_iconView->viewport());
+    bool isViewOrViewport = false;
+    QAbstractItemView* view = nullptr;
 
-    if (isViewOrViewport) {
-        QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
-                                  static_cast<QAbstractItemView*>(m_resultView) : 
-                                  static_cast<QAbstractItemView*>(m_iconView);
+    for (auto* resView : {m_listResultView, m_justifiedResultView, m_gridResultView}) {
+        QAbstractItemView* base = resView->getBaseView();
+        if (watched == base || watched == base->viewport()) {
+            isViewOrViewport = true;
+            view = base;
+            break;
+        }
+    }
+
+    if (isViewOrViewport && view) {
 
         if (event->type() == QEvent::ToolTip) {
             // 极其重要：直接返回 true 拦截 QEvent::ToolTip 底层 QHelpEvent，彻底屏蔽原生的 ToolTip 气泡
@@ -2844,9 +2451,6 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
     if (isViewOrViewport && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
-            QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
-                                      static_cast<QAbstractItemView*>(m_resultView) : 
-                                      static_cast<QAbstractItemView*>(m_iconView);
             QModelIndex idx = view->currentIndex();
             if (idx.isValid()) {
                 if (m_quickLook->isVisible()) {
