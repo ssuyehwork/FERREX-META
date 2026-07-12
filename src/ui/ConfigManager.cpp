@@ -94,10 +94,29 @@ void ScanConfig::load() {
         loadSet("activeDrives", activeDrives);
         loadSet("defaultDrives", defaultDrives);
 
+        queryHistory.clear();
         QJsonArray qArr = obj["queryHistory"].toArray();
-        for (const auto& v : qArr) queryHistory.append(v.toString());
+        for (const auto& v : qArr) {
+            QString val = v.toString();
+            if (!queryHistory.contains(val)) {
+                queryHistory.append(val);
+            }
+        }
+        while (queryHistory.size() > 10) {
+            queryHistory.removeLast();
+        }
+
+        extHistory.clear();
         QJsonArray eArr = obj["extHistory"].toArray();
-        for (const auto& v : eArr) extHistory.append(v.toString());
+        for (const auto& v : eArr) {
+            QString val = v.toString();
+            if (!extHistory.contains(val)) {
+                extHistory.append(val);
+            }
+        }
+        while (extHistory.size() > 10) {
+            extHistory.removeLast();
+        }
 
         if (obj.contains("previewBlacklist")) loadSet("previewBlacklist", previewBlacklist);
         if (obj.contains("previewWhitelist")) loadSet("previewWhitelist", previewWhitelist);
@@ -137,8 +156,15 @@ void ScanConfig::save() {
         saveSet("activeDrives", activeDrives);
         saveSet("defaultDrives", defaultDrives);
 
+        while (queryHistory.size() > 10) {
+            queryHistory.removeLast();
+        }
         QJsonArray qArr; for (const auto& v : queryHistory) qArr.append(v);
         obj["queryHistory"] = qArr;
+
+        while (extHistory.size() > 10) {
+            extHistory.removeLast();
+        }
         QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
         obj["extHistory"] = eArr;
 
