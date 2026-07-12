@@ -269,6 +269,10 @@ private:
     QAction* m_actGMode = nullptr;
     QAction* m_actListMode = nullptr;
 
+    QTimer* m_itemToolTipTimer = nullptr;
+    QModelIndex m_hoveredIndex;
+    QPoint m_hoveredGlobalPos;
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 };
