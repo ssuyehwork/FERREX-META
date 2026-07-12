@@ -9,18 +9,12 @@ namespace FERREX {
  */
 enum CommonRole {
     // 基础角色 (UserRole + 0..100)
-    TypeRole            = Qt::UserRole + 0,  // 类型 (file/folder/category/system/bookmark)
     IdRole              = Qt::UserRole + 1,  // 数据库 ID (分类 ID 等)
     NameRole            = Qt::UserRole + 2,  // 原始名称
     PathRole            = Qt::UserRole + 3,  // 物理路径
-    ColorRole           = Qt::UserRole + 4,  // 颜色标记 (Hex)
-    RatingRole          = Qt::UserRole + 5,  // 星级评级 (0-5)
-    TagsRole            = Qt::UserRole + 6,  // 标签列表 (QStringList)
     
     // 状态角色 (UserRole + 101..200)
-    PinnedRole          = Qt::UserRole + 101, // 置顶状态 (快速访问镜像)
     IsLockedRole        = Qt::UserRole + 102, // 锁定/置顶状态 (列表显示)
-    EncryptedRole       = Qt::UserRole + 103, // 是否加密
     EncryptHintRole     = Qt::UserRole + 104, // 加密提示
     InDatabaseRole      = Qt::UserRole + 105, // 是否已录入数据库
     IsEmptyRole         = Qt::UserRole + 106, // 是否为空目录

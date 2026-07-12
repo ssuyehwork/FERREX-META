@@ -17,12 +17,6 @@ namespace FERREX {
  * @brief 内存元数据镜像结构
  */
 struct RuntimeMeta {
-    int rating = 0;
-    std::wstring color;
-    QStringList tags;
-    std::wstring note;
-    bool pinned = false;
-    bool encrypted = false;
     std::vector<PaletteEntry> palettes;
 
     /**
@@ -30,7 +24,7 @@ struct RuntimeMeta {
      * 2026-06-xx 按照用户要求：只要有任何元数据修改，即视为数据库已录入项
      */
     bool hasUserOperations() const {
-        return rating > 0 || !color.empty() || !tags.isEmpty() || !note.empty() || pinned || encrypted;
+        return !palettes.empty();
     }
 };
 
@@ -56,12 +50,6 @@ public:
      */
     QStringList searchInCache(const QString& keyword);
 
-    void setRating(const std::wstring& path, int rating);
-    void setColor(const std::wstring& path, const std::wstring& color);
-    void setPinned(const std::wstring& path, bool pinned);
-    void setTags(const std::wstring& path, const QStringList& tags);
-    void setNote(const std::wstring& path, const std::wstring& note);
-    void setEncrypted(const std::wstring& path, bool encrypted);
     void setPalettes(const std::wstring& path, const QVector<QPair<QColor, float>>& palettes);
     QVector<QColor> getPalettes(const std::wstring& path);
 
