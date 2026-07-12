@@ -634,7 +634,50 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
 }
 
 void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
-    auto newSet = nextSet ? nextSet : m_controller->snapshot();
+    auto baseSet = nextSet ? nextSet : m_controller->snapshot();
+    auto newSet = std::make_shared<ResultSet>();
+    newSet->metadata = baseSet->metadata;
+    newSet->keyToPos = baseSet->keyToPos;
+
+    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+    bool isMediaView = false;
+    if (dlg) {
+        // viewMode == 1 代表自适应与网格的多媒体画廊视图，viewMode == 0 代表全文件列表视图
+        isMediaView = (dlg->m_config.viewMode == 1);
+    }
+
+    if (isMediaView) {
+        // 自适应与网格模式必须遵循其媒体画廊视图本身的展示使命与渲染承载力，在源头只保留视频与图像
+        auto& reader = MftReader::instance();
+        static const QSet<QString> mediaExts = {
+            "jpg", "jpeg", "png", "bmp", "gif", "webp", "svg", "psd", "ai", "eps",
+            "mp4", "mkv", "avi", "mov", "flv", "rmvb", "wmv", "webm"
+        };
+
+        newSet->keys.reserve(baseSet->keys.size() / 2);
+        for (uint64_t key : baseSet->keys) {
+            int actualIndex = reader.getIndexByKey(key);
+            if (actualIndex == -1) continue;
+
+            // 剔除所有文件夹以及不属于画廊美学展示范围的常规普通非媒体文件
+            if (reader.isDirectory(actualIndex)) continue;
+
+            QString ext = reader.getExtQString(actualIndex).toLower();
+            if (mediaExts.contains(ext)) {
+                newSet->keys.push_back(key);
+            }
+        }
+
+        // 重建过滤后结果集的 O(1) 反向索引映射
+        newSet->keyToPos.clear();
+        for (size_t i = 0; i < newSet->keys.size(); ++i) {
+            newSet->keyToPos[newSet->keys[i]] = i;
+        }
+    } else {
+        // 列表模式：保留全量普通文件、文件夹及多媒体过滤数据
+        newSet->keys = baseSet->keys;
+    }
+
     int oldSize = (int)m_currentResultSet->keys.size();
     int newSize = (int)newSet->keys.size();
 
@@ -642,8 +685,8 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
     // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
-    // 如果变动巨大或初始加载，回退到 Reset 模式
-    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
+    // 如果变动巨大或初始加载，或者模式切换导致的数据量落差，回退到 Reset 模式
+    if (oldSize == 0 || std::abs(newSize - oldSize) > 500 || isMediaView != (oldSize != (int)baseSet->keys.size())) {
         beginResetModel();
         m_currentResultSet = newSet;
         m_displayCount = newSize; 
