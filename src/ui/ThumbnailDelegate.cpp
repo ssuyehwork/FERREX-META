@@ -135,21 +135,22 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         QString path = index.data(m_pathRole).toString();
         QFileInfo info(path);
         QString ext = info.isDir() ? "DIR" : info.suffix().toUpper();
-        if (ext.isEmpty()) ext = "FILE";
-        QColor badgeColor = UiHelper::getExtensionColor(ext);
+        if (!ext.isEmpty()) {
+            QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-        if (thumbStatus != 1) {
-            badgeColor.setAlpha(160);
+            if (thumbStatus != 1) {
+                badgeColor.setAlpha(160);
+            }
+
+            QRect extRect(m.cardRect.left() + 8, m.cardRect.top() + 8, 36, 18);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(badgeColor);
+            painter->drawRoundedRect(extRect, 2, 2);
+            painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+            QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
+            painter->setFont(extFont);
+            painter->drawText(extRect, Qt::AlignCenter, ext);
         }
-
-        QRect extRect(m.cardRect.left() + 8, m.cardRect.top() + 8, 36, 18);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(badgeColor);
-        painter->drawRoundedRect(extRect, 2, 2);
-        painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
-        QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
-        painter->setFont(extFont);
-        painter->drawText(extRect, Qt::AlignCenter, ext);
     }
 
     // [已停用] 星级渲染逻辑：星级已不再使用，此处直接跳过以节省 CPU 消耗
