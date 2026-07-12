@@ -2683,7 +2683,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                 ToolTipOverlay::hideTip();
 
                 m_hoveredIndex = col0Idx;
-                m_hoveredGlobalPos = me->globalPos();
+                m_hoveredGlobalPos = me->globalPosition().toPoint();
                 m_itemToolTipTimer->start(); // 重新开始 2000ms 计时
             } else {
                 // 如果鼠标移动到了空白区域，隐藏提示并停止定时器
