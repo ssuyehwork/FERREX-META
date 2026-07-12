@@ -17,6 +17,7 @@ namespace FERREX {
  * @brief 内存元数据镜像结构
  */
 struct RuntimeMeta {
+    std::wstring color;
     std::vector<PaletteEntry> palettes;
 
     /**
@@ -24,7 +25,7 @@ struct RuntimeMeta {
      * 2026-06-xx 按照用户要求：只要有任何元数据修改，即视为数据库已录入项
      */
     bool hasUserOperations() const {
-        return !palettes.empty();
+        return !color.empty() || !palettes.empty();
     }
 };
 
@@ -49,6 +50,9 @@ public:
      * @return 匹配的物理路径列表
      */
     QStringList searchInCache(const QString& keyword);
+
+    void setPinned(const std::wstring& path, bool pinned);
+    void setEncrypted(const std::wstring& path, bool encrypted);
 
     void setPalettes(const std::wstring& path, const QVector<QPair<QColor, float>>& palettes);
     QVector<QColor> getPalettes(const std::wstring& path);
