@@ -20,7 +20,6 @@
 #include <QCloseEvent>
 #include <QWheelEvent>
 #include <QLineEdit>
-#include <QTextEdit>
 #include <QTableView>
 #include <QAbstractTableModel>
 #include <QSvgRenderer>
@@ -66,92 +65,8 @@
 #include "ThumbnailDelegate.h"
 #include "QuickLookWindow.h"
 #include "ResizeEventFilter.h"
-#include "ToolTipOverlay.h"
-#include "HoverEventFilter.h"
 #include <memory>
 #include <algorithm>
-#include <QWidgetAction>
-
-namespace FERREX {
-
-// ============================================================================
-// [历史重构] 专门用于下来面板中展示历史选项和右侧删除按钮的自定义微控件
-// ============================================================================
-class HistoryItemWidget : public QWidget {
-public:
-    HistoryItemWidget(const QString& text, bool isQuery, QMenu* parentMenu, ScanDialog* dialog, QWidget* parent = nullptr)
-        : QWidget(parent), m_text(text), m_isQuery(isQuery), m_parentMenu(parentMenu), m_dialog(dialog)
-    {
-        // 开启整行悬停高亮样式
-        this->setStyleSheet(
-            "HistoryItemWidget { background-color: transparent; } "
-            "HistoryItemWidget:hover { background-color: #2A2A2A; }"
-        );
-
-        // 采用极致扁平与紧凑的布局结构，为窄下拉框（如 120px 的后缀框）腾出完美空间
-        auto* layout = new QHBoxLayout(this);
-        layout->setContentsMargins(6, 1, 4, 1);
-        layout->setSpacing(4);
-
-        // A. 左侧：条目文本按钮（扁平设计，点击后将内容填入主搜索框，并执行搜索）
-        auto* btnText = new QPushButton(m_text, this);
-        btnText->setCursor(Qt::PointingHandCursor);
-        btnText->setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #CCCCCC; text-align: left; font-size: 12px; padding: 4px 0; } "
-            "QPushButton:hover { color: #FFFFFF; }"
-        );
-        connect(btnText, &QPushButton::clicked, this, &HistoryItemWidget::onSelectTriggered);
-        layout->addWidget(btnText, 1); // 占据所有的剩余伸缩空间
-
-        // B. 右侧：精致的 “×” 单项删除按钮 (对应用户原话：“下来面板的每一个选项右侧都应该有一个“×”，这样的话用户就可以轻松移除某个选项了”)
-        auto* btnDelete = new QPushButton("×", this);
-        btnDelete->setFixedSize(18, 18);
-        btnDelete->setCursor(Qt::PointingHandCursor);
-        btnDelete->setToolTip("移除该历史记录");
-        btnDelete->setStyleSheet(
-            "QPushButton { background: transparent; border: none; color: #888888; font-size: 14px; font-weight: bold; border-radius: 3px; line-height: 18px; } "
-            "QPushButton:hover { color: #FFFFFF; background-color: #E81123; }" // 悬停显红
-        );
-        connect(btnDelete, &QPushButton::clicked, this, &HistoryItemWidget::onDeleteTriggered);
-        layout->addWidget(btnDelete);
-    }
-
-private:
-    void onSelectTriggered() {
-        if (m_dialog) {
-            m_dialog->setHistoryText(m_text, m_isQuery);
-        }
-        if (m_parentMenu) {
-            m_parentMenu->close(); // 选中后关闭下拉菜单
-        }
-    }
-
-    void onDeleteTriggered() {
-        if (m_dialog) {
-            m_dialog->removeHistoryItem(m_text, m_isQuery);
-        }
-        if (m_parentMenu) {
-            m_parentMenu->close(); // 删除后立即关闭旧菜单，外界会重新唤醒最新菜单以完成无缝重绘
-            // 2026-07-11 优化：使用异步 QTimer 触发重新打开，使当前 QMenu::exec 循环能够完全平稳退出，避免嵌套事件循环风险
-            // 为避免 QMenu 析构导致 itemWidget (this) 被销毁从而引发 Use-After-Free 崩溃，
-            // 此处必须按值捕获 isQuery 和 dialog，而不是捕获 this 指针。
-            bool isQuery = m_isQuery;
-            ScanDialog* dialog = m_dialog;
-            if (dialog) {
-                QTimer::singleShot(50, dialog, [dialog, isQuery]() {
-                    dialog->reopenHistoryMenu(isQuery);
-                });
-            }
-        }
-    }
-
-    QString m_text;
-    bool m_isQuery;
-    QMenu* m_parentMenu;
-    ScanDialog* m_dialog;
-};
-
-} // namespace FERREX
 
 #ifdef min
 #undef min
@@ -164,100 +79,102 @@ private:
 #endif
 
 
-namespace FERREX {
-
-// 2026-07-11 物理移植自 ArcMeta (Plan-179)：出厂默认配置
-static const QSet<QString> DEFAULT_BLACKLIST = {
-    // 系统 / 可执行 / 压缩
-    "exe", "dll", "sys", "bin", "dat", "lib", "obj", "msi", "com",
-    "zip", "rar", "7z", "iso", "tar", "gz", "bz2", "dmg", "pkg",
-    // 音频类（由默认播放器处理）
-    "mp3", "wav", "wma", "flac", "aac", "ogg", "m4a", "ape", "opus", "aiff", "amr",
-    // 视频类（由默认播放器处理）
-    "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
-};
-
-static const QSet<QString> DEFAULT_WHITELIST = {
-    // 图像类
-    "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
-    // 纯文本 / 标记语言
-    "txt", "md", "markdown", "rst", "log", "nfo", "tex", "latex", "diff", "patch",
-    "csv", "tsv", "html", "htm", "xhtml", "xml", "xsl", "xslt", "svg", "xaml",
-    "json", "json5", "toml", "yaml", "yml", "ini", "conf", "cfg", "properties", "env",
-    // C / C++ 系
-    "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
-    // C# / .NET
-    "cs", "csx", "vb", "vbs", "vba",
-    // Java / Kotlin / Scala / Groovy
-    "java", "kt", "kts", "scala", "sc", "groovy", "gradle",
-    // Web 前端
-    "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte",
-    "css", "scss", "sass", "less", "styl",
-    "php", "php3", "php4", "php5", "phtml",
-    // 脚本语言
-    "py", "pyw", "pyi",          // Python
-    "rb", "rbw", "rake",          // Ruby
-    "pl", "pm", "pod", "t",       // Perl / Raku
-    "lua",                         // Lua
-    "tcl", "tk",                   // TCL
-    "r", "rmd",                    // R
-    "m",                           // MATLAB / Objective-C
-    "jl",                          // Julia
-    // 系统 / 自动化脚本
-    "sh", "bash", "zsh", "fish", "ksh", "csh",   // Shell
-    "bat", "cmd",                                   // Windows Batch
-    "ps1", "psm1", "psd1", "ps1xml",              // PowerShell
-    "ahk", "ahk2",                                 // AutoHotkey
-    "au3",                                         // AutoIt
-    "nsi", "nsh",                                  // NSIS
-    "iss",                                         // Inno Setup
-    "reg",                                         // Windows Registry
-    // 系统 / 编译工具
-    "cmake", "make", "mk", "makefile",
-    "dockerfile",
-    // 数据库
-    "sql", "mysql", "pgsql", "plsql",
-    // 函数式 / 其他语言
-    "hs", "lhs",                   // Haskell
-    "erl", "hrl",                  // Erlang
-    "clj", "cljs", "cljc",         // Clojure
-    "lisp", "el", "scm", "ss",     // Lisp / Scheme
-    "f", "for", "f90", "f95", "f03", // Fortran
-    "d",                            // D
-    "pas", "pp", "inc",            // Pascal / Delphi
-    "swift",                        // Swift
-    "go",                           // Go
-    "rs",                           // Rust
-    "dart",                         // Dart
-    "zig",                          // Zig
-    "nim",                          // Nim
-    "cr",                           // Crystal
-    "ex", "exs",                    // Elixir
-    "coffee",                       // CoffeeScript
-    "as",                           // ActionScript
-    "ada", "adb", "ads",           // Ada
-    "asm", "s", "nasm",            // Assembly
-    "v", "sv", "svh",              // Verilog / SystemVerilog
-    "vhd", "vhdl",                 // VHDL
-    "pro",                          // Prolog
-    "sas",                          // SAS
-    "matlab",                       // MATLAB (alt)
-    "cob", "cbl",                  // COBOL
-    "bas", "frm", "cls",           // VB Classic / FreeBasic
-    "asp", "aspx",                 // ASP
-    "jsp",                          // JSP
-};
-
 // 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置文件类型准入哨兵
 // 按下空格键时，先通过此函数判断文件是否支持预览，不支持则直接 return，绝不弹出预览窗
-static bool isPathPreviewable(const QString& path, const ScanConfig& config) {
+static bool isPathPreviewable(const QString& path) {
     QFileInfo info(path);
     if (info.isDir()) return false; // 文件夹直接拦截
 
     QString ext = info.suffix().toLower();
-    if (config.previewBlacklist.contains(ext)) return false;
-    return config.previewWhitelist.contains(ext);
+
+    // 黑名单：系统文件、可执行文件、压缩包、音视频等，由默认应用处理，不弹预览窗
+    static const QSet<QString> blackList = {
+        // 系统 / 可执行 / 压缩
+        "exe", "dll", "sys", "bin", "dat", "lib", "obj", "msi", "com",
+        "zip", "rar", "7z", "iso", "tar", "gz", "bz2", "dmg", "pkg",
+        // 音频类（由默认播放器处理）
+        "mp3", "wav", "wma", "flac", "aac", "ogg", "m4a", "ape", "opus", "aiff", "amr",
+        // 视频类（由默认播放器处理）
+        "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
+    };
+    if (blackList.contains(ext)) return false;
+
+    // 白名单：受支持的图像类、文本/代码类文件
+    // 文本/代码类对齐 Notepad++ 约 90 种内建语言的完整扩展名集合
+    static const QSet<QString> whiteList = {
+        // 图像类
+        "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
+        // 纯文本 / 标记语言
+        "txt", "md", "markdown", "rst", "log", "nfo", "tex", "latex", "diff", "patch",
+        "csv", "tsv", "html", "htm", "xhtml", "xml", "xsl", "xslt", "svg", "xaml",
+        "json", "json5", "toml", "yaml", "yml", "ini", "conf", "cfg", "properties", "env",
+        // C / C++ 系
+        "c", "h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "inl", "ipp",
+        // C# / .NET
+        "cs", "csx", "vb", "vbs", "vba",
+        // Java / Kotlin / Scala / Groovy
+        "java", "kt", "kts", "scala", "sc", "groovy", "gradle",
+        // Web 前端
+        "js", "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte",
+        "css", "scss", "sass", "less", "styl",
+        "php", "php3", "php4", "php5", "phtml",
+        // 脚本语言
+        "py", "pyw", "pyi",          // Python
+        "rb", "rbw", "rake",          // Ruby
+        "pl", "pm", "pod", "t",       // Perl / Raku
+        "lua",                         // Lua
+        "tcl", "tk",                   // TCL
+        "r", "rmd",                    // R
+        "m",                           // MATLAB / Objective-C
+        "jl",                          // Julia
+        // 系统 / 自动化脚本
+        "sh", "bash", "zsh", "fish", "ksh", "csh",   // Shell
+        "bat", "cmd",                                   // Windows Batch
+        "ps1", "psm1", "psd1", "ps1xml",              // PowerShell
+        "ahk", "ahk2",                                 // AutoHotkey
+        "au3",                                         // AutoIt
+        "nsi", "nsh",                                  // NSIS
+        "iss",                                         // Inno Setup
+        "reg",                                         // Windows Registry
+        // 系统 / 编译工具
+        "cmake", "make", "mk", "makefile",
+        "dockerfile",
+        // 数据库
+        "sql", "mysql", "pgsql", "plsql",
+        // 函数式 / 其他语言
+        "hs", "lhs",                   // Haskell
+        "erl", "hrl",                  // Erlang
+        "clj", "cljs", "cljc",         // Clojure
+        "lisp", "el", "scm", "ss",     // Lisp / Scheme
+        "f", "for", "f90", "f95", "f03", // Fortran
+        "d",                            // D
+        "pas", "pp", "inc",            // Pascal / Delphi
+        "swift",                        // Swift
+        "go",                           // Go
+        "rs",                           // Rust
+        "dart",                         // Dart
+        "zig",                          // Zig
+        "nim",                          // Nim
+        "cr",                           // Crystal
+        "ex", "exs",                    // Elixir
+        "coffee",                       // CoffeeScript
+        "as",                           // ActionScript
+        "ada", "adb", "ads",           // Ada
+        "asm", "s", "nasm",            // Assembly
+        "v", "sv", "svh",              // Verilog / SystemVerilog
+        "vhd", "vhdl",                 // VHDL
+        "pro",                          // Prolog
+        "sas",                          // SAS
+        "matlab",                       // MATLAB (alt)
+        "cob", "cbl",                  // COBOL
+        "bas", "frm", "cls",           // VB Classic / FreeBasic
+        "asp", "aspx",                 // ASP
+        "jsp",                          // JSP
+    };
+    return whiteList.contains(ext);
 }
+
+namespace FERREX {
 
 class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
@@ -384,10 +301,6 @@ public:
 // --- ScanConfig Implementation ---
 
 void ScanConfig::load() {
-    // 2026-07-11 新增：预初始化为出厂默认黑白名单，若配置文件中无此键值对则在此兜底
-    previewBlacklist = DEFAULT_BLACKLIST;
-    previewWhitelist = DEFAULT_WHITELIST;
-
     QFile file("FERREX_scan_config.json");
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -411,10 +324,6 @@ void ScanConfig::load() {
         QJsonArray eArr = obj["extHistory"].toArray();
         for (const auto& v : eArr) extHistory.append(v.toString());
         
-        // 2026-07-11 物理移植 (Plan-179)：从配置加载动态黑白名单（若存在）
-        if (obj.contains("previewBlacklist")) loadSet("previewBlacklist", previewBlacklist);
-        if (obj.contains("previewWhitelist")) loadSet("previewWhitelist", previewWhitelist);
-
         // 2026-05-16 持久化加载：视图、图标尺寸与排序规则
         if (obj.contains("viewMode")) viewMode = obj["viewMode"].toInt();
         if (obj.contains("iconSize")) iconSize = obj["iconSize"].toInt();
@@ -456,10 +365,6 @@ void ScanConfig::save() {
         QJsonArray eArr; for (const auto& v : extHistory) eArr.append(v);
         obj["extHistory"] = eArr;
         
-        // 2026-07-11 物理移植 (Plan-179)：持久化动态黑白名单
-        saveSet("previewBlacklist", previewBlacklist);
-        saveSet("previewWhitelist", previewWhitelist);
-
         // 2026-05-16 持久化存盘
         obj["viewMode"] = viewMode;
         obj["iconSize"] = iconSize;
@@ -712,43 +617,11 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
-        // 2026-07-12 物理对齐需求：ToolTipOverlay 显示的内容包含项目名称、路径、大小、修改时间 (并兼容备注和标签)
-        QString name = reader.getName(actualIndex);
         QString qPath = getPath();
-        
-        QString sizeStr;
-        if (reader.isDirectory(actualIndex)) {
-            sizeStr = "-";
-        } else {
-            int64_t size = reader.getSize(actualIndex);
-            if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
-                sizeStr = "...";
-            } else if (size < 1024) {
-                sizeStr = QString("%1 B").arg(size);
-            } else if (size < 1024 * 1024) {
-                sizeStr = QString("%1 KB").arg(size / 1024.0, 0, 'f', 2);
-            } else if (size < 1024LL * 1024 * 1024) {
-                sizeStr = QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 2);
-            } else {
-                sizeStr = QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
-            }
-        }
-
-        QString mtimeStr;
-        int64_t ts = reader.getModifyTime(actualIndex);
-        if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-            mtimeStr = "-";
-        } else if (ts == 0) {
-            mtimeStr = "-";
-        } else {
-            mtimeStr = QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
-        }
-
-        QString tip = QString::fromUtf8("名称: ") + name + "\n" +
-                      QString::fromUtf8("路径: ") + qPath + "\n" +
-                      QString::fromUtf8("大小: ") + sizeStr + "\n" +
-                      QString::fromUtf8("修改时间: ") + mtimeStr;
-
+        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
+        QString tip = QString::fromUtf8("路径: ") + qPath;
+        if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
+        if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;
     } else if (role == Qt::TextAlignmentRole) {
         switch (index.column()) {
@@ -776,23 +649,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return 0;
     } else if (role == Qt::UserRole + 2) {
         // 返回宽高比 (用于 JustifiedView 布局)
-        // 2026-07-11 物理重构：自适应模式仅限于视频和图形图像文件，文件夹与其余常规文件直接返回 -1.0 禁用自适应拉伸 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
-        if (reader.isDirectory(actualIndex)) {
-            return -1.0;
-        }
-
-        QString ext = reader.getExtQString(actualIndex).toLower();
-        static const QSet<QString> mediaExts = {
-            // 图形图像类
-            "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
-            // 视频类
-            "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
-        };
-
-        if (!mediaExts.contains(ext)) {
-            return -1.0; // 常规文件类型，不提供有效正数宽高比，禁用自适应拉伸
-        }
-
         return m_aspectRatios.value(key, 1.0);
     }
     return QVariant();
@@ -1016,19 +872,6 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
 {
-    // 安全启动保障：将 m_itemToolTipTimer 初始化提升到构造函数最顶端
-    m_itemToolTipTimer = new QTimer(this);
-    m_itemToolTipTimer->setSingleShot(true);
-    m_itemToolTipTimer->setInterval(2000); // 2000毫秒（2秒）延时
-    connect(m_itemToolTipTimer, &QTimer::timeout, this, [this]() {
-        if (m_hoveredIndex.isValid() && m_tableModel) {
-            QString tipText = m_tableModel->data(m_hoveredIndex, Qt::ToolTipRole).toString();
-            if (!tipText.isEmpty()) {
-                ToolTipOverlay::instance()->showText(m_hoveredGlobalPos, tipText, 0);
-            }
-        }
-    });
-
     // 2026-07-10 参考 ArcMeta 重构：在 UI 构造的最前期创建并注册全局事件过滤器
     m_resizeFilter = new ResizeEventFilter(this);
     QCoreApplication::instance()->installEventFilter(m_resizeFilter);
@@ -1080,18 +923,13 @@ ScanDialog::ScanDialog(QWidget* parent)
             
             titleLayout->insertStretch(titleLayout->indexOf(m_pinBtn));
 
-            // 构造全局气泡 Hover 事件过滤器
-            auto* hoverFilter = new HoverEventFilter(this);
-
             // ① 视图切换按钮 (标记 2)
             QPushButton* viewBtn = new QPushButton(); 
             viewBtn->setFixedSize(20, 20); // 严格锁定 20x20
             viewBtn->setIcon(UiHelper::getIcon("grid", QColor("#CCCCCC"), 16)); // 严格锁定图标 16x16
             viewBtn->setIconSize(QSize(16, 16));
             viewBtn->setCursor(Qt::PointingHandCursor); 
-            viewBtn->setToolTip(""); // 物理禁止原生 ToolTip，防范系统黑块
-            viewBtn->setProperty("tooltipText", "排列方式"); // 完美对接高级属性
-            viewBtn->installEventFilter(hoverFilter); // 接管悬停管线
+            viewBtn->setToolTip(""); // 禁止原生 ToolTip
             viewBtn->setStyleSheet( 
                 "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }" 
                 "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }" 
@@ -1173,81 +1011,28 @@ ScanDialog::ScanDialog(QWidget* parent)
             connect(m_sizeSlider, &QSlider::valueChanged, this, [this](int v) { 
                 m_config.iconSize = v; 
                 m_resultView->verticalHeader()->setDefaultSectionSize(v); 
-                
-                // 在列表模式下调节尺寸时，自适应计算并拓宽名称列 [1]
-                if (m_viewStack->currentIndex() == 0) {
-                    int minWidth = calculateNameColumnMinimumWidth();
-                    m_resultView->setColumnWidth(0, minWidth);
-                }
-
                 m_iconView->setTargetRowHeight(v); 
-                m_tableModel->clearThumbCache(true); 
-                m_tableModel->updateResults(); 
+                m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
+                m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
                 m_config.save(); 
             }); 
             
-            QPushButton* rulesBtn = new QPushButton();
-            rulesBtn->setFixedSize(20, 20);
-            rulesBtn->setIcon(UiHelper::getIcon("settings", QColor("#CCCCCC"), 16));
-            rulesBtn->setIconSize(QSize(16, 16));
-            rulesBtn->setCursor(Qt::PointingHandCursor);
-            rulesBtn->setToolTip(""); // 彻底切除原生阻塞黑色气泡 (对应用户原话：“其他按钮也没有采用Tooltip ... Tooltip都显示了什么？完全看不到”)
-            rulesBtn->setProperty("tooltipText", "预览配置"); // 统一改用自定义属性气泡驱动 (对应用户原话：“去参考ArcMeta版本来实现ToolTipOverlay”)
-            rulesBtn->installEventFilter(hoverFilter); // 接管悬停管线
-            rulesBtn->setStyleSheet(
-                "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 0; }"
-                "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }"
-                "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
-            );
-            connect(rulesBtn, &QPushButton::clicked, this, [this]() {
-                // 使用非模态弹出，禁止 exec()
-                // 为解决关闭子窗口时 ScanDialog 表格失焦无法点选的 bug，在堆上创建并将 parent 设为 nullptr 使其完全独立
-                // 同时采用 QPointer 防止多开以及销毁时保护
-                static QPointer<PreviewRulesDialog> activeDlg;
-                if (activeDlg) {
-                    activeDlg->raise();
-                    activeDlg->activateWindow();
-                    return;
-                }
-                auto* dlg = new PreviewRulesDialog(m_config, nullptr);
-                activeDlg = dlg;
-                dlg->setAttribute(Qt::WA_DeleteOnClose);
-                connect(dlg, &QDialog::accepted, this, [this]() {
-                    m_config.save();
-                });
-                // 当主窗口被销毁时同步销毁非模态子窗口，避免 parent=nullptr 导致的残留崩溃
-                connect(this, &QObject::destroyed, dlg, &QObject::deleteLater);
-                dlg->show();
-            });
-            
             titleLayout->insertWidget(titleLayout->indexOf(m_pinBtn), viewBtn);
-            titleLayout->insertWidget(titleLayout->indexOf(viewBtn), rulesBtn);
-            titleLayout->insertWidget(titleLayout->indexOf(rulesBtn), m_sizeSlider);
+            titleLayout->insertWidget(titleLayout->indexOf(viewBtn), m_sizeSlider);
 
             // 更新现有控制按钮样式以对标规范
             for (auto* btn : {m_pinBtn, m_minBtn, m_maxBtn}) {
                 if (!btn) continue;
                 btn->setFixedSize(20, 20);
                 btn->setIconSize(QSize(16, 16));
-                btn->setToolTip(""); // 原生禁绝
-                
-                // 完美赋予自定义 ToolTipOverlay 支持
+                btn->setToolTip("");
                 if (btn == m_pinBtn) {
-                    btn->setProperty("tooltipText", "置顶");
-                    btn->installEventFilter(hoverFilter);
-                    btn->setStyleSheet(
+                     btn->setStyleSheet(
                         "QPushButton { background: transparent; border: none; border-radius: 4px; } "
                         "QPushButton:hover { background: rgba(255, 255, 255, 0.1); } "
                         "QPushButton:checked { background: rgba(255, 85, 28, 0.2); }"
                     );
                 } else {
-                    if (btn == m_minBtn) {
-                        btn->setProperty("tooltipText", "最小化");
-                        btn->installEventFilter(hoverFilter);
-                    } else if (btn == m_maxBtn) {
-                        btn->setProperty("tooltipText", "最大化");
-                        btn->installEventFilter(hoverFilter);
-                    }
                     btn->setStyleSheet(
                         "QPushButton { background: transparent; border: none; border-radius: 4px; } "
                         "QPushButton:hover { background: rgba(255, 255, 255, 0.1); } "
@@ -1404,10 +1189,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
-        // 初始化时同步自适应计算并固定列宽，确保出厂即整齐 [1]
-        int initMinWidth = calculateNameColumnMinimumWidth();
-        m_resultView->setColumnWidth(0, initMinWidth);
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); // 启动时读取持久化尺寸
     } else {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
     }
@@ -1782,20 +1564,6 @@ void ScanDialog::setupUi() {
     m_resultView = new QTableView();
     m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
     m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
-    
-    // 【核心修复】：安装拖拽红线拦截器。当用户拖窄第0列小于物理下限时，强行恢复 [1]
-    connect(m_resultView->horizontalHeader(), &QHeaderView::sectionResized, this, [this](int logicalIndex, int /*oldSize*/, int newSize) {
-        if (logicalIndex == 0 && m_tableModel) {
-            int minWidth = calculateNameColumnMinimumWidth();
-            if (newSize < minWidth) {
-                // 必须临时阻塞信号，防止 QHeaderView 递归触发产生栈溢出（Stack Overflow）崩溃 [1]
-                m_resultView->horizontalHeader()->blockSignals(true);
-                m_resultView->setColumnWidth(0, minWidth);
-                m_resultView->horizontalHeader()->blockSignals(false);
-            }
-        }
-    });
-
     m_controller = new ScanController(this);
     m_tableModel = new ScanTableModel(m_controller, this);
     m_resultView->setModel(m_tableModel);
@@ -1831,8 +1599,6 @@ void ScanDialog::setupUi() {
     m_resultView->setColumnWidth(3, 140); 
     
     m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
-    m_resultView->viewport()->installEventFilter(this);
-    m_resultView->viewport()->setMouseTracking(true);
     
     m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
@@ -1907,8 +1673,6 @@ void ScanDialog::setupUi() {
     // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
     m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
-    m_iconView->viewport()->installEventFilter(this);
-    m_iconView->viewport()->setMouseTracking(true);
 
     // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
@@ -1977,22 +1741,10 @@ void ScanDialog::setupUi() {
         m_lastSearchMs = elapsedMs;
         m_tableModel->updateResults();
         updateStatus("就绪");
-        refreshVisibleMetadataRange();
-        
-        // 在列表激活状态下，检索完成后自动撑开列宽 [1]
-        if (m_viewStack->currentIndex() == 0) {
-            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
-        }
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
         updateStatus("就绪");
-        refreshVisibleMetadataRange();
-
-        // 在列表激活状态下，检索完成后自动撑开列宽 [1]
-        if (m_viewStack->currentIndex() == 0) {
-            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
-        }
     });
 
     showDriveLoading();
@@ -2506,60 +2258,6 @@ void ScanDialog::updateStatusBar() {
 
 }
 
-void ScanDialog::refreshVisibleMetadataRange() {
-    if (!m_tableModel || !m_viewStack) return;
-
-    int top = 0, bottom = -1;
-    if (m_viewStack->currentIndex() == 0) {
-        if (!m_resultView) return;
-        top = m_resultView->rowAt(0);
-        bottom = m_resultView->rowAt(m_resultView->viewport()->height());
-        if (top == -1) top = 0;
-        if (bottom == -1) bottom = m_tableModel->rowCount() - 1;
-    } else {
-        if (!m_iconView) return;
-        QModelIndex topIdx = m_iconView->indexAt(QPoint(10, 10));
-        QModelIndex bottomIdx = m_iconView->indexAt(QPoint(m_iconView->viewport()->width() - 10, m_iconView->viewport()->height() - 10));
-        top = topIdx.isValid() ? topIdx.row() : 0;
-        bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
-    }
-    m_tableModel->setVisibleRange(top, bottom);
-}
-
-int ScanDialog::calculateNameColumnMinimumWidth() const {
-    if (!m_tableModel || !m_resultView) return 260;
-
-    int rowHeight = m_config.iconSize;
-    int cardWidth = rowHeight - 6; // 还原 ListThumbnailDelegate 内部计算的侧边长 [1]
-    int basePadding = 6 + 10 + 10; // 左侧内边距(6px) + 间隙(10px) + 右侧文字边缘安全保护(10px) [1]
-
-    // 获取 QTableView 当前使用的字体度量器
-    QFontMetrics fm = m_resultView->fontMetrics();
-    int maxTextWidth = 100; // 给文字留出基础的 100 像素安全区域
-
-    // 平衡性能与精度：仅遍历当前结果集中的前 1000 个项目，防止大集合（如 200万数据）在主线程产生卡顿
-    auto snapshot = m_controller->snapshot();
-    if (!snapshot) return 260;
-    int count = std::min<int>(1000, (int)snapshot->keys.size());
-    auto& reader = MftReader::instance();
-
-    for (int i = 0; i < count; ++i) {
-        uint64_t key = snapshot->keys[i];
-        int actualIdx = reader.getIndexByKey(key);
-        if (actualIdx != -1) {
-            QString name = reader.getName(actualIdx);
-            // 使用 horizontalAdvance 精确测算该文件名在当前字体下的物理像素宽度 [1]
-            int textWidth = fm.horizontalAdvance(name);
-            if (textWidth > maxTextWidth) {
-                maxTextWidth = textWidth;
-            }
-        }
-    }
-
-    // 精确返回：正方形卡片宽度 + 最长文件名像素宽 + 间距补偿 [1]
-    return cardWidth + maxTextWidth + basePadding;
-}
-
 QString ScanDialog::formatNumber(int64_t n) {
     return QLocale(QLocale::English).toString(n);
 }
@@ -2603,33 +2301,6 @@ void ScanDialog::onCopyTriggered(bool isCut) {
     QApplication::clipboard()->setMimeData(mimeData);
 }
 
-void ScanDialog::setHistoryText(const QString& text, bool isQuery) {
-    if (isQuery) {
-        m_searchEdit->setText(text);
-    } else {
-        m_extEdit->setText(text);
-    }
-    onTriggerSearch();
-}
-
-void ScanDialog::removeHistoryItem(const QString& text, bool isQuery) {
-    if (isQuery) {
-        m_config.queryHistory.removeAll(text);
-    } else {
-        m_config.extHistory.removeAll(text);
-    }
-    m_config.save(); // 保存最新的去重单项状态
-}
-
-void ScanDialog::reopenHistoryMenu(bool isQuery) {
-    // 重新模拟鼠标双击从而完美重新唤醒刷新后的最新下拉面板，提供完美无感动画
-    QWidget* target = isQuery ? static_cast<QWidget*>(m_searchEdit) : static_cast<QWidget*>(m_extEdit);
-    if (target) {
-        QMouseEvent me(QEvent::MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-        QCoreApplication::sendEvent(target, &me);
-    }
-}
-
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
     // 2026-07-10 新增：专属 ScanDialog 主窗口的两段式 Esc 处理（对应用户原话：“当在ScanDialog窗口首次按下键时”）
@@ -2660,7 +2331,7 @@ void ScanDialog::keyPressEvent(QKeyEvent* event) {
             } else {
                 QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
                 // 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置属性准入判断，文件夹/黑名单直接 return 阻断
-                if (!isPathPreviewable(path, m_config)) return;
+                if (!isPathPreviewable(path)) return;
                 m_quickLook->preview(path);
             }
         }
@@ -2779,56 +2450,7 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
-    // 启动安全防御：严格的空指针保障检测
-    if (!m_resultView || !m_iconView || !m_itemToolTipTimer || !m_tableModel) {
-        return FramelessDialog::eventFilter(watched, event);
-    }
-
-    bool isViewOrViewport = (watched == m_resultView || watched == m_resultView->viewport() ||
-                             watched == m_iconView || watched == m_iconView->viewport());
-
-    if (isViewOrViewport) {
-        QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
-                                  static_cast<QAbstractItemView*>(m_resultView) : 
-                                  static_cast<QAbstractItemView*>(m_iconView);
-
-        if (event->type() == QEvent::ToolTip) {
-            // 极其重要：直接返回 true 拦截 QEvent::ToolTip 底层 QHelpEvent，彻底屏蔽原生的 ToolTip 气泡
-            return true;
-        }
-
-        if (event->type() == QEvent::MouseMove) {
-            QMouseEvent* me = static_cast<QMouseEvent*>(event);
-            // 完美坐标对准：将全局坐标转换为视口（viewport）局部坐标，确保 indexAt 判定精确度
-            QPoint viewportPos = view->viewport()->mapFromGlobal(me->globalPosition().toPoint());
-            QModelIndex idx = view->indexAt(viewportPos);
-
-            if (idx.isValid()) {
-                QModelIndex col0Idx = m_tableModel->index(idx.row(), 0);
-                
-                // 不管是不是同一个 item，只要鼠标移动，就必须立即隐藏已有的 ToolTipOverlay 并重置定时器
-                m_itemToolTipTimer->stop();
-                ToolTipOverlay::hideTip();
-
-                m_hoveredIndex = col0Idx;
-                m_hoveredGlobalPos = me->globalPosition().toPoint();
-                m_itemToolTipTimer->start(); // 重新开始 2000ms 计时
-            } else {
-                // 如果鼠标移动到了空白区域，隐藏提示并停止定时器
-                m_itemToolTipTimer->stop();
-                ToolTipOverlay::hideTip();
-                m_hoveredIndex = QModelIndex();
-            }
-        } else if (event->type() == QEvent::Leave || event->type() == QEvent::HoverLeave ||
-                   event->type() == QEvent::MouseButtonPress || event->type() == QEvent::FocusOut) {
-            // 鼠标移出、点击、失去焦点时，立即停止定时器并隐藏提示窗
-            m_itemToolTipTimer->stop();
-            ToolTipOverlay::hideTip();
-            m_hoveredIndex = QModelIndex();
-        }
-    }
-
-    if (isViewOrViewport && event->type() == QEvent::Wheel) {
+    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::Wheel) {
         QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & Qt::ControlModifier) {
             int deltaY = wheelEvent->angleDelta().y();
@@ -2840,13 +2462,10 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true; // 拦截事件，防止 Ctrl + 滚轮导致列表区域意外滚动
         }
     }
-
-    if (isViewOrViewport && event->type() == QEvent::KeyPress) {
+    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
-            QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
-                                      static_cast<QAbstractItemView*>(m_resultView) : 
-                                      static_cast<QAbstractItemView*>(m_iconView);
+            auto* view = qobject_cast<QAbstractItemView*>(watched);
             QModelIndex idx = view->currentIndex();
             if (idx.isValid()) {
                 if (m_quickLook->isVisible()) {
@@ -2854,14 +2473,13 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                 } else {
                     QString path = m_tableModel->data(m_tableModel->index(idx.row(), 1)).toString();
                     // 2026-07-11 物理移植自 ArcMeta (Plan-179)：前置属性准入判断，文件夹/黑名单直接 return 阻断
-                    if (!isPathPreviewable(path, m_config)) return true;
+                    if (!isPathPreviewable(path)) return true;
                     m_quickLook->preview(path);
                 }
             }
             return true; // 拦截事件，防止 TableView 处理空格导致滚动
         }
     }
-
     if (watched == m_sizeSlider && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
@@ -2870,191 +2488,34 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true;
         }
     }
-
     if ((watched == m_searchEdit || watched == m_extEdit) && event->type() == QEvent::MouseButtonDblClick) {
         bool isQuery = (watched == m_searchEdit);
         const QStringList& history = isQuery ? m_config.queryHistory : m_config.extHistory;
         
         if (!history.isEmpty()) {
             QMenu menu(this);
-            // 升级样式：加入对 QWidgetAction 自定义组件的 QMenu 内部样式修饰，保持 1A1A1A 深色系的高级感
-            // 特别添加 "QMenu::item { padding: 0px 0px; background: transparent; }"，彻底干掉 Qt 默认保留的高宽度 Gutter 图标槽，
-            // 让我们的自定义组件能够完整占据 120px 宽度，从而完美露出极右侧的“×”删除按钮！
-            menu.setStyleSheet(
-                "QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; border-radius: 6px; padding: 4px 0; }"
-                "QMenu::item { padding: 0px 0px; background: transparent; }"
-                "QMenu::separator { height: 1px; background: #333; margin: 4px 0; }"
-            );
-
-            // 使下拉面板的宽度与输入框的宽度保持一致
-            QWidget* editWidget = static_cast<QWidget*>(watched);
-            if (editWidget) {
-                menu.setFixedWidth(editWidget->width());
-            }
+            menu.setStyleSheet("QMenu { background: #1A1A1A; color: #CCC; border: 1px solid #333; } QMenu::item:selected { background: #232D37; color: #FFF; }");
             
-            // 使用 QWidgetAction 为每一条历史记录嵌入带有“×”的交互式控件 (对应用户原话：“每个选项右侧都应该有一个“×”……轻松移除某个选项”)
             for (const QString& item : history) {
-                auto* wa = new QWidgetAction(&menu);
-                auto* itemWidget = new HistoryItemWidget(item, isQuery, &menu, this, &menu);
-                wa->setDefaultWidget(itemWidget);
-                menu.addAction(wa);
+                menu.addAction(item, [this, isQuery, item]() {
+                    if (isQuery) m_searchEdit->setText(item);
+                    else m_extEdit->setText(item);
+                    onTriggerSearch();
+                });
             }
             
             menu.addSeparator();
-            
-            // 保留一键清空机制，同样以 QWidgetAction 来适配高阶菜单视觉
-            auto* clearAction = menu.addAction("清空历史记录", [this, isQuery, &menu]() {
+            menu.addAction("清空历史记录", [this, isQuery]() {
                 if (isQuery) m_config.queryHistory.clear();
                 else m_config.extHistory.clear();
                 m_config.save();
-                menu.close();
             });
-            clearAction->setIcon(UiHelper::getIcon("close", QColor("#FF4444"), 12));
             
             menu.exec(static_cast<QWidget*>(watched)->mapToGlobal(QPoint(0, static_cast<QWidget*>(watched)->height())));
             return true;
         }
     }
-
     return FramelessDialog::eventFilter(watched, event);
-}
-
-// ============================================================================
-// PreviewRulesDialog 实现
-// ============================================================================
-PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
-    : FramelessDialog("预览配置", parent), m_config(config)
-{
-    resize(600, 480);
-    setMinimumSize(500, 400);
-
-    auto* layout = new QVBoxLayout(m_contentArea);
-    layout->setContentsMargins(20, 15, 20, 20);
-    layout->setSpacing(10);
-
-    // 1. Whitelist label and editor
-    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以中英文逗号分隔):");
-    lblWhite->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
-    layout->addWidget(lblWhite);
-
-    m_whitelistEdit = new QTextEdit();
-    m_whitelistEdit->setPlaceholderText("例如: jpg, png, txt, cpp, h, py");
-    m_whitelistEdit->setStyleSheet(
-        "QTextEdit {"
-        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
-        "  padding: 8px; color: white; selection-background-color: #3498db;"
-        "  font-size: 13px; line-height: 1.4;"
-        "}"
-        "QTextEdit:focus { border: 1px solid #3498db; }"
-    );
-    layout->addWidget(m_whitelistEdit);
-
-    // 2. Blacklist label and editor
-    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以中英文逗号分隔):");
-    lblBlack->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
-    layout->addWidget(lblBlack);
-
-    m_blacklistEdit = new QTextEdit();
-    m_blacklistEdit->setPlaceholderText("例如: exe, dll, zip, rar, mp4");
-    m_blacklistEdit->setStyleSheet(
-        "QTextEdit {"
-        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
-        "  padding: 8px; color: white; selection-background-color: #3498db;"
-        "  font-size: 13px; line-height: 1.4;"
-        "}"
-        "QTextEdit:focus { border: 1px solid #3498db; }"
-    );
-    layout->addWidget(m_blacklistEdit);
-
-    // Populate data
-    QStringList whiteList;
-    for (const auto& ext : m_config.previewWhitelist) whiteList.append(ext);
-    whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(", "));
-
-    QStringList blackList;
-    for (const auto& ext : m_config.previewBlacklist) blackList.append(ext);
-    blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(", "));
-
-    // 3. Buttons row
-    auto* btnLayout = new QHBoxLayout();
-    
-    auto* btnRestore = new QPushButton("恢复默认");
-    btnRestore->setFixedSize(100, 32);
-    btnRestore->setCursor(Qt::PointingHandCursor);
-    btnRestore->setStyleSheet(
-        "QPushButton { background-color: transparent; color: #FF8C00; border: 1px solid #FF8C00; border-radius: 4px; } "
-        "QPushButton:hover { background-color: rgba(255, 140, 0, 0.1); }"
-    );
-    connect(btnRestore, &QPushButton::clicked, this, &PreviewRulesDialog::onRestoreDefaults);
-    btnLayout->addWidget(btnRestore);
-
-    btnLayout->addStretch();
-    
-    auto* btnCancel = new QPushButton("取消");
-    btnCancel->setFixedSize(80, 32);
-    btnCancel->setCursor(Qt::PointingHandCursor);
-    btnCancel->setStyleSheet(
-        "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
-        "QPushButton:hover { color: #EEE; background-color: #333; }"
-    );
-    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
-    btnLayout->addWidget(btnCancel);
-
-    auto* btnOk = new QPushButton("确定");
-    btnOk->setFixedSize(80, 32);
-    btnOk->setCursor(Qt::PointingHandCursor);
-    btnOk->setStyleSheet(
-        "QPushButton { background-color: #3498db; color: white; border: none; border-radius: 4px; font-weight: bold; } "
-        "QPushButton:hover { background-color: #1a7abf; }" 
-    );
-    connect(btnOk, &QPushButton::clicked, this, &PreviewRulesDialog::onConfirm);
-    btnLayout->addWidget(btnOk);
-
-    layout->addLayout(btnLayout);
-}
-
-void PreviewRulesDialog::onRestoreDefaults() {
-    QStringList whiteList;
-    for (const auto& ext : DEFAULT_WHITELIST) whiteList.append(ext);
-    whiteList.sort();
-    m_whitelistEdit->setPlainText(whiteList.join(", "));
-
-    QStringList blackList;
-    for (const auto& ext : DEFAULT_BLACKLIST) blackList.append(ext);
-    blackList.sort();
-    m_blacklistEdit->setPlainText(blackList.join(", "));
-}
-
-void PreviewRulesDialog::onConfirm() {
-    auto parseExtensions = [](const QString& text) -> QSet<QString> {
-        QSet<QString> set;
-        QString temp = text;
-        // 1. 将中文逗号、回车、换行全部统一替换为西文逗号（对应用户原话：“支持中英文逗号分割”）
-        temp.replace(QString::fromUtf8("，"), ",");
-        temp.replace('\n', ',');
-        temp.replace('\r', ',');
-        
-        // 2. 严格按逗号进行物理分割，而不是空格分割（对应用户原话：“采用逗号分割……而不是空格分割”）
-        QStringList list = temp.split(',', Qt::SkipEmptyParts);
-        for (const QString& item : list) {
-            // 去除多余的空格（例如逗号后的空格）
-            QString clean = item.trimmed().toLower();
-            if (clean.startsWith('.')) {
-                clean = clean.mid(1);
-            }
-            if (!clean.isEmpty()) {
-                set.insert(clean);
-            }
-        }
-        return set;
-    };
-
-    m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
-    m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
-
-    accept();
 }
 
 } // namespace FERREX

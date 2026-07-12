@@ -327,15 +327,7 @@ bool MftReader::loadFromCache() {
                     pd.sizes.push_back(pkg.size);
                     pd.timestamps.push_back(pkg.timestamp);
                     pd.attributes.push_back(pkg.attributes);
-                    
-                    // 2026-07-11 极致性能重构 (对应用户原话：“既然已经存入到了bin数据库里...显示却非常缓慢”)：
-                    // 彻底消除由于早期默认状态标记 0，导致列表模式渲染被迫抛弃缓存、频繁对数万个文件重新发起 Windows API 物理磁盘 IO 的架构缺陷。
-                    // 如果缓存中的文件记录已具备非零的大小或有效时间戳，说明元数据早已就绪，在读入内存 SoA 数组时，直接将其状态标记强制升级为已就绪状态（2）。
-                    if (pkg.size > 0 || pkg.timestamp > 0) {
-                        pd.metadata_fetched.push_back(2);
-                    } else {
-                        pd.metadata_fetched.push_back(pkg.metadata_fetched);
-                    }
+                    pd.metadata_fetched.push_back(pkg.metadata_fetched);
                     
                     pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
                     pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
@@ -469,15 +461,7 @@ bool MftReader::loadDriveFromCache(const QString& drive) {
         pd.sizes.push_back(pkg.size);
         pd.timestamps.push_back(pkg.timestamp);
         pd.attributes.push_back(pkg.attributes);
-        
-        // 2026-07-11 极致性能重构 (对应用户原话：“既然已经存入到了bin数据库里...显示却非常缓慢”)：
-        // 彻底消除由于早期默认状态标记 0，导致列表模式渲染被迫抛弃缓存、频繁对数万个文件重新发起 Windows API 物理磁盘 IO 的架构缺陷。
-        // 如果缓存中的文件记录已具备非零的大小或有效时间戳，说明元数据早已就绪，在读入内存 SoA 数组时，直接将其状态标记强制升级为已就绪状态（2）。
-        if (pkg.size > 0 || pkg.timestamp > 0) {
-            pd.metadata_fetched.push_back(2);
-        } else {
-            pd.metadata_fetched.push_back(pkg.metadata_fetched);
-        }
+        pd.metadata_fetched.push_back(pkg.metadata_fetched);
         
         pd.name_offsets.push_back((uint32_t)pd.string_pool.size());
         pd.string_pool.insert(pd.string_pool.end(), pkg.name.begin(), pkg.name.end());
@@ -1760,27 +1744,7 @@ void MftReader::requestMetadata(int index) {
                 m_timestamps[index] = filetimeToUnixMs((static_cast<int64_t>(attrData.ftLastWriteTime.dwHighDateTime) << 32) | attrData.ftLastWriteTime.dwLowDateTime);
                 m_attributes[index] = attrData.dwFileAttributes;
                 m_metadata_fetched[index] = 2;
-                size_t dIdxForSave = static_cast<size_t>(m_parent_frns[index] >> 48);
                 lock.unlock();
-
-                // 2026-07-xx 物理修复：元数据补全后必须标记脏数据并触发落盘，
-                // 否则重启程序后已补全的大小/时间会丢失，下次还要重新查询。
-                bool shouldSave = false;
-                {
-                    std::lock_guard<std::mutex> dLock(m_dirtyLock);
-                    m_dirty_indices.insert(index);
-                    m_dirty_count++;
-                    if (m_dirty_count >= 1000) {
-                        m_dirty_count = 0;
-                        shouldSave = true;
-                    }
-                }
-                if (shouldSave && dIdxForSave < m_drive_list.size()) {
-                    QThreadPool::globalInstance()->start([this, dIdxForSave]() {
-                        saveDriveToCache(dIdxForSave);
-                    });
-                }
-
                 emit dataChanged(index);
                 return;
             }
@@ -1802,26 +1766,6 @@ void MftReader::requestMetadata(int index) {
                         m_timestamps[index] = filetimeToUnixMs((static_cast<int64_t>(bhfi.ftLastWriteTime.dwHighDateTime) << 32) | bhfi.ftLastWriteTime.dwLowDateTime);
                         m_attributes[index] = bhfi.dwFileAttributes;
                         m_metadata_fetched[index] = 2;
-
-                        size_t dIdxForSave = static_cast<size_t>(m_parent_frns[index] >> 48);
-                        writeLock.unlock();
-
-                        // 2026-07-xx 物理修复：同上，这条退化路径成功时也必须标记脏数据并触发落盘。
-                        bool shouldSave = false;
-                        {
-                            std::lock_guard<std::mutex> dLock(m_dirtyLock);
-                            m_dirty_indices.insert(index);
-                            m_dirty_count++;
-                            if (m_dirty_count >= 1000) {
-                                m_dirty_count = 0;
-                                shouldSave = true;
-                            }
-                        }
-                        if (shouldSave && dIdxForSave < m_drive_list.size()) {
-                            QThreadPool::globalInstance()->start([this, dIdxForSave]() {
-                                saveDriveToCache(dIdxForSave);
-                            });
-                        }
                     }
                 }
                 CloseHandle(hFile);

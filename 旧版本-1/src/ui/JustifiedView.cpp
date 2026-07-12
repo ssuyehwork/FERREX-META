@@ -371,26 +371,18 @@ void JustifiedView::doLayout() {
             i += numInRow;
         }
     } else {
-        // JustifiedMode 逻辑：仅对媒体（视频、图形图像）实施自适应宽高拉伸，常规文件保持标准固定正方形排布 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
+        // JustifiedMode 逻辑保持原有自适应宽高
         int i = 0;
         while (i < count) {
             int rowStart = i;
             double rowAspectRatioSum = 0;
             std::vector<double> aspectRatios;
-            std::vector<bool> isRegularFlags; // 记录每个项目是否为常规非自适应文件
 
             while (i < count) {
                 double ar = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
-                
-                // 【核心修复】：物理加固判定。如果 ar < 0（显式常规文件），或者 ar <= 0.01（无效数据/未载入占位符）
-                // 则一律视为常规文件，禁止任何自适应宽度拉伸 [1, 2]
-                bool isRegular = (ar <= 0.01); 
-                if (isRegular) {
-                    ar = 1.0; // 常规文件和文件夹比例恒定视为 1.0 的标准物理正方形 [1, 2]
-                }
+                if (ar <= 0) ar = 1.0;
                 
                 aspectRatios.push_back(ar);
-                isRegularFlags.push_back(isRegular);
                 rowAspectRatioSum += ar;
                 
                 int numInRow = (int)aspectRatios.size();
@@ -398,7 +390,6 @@ void JustifiedView::doLayout() {
                 if (estimatedWidth > containerWidth) {
                     if (numInRow > 1) {
                         aspectRatios.pop_back();
-                        isRegularFlags.pop_back();
                         rowAspectRatioSum -= ar;
                     } else {
                         i++;
@@ -414,18 +405,7 @@ void JustifiedView::doLayout() {
 
             int actualHeight = m_targetRowHeight;
             bool isLastRow = (i == count);
-
-            // 核心物理防错判断 (对应用户原话：“其中的“自适应”视图模式存在傻逼逻辑架构 ... 还是计算存在傻逼逻辑？”)：
-            // 只要行内包含任何常规非自适应文件（如 AHK、TXT 等），或者属于最末一行，整行立即关闭拉伸填满特性！
-            // 这确保了常规文件在任何时候都保持完美的标准正方形尺寸，而不会被强制撑大拉宽，更不会产生累积宽度偏差导致的负值和异常坍塌。
-            bool containsRegular = false;
-            for (bool isReg : isRegularFlags) {
-                if (isReg) {
-                    containsRegular = true;
-                    break;
-                }
-            }
-            bool rowIsJustified = !isLastRow && !containsRegular;
+            bool rowIsJustified = !isLastRow;
 
             int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
 

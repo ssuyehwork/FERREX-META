@@ -32,7 +32,6 @@
 #include <atomic>
 
 #include "ScanController.h"
-class QTextEdit;
 namespace FERREX {
 
 class JustifiedView;
@@ -44,9 +43,6 @@ struct ScanConfig {
     QSet<QString> defaultDrives;
     QStringList queryHistory;
     QStringList extHistory;
-    
-    QSet<QString> previewBlacklist;
-    QSet<QString> previewWhitelist;
     
     int viewMode = 0;   // 0: Details, 1: Icons
     int iconSize = 128; // 256, 128, 64
@@ -63,21 +59,6 @@ struct ScanConfig {
 
     void load();
     void save();
-};
-
-class PreviewRulesDialog : public FramelessDialog {
-    Q_OBJECT
-public:
-    explicit PreviewRulesDialog(ScanConfig& config, QWidget* parent = nullptr);
-
-private slots:
-    void onRestoreDefaults();
-    void onConfirm();
-
-private:
-    ScanConfig& m_config;
-    QTextEdit* m_whitelistEdit = nullptr;
-    QTextEdit* m_blacklistEdit = nullptr;
 };
 
 
@@ -170,12 +151,6 @@ private slots:
     void onCopyTriggered(bool isCut = false);
 
 public:
-    // 2026-07-11 下拉面板历史单项“×”删除辅助操作链 (对应用户原话：“每个选项右侧都应该有一个“×”……轻松移除某个选项”)
-    void setHistoryText(const QString& text, bool isQuery);
-    void removeHistoryItem(const QString& text, bool isQuery);
-    void reopenHistoryMenu(bool isQuery);
-
-public:
     // 定义物理拉伸的 8 方向枚举与空状态 (对标 ArcMeta 规范)
     enum ResizeDirection {
         None = 0,
@@ -215,9 +190,6 @@ private:
     void updateDriveButtonStyles();
     void updateStatus(const QString& text, bool scanning = false, int64_t totalCount = -1);
     void updateStatusBar();
-    void refreshVisibleMetadataRange(); // 2026-07-xx 物理修复：结果刷新后主动计算可视区域，
-                                          // 不再仅依赖滚动条 valueChanged 触发元数据补全
-    int calculateNameColumnMinimumWidth() const; // 计算当前数据集下名称列的完美正方形容器+文字不失真所需最小像素宽度 [1]
     void triggerWarmup(); // 2026-07-07 新增：缩略图预热流水线 (Analysis_Modification_Plan-154.md)
     void selectAllResults(); // 2026-07-07 物理修复：实现绕过视图布局状态的全量选择逻辑
     void handleMetadataShortcut(QKeyEvent* event);
@@ -271,10 +243,6 @@ private:
     QAction* m_actJMode = nullptr;
     QAction* m_actGMode = nullptr;
     QAction* m_actListMode = nullptr;
-
-    QTimer* m_itemToolTipTimer = nullptr;
-    QModelIndex m_hoveredIndex;
-    QPoint m_hoveredGlobalPos;
 
 protected:
     void closeEvent(QCloseEvent* event) override;
