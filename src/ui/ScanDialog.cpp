@@ -671,7 +671,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
         // 重建过滤后结果集的 O(1) 反向索引映射
         newSet->keyToPos.clear();
         for (size_t i = 0; i < newSet->keys.size(); ++i) {
-            newSet->keyToPos[newSet->keys[i]] = i;
+            newSet->keyToPos[newSet->keys[i]] = static_cast<int>(i);
         }
     } else {
         // 列表模式：保留全量普通文件、文件夹及多媒体过滤数据
