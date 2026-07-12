@@ -32,38 +32,14 @@
 #include <atomic>
 
 #include "ScanController.h"
+#include "ConfigManager.h"
 class QTextEdit;
 namespace FERREX {
 
 class JustifiedView;
 class ThumbnailDelegate;
 class QuickLookWindow;
-
-struct ScanConfig {
-    QSet<QString> activeDrives;
-    QSet<QString> defaultDrives;
-    QStringList queryHistory;
-    QStringList extHistory;
-    
-    QSet<QString> previewBlacklist;
-    QSet<QString> previewWhitelist;
-    
-    int viewMode = 0;   // 0: Details, 1: Icons
-    int iconSize = 128; // 256, 128, 64
-    int layoutMode = 0; // 0: JustifiedMode, 1: GridMode
-    int sortColumn = 0; 
-    int sortOrder = 0;  // 0: Asc, 1: Desc
-
-    bool useRegex = true;
-    bool caseSensitive = false;
-    bool includeHidden = false;
-    bool includeSystem = false;
-    bool includeDollar = false;
-    bool autoDisplay = false;
-
-    void load();
-    void save();
-};
+class IScanResultView;
 
 class PreviewRulesDialog : public FramelessDialog {
     Q_OBJECT
@@ -101,6 +77,7 @@ public:
 
     void setVisibleRange(int top, int bottom);
     void forceFetchAll(); // 2026-07-07 物理修复：强制加载全部结果以支持全选
+    QThreadPool* getThumbPool() const { return m_thumbPool; }
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
@@ -175,35 +152,11 @@ public:
     void removeHistoryItem(const QString& text, bool isQuery);
     void reopenHistoryMenu(bool isQuery);
 
-public:
-    // 定义物理拉伸的 8 方向枚举与空状态 (对标 ArcMeta 规范)
-    enum ResizeDirection {
-        None = 0,
-        Left, Right, Top, Bottom,
-        TopLeft, TopRight, BottomLeft, BottomRight
-    };
-
-    // 公开暴露供事件过滤器调用
-    ResizeDirection getResizeDirection(const QPoint& localPos) const;
-    void updateCursorShape(ResizeDirection dir);
-
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
-    // 重写三大鼠标底层事件，承接窗口边缘拉伸拖拽逻辑
-    void mousePressEvent(QMouseEvent* event) override;
-    void mouseMoveEvent(QMouseEvent* event) override;
-    void mouseReleaseEvent(QMouseEvent* event) override;
-
 private:
-    // 拉伸状态机核心变量
-    ResizeDirection m_resizeDir = None;
-    bool m_isResizing = false;
-    bool m_isDragging = false;             // 控制标题栏拖拽状态
-    QPoint m_resizeStartGlobal;
-    QRect  m_resizeStartGeometry;
-    QPoint m_dragPosition;                 // 标题栏拖动起始差值
 
     static constexpr int kResizeMargin = 6; // DPI 基准热区像素宽度
 
@@ -246,13 +199,18 @@ private:
     QHBoxLayout* m_driveLayout = nullptr;
     QWidget* m_driveContainer = nullptr;
     
-    QTableView* m_resultView = nullptr;
-    JustifiedView* m_iconView = nullptr;
+    IScanResultView* m_listResultView = nullptr;
+    IScanResultView* m_justifiedResultView = nullptr;
+    IScanResultView* m_gridResultView = nullptr;
+    IScanResultView* m_currentActiveView = nullptr;
+
     QStackedWidget* m_viewStack = nullptr;
     ScanTableModel* m_tableModel = nullptr;
     QuickLookWindow* m_quickLook = nullptr;
 
     ScanController* m_controller = nullptr;
+
+    void switchToView(int viewMode, int layoutMode);
 
     QLabel* m_titleStatusLabel = nullptr; 
     QLabel* m_statLabelMain = nullptr;    
@@ -266,7 +224,7 @@ private:
     int64_t m_lastSearchMs = 0;
 
     std::unique_ptr<CacheManager> m_cacheManager;
-    ScanConfig m_config;
+    ScanConfig& m_config;
 
     QAction* m_actJMode = nullptr;
     QAction* m_actGMode = nullptr;
