@@ -15,7 +15,6 @@ enum CommonRole {
     PathRole            = Qt::UserRole + 3,  // 物理路径
     ColorRole           = Qt::UserRole + 4,  // 颜色标记 (Hex)
     RatingRole          = Qt::UserRole + 5,  // 星级评级 (0-5)
-    TagsRole            = Qt::UserRole + 6,  // 标签列表 (QStringList)
     
     // 状态角色 (UserRole + 101..200)
     PinnedRole          = Qt::UserRole + 101, // 置顶状态 (快速访问镜像)

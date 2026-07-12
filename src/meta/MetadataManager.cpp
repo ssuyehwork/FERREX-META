@@ -67,9 +67,6 @@ void MetadataManager::loadAllMetaAsync() {
                 rm.rating = m["rating"].toInt();
                 rm.color = m["color"].toString().toStdWString();
                 rm.pinned = m["pinned"].toBool();
-                rm.note = m["note"].toString().toStdWString();
-                QJsonArray tagsArr = m["tags"].toArray();
-                for (const auto& t : tagsArr) rm.tags << t.toString();
                 tempCache[nPath] = std::move(rm);
             }
         }
@@ -102,18 +99,6 @@ void MetadataManager::setRating(const std::wstring& path, int rating) {
 void MetadataManager::setColor(const std::wstring& path, const std::wstring& color) {
     std::wstring nPath = normalizePath(path);
     { std::unique_lock<std::shared_mutex> lock(m_mutex); m_cache[nPath].color = color; }
-    emit metaChanged(QString::fromStdWString(nPath));
-}
-
-void MetadataManager::setTags(const std::wstring& path, const QStringList& tags) {
-    std::wstring nPath = normalizePath(path);
-    { std::unique_lock<std::shared_mutex> lock(m_mutex); m_cache[nPath].tags = tags; }
-    emit metaChanged(QString::fromStdWString(nPath));
-}
-
-void MetadataManager::setNote(const std::wstring& path, const std::wstring& note) {
-    std::wstring nPath = normalizePath(path);
-    { std::unique_lock<std::shared_mutex> lock(m_mutex); m_cache[nPath].note = note; }
     emit metaChanged(QString::fromStdWString(nPath));
 }
 

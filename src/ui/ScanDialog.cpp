@@ -749,9 +749,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                       QString::fromUtf8("大小: ") + sizeStr + "\n" +
                       QString::fromUtf8("修改时间: ") + mtimeStr;
 
-        auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
-        if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;
     } else if (role == Qt::TextAlignmentRole) {
         switch (index.column()) {

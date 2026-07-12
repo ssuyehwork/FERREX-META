@@ -22,9 +22,7 @@ struct FolderMeta {
     std::wstring sortOrder = L"asc";
     int rating = 0;
     std::wstring color = L"";
-    std::vector<std::wstring> tags;
     bool pinned = false;
-    std::wstring note = L"";
     bool encrypted = false;
     std::string encryptSalt;
     std::string encryptIv;
@@ -34,7 +32,7 @@ struct FolderMeta {
 
     bool isDefault() const {
         return sortBy == L"name" && sortOrder == L"asc" && rating == 0 &&
-               color.empty() && tags.empty() && !pinned && note.empty() && !encrypted && fileId128.empty() && palettes.empty();
+               color.empty() && !pinned && !encrypted && fileId128.empty() && palettes.empty();
     }
 };
 
@@ -45,9 +43,7 @@ struct ItemMeta {
     std::wstring type = L"file"; // "file" | "folder"
     int rating = 0;
     std::wstring color = L"";
-    std::vector<std::wstring> tags;
     bool pinned = false;
-    std::wstring note = L"";
     bool encrypted = false;
     std::string encryptSalt;
     std::string encryptIv;
@@ -63,8 +59,8 @@ struct ItemMeta {
     std::vector<PaletteEntry> palettes;
 
     bool hasUserOperations() const {
-        return rating > 0 || !color.empty() || !tags.empty() || pinned ||
-               !note.empty() || encrypted || !fileId128.empty() || !palettes.empty();
+        return rating > 0 || !color.empty() || pinned ||
+               encrypted || !fileId128.empty() || !palettes.empty();
     }
 };
 
