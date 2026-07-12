@@ -20,37 +20,25 @@ namespace FERREX {
 ThumbnailDelegate::ThumbnailDelegate(QObject* parent) : QStyledItemDelegate(parent) {}
 
 void ThumbnailDelegate::setHasThumbnailRole(int role) { m_hasThumbnailRole = role; }
-void ThumbnailDelegate::setRatingRole(int role) { m_ratingRole = role; }
 void ThumbnailDelegate::setPathRole(int role) { m_pathRole = role; }
-void ThumbnailDelegate::setPinnedRole(int role) { m_pinnedRole = role; }
 void ThumbnailDelegate::setManagedRole(int role) { m_managedRole = role; }
-void ThumbnailDelegate::setTypeRole(int role) { m_typeRole = role; }
 void ThumbnailDelegate::setIsEmptyRole(int role) { m_isEmptyRole = role; }
-void ThumbnailDelegate::setColorRole(int role) { m_colorRole = role; }
 
 ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptionViewItem& option) const {
     Metrics m;
     const int textHeight = 36;
     const int gap = 6; // 卡片与文件名的紧凑间隙
 
-    m.ratingH = 0; // 彻底停用星级占位
-
     // 底部预留高度调整：文件名高度 + 间距 + 底部内边距补偿(3px)
     m.cardRect = option.rect.adjusted(3, 3, -3, -(textHeight + gap + 3));
     
-    m.ratingY = 0;
-
     // 文件名框紧贴卡片底部下方 gap 像素的位置
     m.textRect = QRect(option.rect.left() + 3,
                        m.cardRect.bottom() + gap,
                        option.rect.width() - 6,
                        textHeight);
     
-    // 初始化无用变量，防止其他潜在编译未定义警告
-    m.starSize = 0;
-    m.starSpacing = 0;
     m.banRect = QRect();
-    m.starsStartX = 0;
 
     return m;
 }
@@ -134,16 +122,11 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->restore();
 
     // 状态位图标绘制
-    if (m_pinnedRole != -1 && m_managedRole != -1) {
-        bool isPinned = index.data(m_pinnedRole).toBool();
+    if (m_managedRole != -1) {
         bool isManaged = index.data(m_managedRole).toBool();
-        if (isPinned || isManaged) {
+        if (isManaged) {
             QRect statusRect(m.cardRect.right() - 22, m.cardRect.top() + 8, 16, 16);
-            if (isPinned) {
-                UiHelper::getIcon("pin_vertical", QColor("#FF551C"), 16).paint(painter, statusRect);
-            } else {
-                UiHelper::getIcon("check_circle", QColor("#2ecc71"), 16).paint(painter, statusRect);
-            }
+            UiHelper::getIcon("check_circle", QColor("#2ecc71"), 16).paint(painter, statusRect);
         }
     }
 
@@ -252,8 +235,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->restore();
 
     // ④ 空文件夹特殊标记
-    if (!isSelected && m_isEmptyRole != -1 && m_typeRole != -1) {
-        if (index.data(m_typeRole).toString() == "folder" && index.data(m_isEmptyRole).toBool()) {
+    if (!isSelected && m_isEmptyRole != -1) {
+        if (index.data(m_isEmptyRole).toBool()) {
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing);
             painter->setPen(QPen(QColor("#41F2F2"), 1, Qt::DashLine));
