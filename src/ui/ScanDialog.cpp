@@ -712,9 +712,44 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
+        // 2026-07-12 物理对齐需求：ToolTipOverlay 显示的内容包含项目名称、路径、大小、修改时间 (并兼容备注和标签)
+        QString name = reader.getName(actualIndex);
         QString qPath = getPath();
+
+        QString sizeStr;
+        if (reader.isDirectory(actualIndex)) {
+            sizeStr = "-";
+        } else {
+            int64_t size = reader.getSize(actualIndex);
+            if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
+                sizeStr = "...";
+            } else if (size < 1024) {
+                sizeStr = QString("%1 B").arg(size);
+            } else if (size < 1024 * 1024) {
+                sizeStr = QString("%1 KB").arg(size / 1024.0, 0, 'f', 2);
+            } else if (size < 1024LL * 1024 * 1024) {
+                sizeStr = QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 2);
+            } else {
+                sizeStr = QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
+            }
+        }
+
+        QString mtimeStr;
+        int64_t ts = reader.getModifyTime(actualIndex);
+        if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
+            mtimeStr = "-";
+        } else if (ts == 0) {
+            mtimeStr = "-";
+        } else {
+            mtimeStr = QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
+        }
+
+        QString tip = QString::fromUtf8("名称: ") + name + "\n" +
+                      QString::fromUtf8("路径: ") + qPath + "\n" +
+                      QString::fromUtf8("大小: ") + sizeStr + "\n" +
+                      QString::fromUtf8("修改时间: ") + mtimeStr;
+
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        QString tip = QString::fromUtf8("路径: ") + qPath;
         if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
         if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;
@@ -2670,10 +2705,16 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
                                   static_cast<QAbstractItemView*>(m_resultView) :
                                   static_cast<QAbstractItemView*>(m_iconView);
 
+        if (event->type() == QEvent::ToolTip) {
+            // 极其重要：直接返回 true 拦截 QEvent::ToolTip 底层 QHelpEvent，彻底屏蔽原生的 ToolTip 气泡
+            return true;
+        }
+
         if (event->type() == QEvent::MouseMove) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
-            QPoint localPos = me->pos();
-            QModelIndex idx = view->indexAt(localPos);
+            // 完美坐标对准：将全局坐标转换为视口（viewport）局部坐标，确保 indexAt 判定精确度
+            QPoint viewportPos = view->viewport()->mapFromGlobal(me->globalPosition().toPoint());
+            QModelIndex idx = view->indexAt(viewportPos);
 
             if (idx.isValid()) {
                 QModelIndex col0Idx = m_tableModel->index(idx.row(), 0);
