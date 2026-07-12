@@ -381,9 +381,12 @@ void JustifiedView::doLayout() {
 
             while (i < count) {
                 double ar = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
-                bool isRegular = (ar < 0);
+
+                // 【核心修复】：物理加固判定。如果 ar < 0（显式常规文件），或者 ar <= 0.01（无效数据/未载入占位符）
+                // 则一律视为常规文件，禁止任何自适应宽度拉伸 [1, 2]
+                bool isRegular = (ar <= 0.01);
                 if (isRegular) {
-                    ar = 1.0; // 常规文件和文件夹比例恒定视为 1.0 的标准物理正方形
+                    ar = 1.0; // 常规文件和文件夹比例恒定视为 1.0 的标准物理正方形 [1, 2]
                 }
                 
                 aspectRatios.push_back(ar);
