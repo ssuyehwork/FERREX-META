@@ -150,5 +150,8 @@ int main(int argc, char *argv[]) {
 
     int ret = a.exec();
 
+    // 全局安全销毁：程序完全退出时，释放常驻单例引擎内存
+    FERREX::MftReader::instance().clear();
+
     return ret;
 }
