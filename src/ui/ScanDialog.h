@@ -217,6 +217,7 @@ private:
     void updateStatusBar();
     void refreshVisibleMetadataRange(); // 2026-07-xx 物理修复：结果刷新后主动计算可视区域，
                                           // 不再仅依赖滚动条 valueChanged 触发元数据补全
+    int calculateNameColumnMinimumWidth() const; // 计算当前数据集下名称列的完美正方形容器+文字不失真所需最小像素宽度 [1]
     void triggerWarmup(); // 2026-07-07 新增：缩略图预热流水线 (Analysis_Modification_Plan-154.md)
     void selectAllResults(); // 2026-07-07 物理修复：实现绕过视图布局状态的全量选择逻辑
     void handleMetadataShortcut(QKeyEvent* event);

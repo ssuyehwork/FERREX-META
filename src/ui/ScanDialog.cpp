@@ -1174,15 +1174,15 @@ ScanDialog::ScanDialog(QWidget* parent)
                 m_config.iconSize = v; 
                 m_resultView->verticalHeader()->setDefaultSectionSize(v); 
 
-                // 【核心修复】：在列表模式下调节尺寸时，名称列宽度按 2.5 倍行高比例同步拓宽（限制下限 260px）
+                // 在列表模式下调节尺寸时，自适应计算并拓宽名称列 [1]
                 if (m_viewStack->currentIndex() == 0) {
-                    int targetCol0Width = qMax(260, qRound(v * 2.5));
-                    m_resultView->setColumnWidth(0, targetCol0Width);
+                    int minWidth = calculateNameColumnMinimumWidth();
+                    m_resultView->setColumnWidth(0, minWidth);
                 }
 
                 m_iconView->setTargetRowHeight(v); 
-                m_tableModel->clearThumbCache(true); // 保留上一次的历史 Pixmap 资产用作渐进拉伸占位
-                m_tableModel->updateResults(); // 确保触发重新加载并生成新尺寸的缩略图
+                m_tableModel->clearThumbCache(true);
+                m_tableModel->updateResults();
                 m_config.save(); 
             }); 
             
@@ -1404,11 +1404,10 @@ ScanDialog::ScanDialog(QWidget* parent)
     // --- 2026-05-16 持久化恢复：根据配置恢复视图、尺寸与排序状态 ---
         m_viewStack->setCurrentIndex(m_config.viewMode);
     if (m_config.viewMode == 0) {
-        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize); // 启动时读取持久化尺寸
-
-        // 【核心修复】：根据持久化高度，正比例初始化名称列的宽度（限制下限 260px）
-        int targetCol0Width = qMax(260, qRound(m_config.iconSize * 2.5));
-        m_resultView->setColumnWidth(0, targetCol0Width);
+        m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize);
+        // 初始化时同步自适应计算并固定列宽，确保出厂即整齐 [1]
+        int initMinWidth = calculateNameColumnMinimumWidth();
+        m_resultView->setColumnWidth(0, initMinWidth);
     } else {
         m_resultView->verticalHeader()->setDefaultSectionSize(m_config.iconSize + 10);
     }
@@ -1783,6 +1782,20 @@ void ScanDialog::setupUi() {
     m_resultView = new QTableView();
     m_resultView->verticalHeader()->setDefaultSectionSize(30); // 默认行高
     m_resultView->setItemDelegateForColumn(0, new ListThumbnailDelegate(this)); // 安装正方形约束委托 [1]
+
+    // 【核心修复】：安装拖拽红线拦截器。当用户拖窄第0列小于物理下限时，强行恢复 [1]
+    connect(m_resultView->horizontalHeader(), &QHeaderView::sectionResized, this, [this](int logicalIndex, int /*oldSize*/, int newSize) {
+        if (logicalIndex == 0 && m_tableModel) {
+            int minWidth = calculateNameColumnMinimumWidth();
+            if (newSize < minWidth) {
+                // 必须临时阻塞信号，防止 QHeaderView 递归触发产生栈溢出（Stack Overflow）崩溃 [1]
+                m_resultView->horizontalHeader()->blockSignals(true);
+                m_resultView->setColumnWidth(0, minWidth);
+                m_resultView->horizontalHeader()->blockSignals(false);
+            }
+        }
+    });
+
     m_controller = new ScanController(this);
     m_tableModel = new ScanTableModel(m_controller, this);
     m_resultView->setModel(m_tableModel);
@@ -1965,11 +1978,21 @@ void ScanDialog::setupUi() {
         m_tableModel->updateResults();
         updateStatus("就绪");
         refreshVisibleMetadataRange();
+
+        // 在列表激活状态下，检索完成后自动撑开列宽 [1]
+        if (m_viewStack->currentIndex() == 0) {
+            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+        }
     });
 
     connect(m_controller, &ScanController::resultsSwapped, this, [this]() {
         updateStatus("就绪");
         refreshVisibleMetadataRange();
+
+        // 在列表激活状态下，检索完成后自动撑开列宽 [1]
+        if (m_viewStack->currentIndex() == 0) {
+            m_resultView->setColumnWidth(0, calculateNameColumnMinimumWidth());
+        }
     });
 
     showDriveLoading();
@@ -2501,6 +2524,40 @@ void ScanDialog::refreshVisibleMetadataRange() {
         bottom = bottomIdx.isValid() ? bottomIdx.row() : m_tableModel->rowCount() - 1;
     }
     m_tableModel->setVisibleRange(top, bottom);
+}
+
+int ScanDialog::calculateNameColumnMinimumWidth() const {
+    if (!m_tableModel || !m_resultView) return 260;
+
+    int rowHeight = m_config.iconSize;
+    int cardWidth = rowHeight - 6; // 还原 ListThumbnailDelegate 内部计算的侧边长 [1]
+    int basePadding = 6 + 10 + 10; // 左侧内边距(6px) + 间隙(10px) + 右侧文字边缘安全保护(10px) [1]
+
+    // 获取 QTableView 当前使用的字体度量器
+    QFontMetrics fm = m_resultView->fontMetrics();
+    int maxTextWidth = 100; // 给文字留出基础的 100 像素安全区域
+
+    // 平衡性能与精度：仅遍历当前结果集中的前 1000 个项目，防止大集合（如 200万数据）在主线程产生卡顿
+    auto snapshot = m_controller->snapshot();
+    if (!snapshot) return 260;
+    int count = std::min<int>(1000, (int)snapshot->keys.size());
+    auto& reader = MftReader::instance();
+
+    for (int i = 0; i < count; ++i) {
+        uint64_t key = snapshot->keys[i];
+        int actualIdx = reader.getIndexByKey(key);
+        if (actualIdx != -1) {
+            QString name = reader.getName(actualIdx);
+            // 使用 horizontalAdvance 精确测算该文件名在当前字体下的物理像素宽度 [1]
+            int textWidth = fm.horizontalAdvance(name);
+            if (textWidth > maxTextWidth) {
+                maxTextWidth = textWidth;
+            }
+        }
+    }
+
+    // 精确返回：正方形卡片宽度 + 最长文件名像素宽 + 间距补偿 [1]
+    return cardWidth + maxTextWidth + basePadding;
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
