@@ -1760,7 +1760,27 @@ void MftReader::requestMetadata(int index) {
                 m_timestamps[index] = filetimeToUnixMs((static_cast<int64_t>(attrData.ftLastWriteTime.dwHighDateTime) << 32) | attrData.ftLastWriteTime.dwLowDateTime);
                 m_attributes[index] = attrData.dwFileAttributes;
                 m_metadata_fetched[index] = 2;
+                size_t dIdxForSave = static_cast<size_t>(m_parent_frns[index] >> 48);
                 lock.unlock();
+
+                // 2026-07-xx 物理修复：元数据补全后必须标记脏数据并触发落盘，
+                // 否则重启程序后已补全的大小/时间会丢失，下次还要重新查询。
+                bool shouldSave = false;
+                {
+                    std::lock_guard<std::mutex> dLock(m_dirtyLock);
+                    m_dirty_indices.insert(index);
+                    m_dirty_count++;
+                    if (m_dirty_count >= 1000) {
+                        m_dirty_count = 0;
+                        shouldSave = true;
+                    }
+                }
+                if (shouldSave && dIdxForSave < m_drive_list.size()) {
+                    QThreadPool::globalInstance()->start([this, dIdxForSave]() {
+                        saveDriveToCache(dIdxForSave);
+                    });
+                }
+
                 emit dataChanged(index);
                 return;
             }
@@ -1782,6 +1802,26 @@ void MftReader::requestMetadata(int index) {
                         m_timestamps[index] = filetimeToUnixMs((static_cast<int64_t>(bhfi.ftLastWriteTime.dwHighDateTime) << 32) | bhfi.ftLastWriteTime.dwLowDateTime);
                         m_attributes[index] = bhfi.dwFileAttributes;
                         m_metadata_fetched[index] = 2;
+
+                        size_t dIdxForSave = static_cast<size_t>(m_parent_frns[index] >> 48);
+                        writeLock.unlock();
+
+                        // 2026-07-xx 物理修复：同上，这条退化路径成功时也必须标记脏数据并触发落盘。
+                        bool shouldSave = false;
+                        {
+                            std::lock_guard<std::mutex> dLock(m_dirtyLock);
+                            m_dirty_indices.insert(index);
+                            m_dirty_count++;
+                            if (m_dirty_count >= 1000) {
+                                m_dirty_count = 0;
+                                shouldSave = true;
+                            }
+                        }
+                        if (shouldSave && dIdxForSave < m_drive_list.size()) {
+                            QThreadPool::globalInstance()->start([this, dIdxForSave]() {
+                                saveDriveToCache(dIdxForSave);
+                            });
+                        }
                     }
                 }
                 CloseHandle(hFile);
