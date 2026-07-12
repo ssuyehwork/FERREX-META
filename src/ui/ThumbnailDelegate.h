@@ -25,9 +25,6 @@ public:
     void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
     bool eventFilter(QObject* obj, QEvent* event) override;
     bool editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override;
-    
-    // 物理拦截原生的网格项 ToolTip 悬停事件，桥接到 ToolTipOverlay 渲染并阻断原生 (对应用户原话：“鼠标悬停在某个项目时显示的Tooltip仍然在使用原生的Tooltip ... 彻底替换成ToolTipOverlay”)
-    bool helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option, const QModelIndex& index) override;
 
 private:
     int m_hasThumbnailRole = Qt::UserRole + 1;

@@ -263,26 +263,6 @@ class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
 
-    // 物理拦截原生的列表项 ToolTip 询问事件，转向 ToolTipOverlay (对应用户原话：“鼠标悬停在某个项目时显示的Tooltip仍然在使用原生的ToolTip ... 彻底替换成ToolTipOverlay”)
-    bool helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option, const QModelIndex& index) override {
-        if (!event || !view || !index.isValid()) {
-            return QStyledItemDelegate::helpEvent(event, view, option, index);
-        }
-
-        if (event->type() == QEvent::ToolTip) {
-            // 获取项目在 ToolTipRole 中由模型已经处理好的完整高清晰文本（包含路径、备注和标签等）
-            QString tipText = index.data(Qt::ToolTipRole).toString();
-            if (!tipText.isEmpty()) {
-                // 使用 timeout = 0（非自动关闭，跟随鼠标运动并在移出时被 hide 事件闭合）
-                ToolTipOverlay::instance()->showText(event->globalPos(), tipText, 0);
-            } else {
-                ToolTipOverlay::hideTip();
-            }
-            return true; // 极其重要：返回 true 阻止 Qt 底层触发原生的黑色小气泡弹窗
-        }
-        return QStyledItemDelegate::helpEvent(event, view, option, index);
-    }
-
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
@@ -732,9 +712,44 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
+        // 2026-07-12 物理对齐需求：ToolTipOverlay 显示的内容包含项目名称、路径、大小、修改时间 (并兼容备注和标签)
+        QString name = reader.getName(actualIndex);
         QString qPath = getPath();
+        
+        QString sizeStr;
+        if (reader.isDirectory(actualIndex)) {
+            sizeStr = "-";
+        } else {
+            int64_t size = reader.getSize(actualIndex);
+            if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
+                sizeStr = "...";
+            } else if (size < 1024) {
+                sizeStr = QString("%1 B").arg(size);
+            } else if (size < 1024 * 1024) {
+                sizeStr = QString("%1 KB").arg(size / 1024.0, 0, 'f', 2);
+            } else if (size < 1024LL * 1024 * 1024) {
+                sizeStr = QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 2);
+            } else {
+                sizeStr = QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
+            }
+        }
+
+        QString mtimeStr;
+        int64_t ts = reader.getModifyTime(actualIndex);
+        if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
+            mtimeStr = "-";
+        } else if (ts == 0) {
+            mtimeStr = "-";
+        } else {
+            mtimeStr = QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
+        }
+
+        QString tip = QString::fromUtf8("名称: ") + name + "\n" +
+                      QString::fromUtf8("路径: ") + qPath + "\n" +
+                      QString::fromUtf8("大小: ") + sizeStr + "\n" +
+                      QString::fromUtf8("修改时间: ") + mtimeStr;
+
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
-        QString tip = QString::fromUtf8("路径: ") + qPath;
         if (!meta.note.empty()) tip += QString::fromUtf8("\n备注: ") + QString::fromStdWString(meta.note);
         if (!meta.tags.isEmpty()) tip += QString::fromUtf8("\n标签: ") + meta.tags.join(", ");
         return tip;
@@ -1004,6 +1019,19 @@ QMimeData* ScanTableModel::mimeData(const QModelIndexList& indexes) const {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent) 
 {
+    // 安全启动保障：将 m_itemToolTipTimer 初始化提升到构造函数最顶端
+    m_itemToolTipTimer = new QTimer(this);
+    m_itemToolTipTimer->setSingleShot(true);
+    m_itemToolTipTimer->setInterval(2000); // 2000毫秒（2秒）延时
+    connect(m_itemToolTipTimer, &QTimer::timeout, this, [this]() {
+        if (m_hoveredIndex.isValid() && m_tableModel) {
+            QString tipText = m_tableModel->data(m_hoveredIndex, Qt::ToolTipRole).toString();
+            if (!tipText.isEmpty()) {
+                ToolTipOverlay::instance()->showText(m_hoveredGlobalPos, tipText, 0);
+            }
+        }
+    });
+
     // 2026-07-10 参考 ArcMeta 重构：在 UI 构造的最前期创建并注册全局事件过滤器
     m_resizeFilter = new ResizeEventFilter(this);
     QCoreApplication::instance()->installEventFilter(m_resizeFilter);
@@ -1782,6 +1810,8 @@ void ScanDialog::setupUi() {
     m_resultView->setColumnWidth(3, 140); 
     
     m_resultView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+    m_resultView->viewport()->installEventFilter(this);
+    m_resultView->viewport()->setMouseTracking(true);
     
     m_resultView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_resultView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
@@ -1856,6 +1886,8 @@ void ScanDialog::setupUi() {
     // 2026-06-xx 按照用户要求：开启 IconView 拖拽导出功能
     m_iconView->setDragEnabled(true);
     m_iconView->installEventFilter(this); // 安装事件过滤器以捕获空格键
+    m_iconView->viewport()->installEventFilter(this);
+    m_iconView->viewport()->setMouseTracking(true);
 
     // 2026-06-xx 按照用户要求：为网格视图增加 10px 左侧与顶部内边距，确保坐标对准
     m_iconView->setStyleSheet(
@@ -2660,13 +2692,56 @@ void ScanDialog::triggerWarmup() {
 }
 
 bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
-    // 当鼠标彻底离开详情列表或网格卡片视图时，必须同步调用 hideTip 使得气泡自然退隐，杜绝残留悬浮
-    if ((watched == m_resultView || watched == m_iconView) && 
-        (event->type() == QEvent::Leave || event->type() == QEvent::FocusOut || event->type() == QEvent::MouseButtonPress)) {
-        ToolTipOverlay::hideTip();
+    // 启动安全防御：严格的空指针保障检测
+    if (!m_resultView || !m_iconView || !m_itemToolTipTimer || !m_tableModel) {
+        return FramelessDialog::eventFilter(watched, event);
     }
 
-    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::Wheel) {
+    bool isViewOrViewport = (watched == m_resultView || watched == m_resultView->viewport() ||
+                             watched == m_iconView || watched == m_iconView->viewport());
+
+    if (isViewOrViewport) {
+        QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
+                                  static_cast<QAbstractItemView*>(m_resultView) : 
+                                  static_cast<QAbstractItemView*>(m_iconView);
+
+        if (event->type() == QEvent::ToolTip) {
+            // 极其重要：直接返回 true 拦截 QEvent::ToolTip 底层 QHelpEvent，彻底屏蔽原生的 ToolTip 气泡
+            return true;
+        }
+
+        if (event->type() == QEvent::MouseMove) {
+            QMouseEvent* me = static_cast<QMouseEvent*>(event);
+            // 完美坐标对准：将全局坐标转换为视口（viewport）局部坐标，确保 indexAt 判定精确度
+            QPoint viewportPos = view->viewport()->mapFromGlobal(me->globalPosition().toPoint());
+            QModelIndex idx = view->indexAt(viewportPos);
+
+            if (idx.isValid()) {
+                QModelIndex col0Idx = m_tableModel->index(idx.row(), 0);
+                
+                // 不管是不是同一个 item，只要鼠标移动，就必须立即隐藏已有的 ToolTipOverlay 并重置定时器
+                m_itemToolTipTimer->stop();
+                ToolTipOverlay::hideTip();
+
+                m_hoveredIndex = col0Idx;
+                m_hoveredGlobalPos = me->globalPosition().toPoint();
+                m_itemToolTipTimer->start(); // 重新开始 2000ms 计时
+            } else {
+                // 如果鼠标移动到了空白区域，隐藏提示并停止定时器
+                m_itemToolTipTimer->stop();
+                ToolTipOverlay::hideTip();
+                m_hoveredIndex = QModelIndex();
+            }
+        } else if (event->type() == QEvent::Leave || event->type() == QEvent::HoverLeave ||
+                   event->type() == QEvent::MouseButtonPress || event->type() == QEvent::FocusOut) {
+            // 鼠标移出、点击、失去焦点时，立即停止定时器并隐藏提示窗
+            m_itemToolTipTimer->stop();
+            ToolTipOverlay::hideTip();
+            m_hoveredIndex = QModelIndex();
+        }
+    }
+
+    if (isViewOrViewport && event->type() == QEvent::Wheel) {
         QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & Qt::ControlModifier) {
             int deltaY = wheelEvent->angleDelta().y();
@@ -2678,10 +2753,13 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true; // 拦截事件，防止 Ctrl + 滚轮导致列表区域意外滚动
         }
     }
-    if ((watched == m_resultView || watched == m_iconView) && event->type() == QEvent::KeyPress) {
+
+    if (isViewOrViewport && event->type() == QEvent::KeyPress) {
         QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
         if (keyEvent->key() == Qt::Key_Space) {
-            auto* view = qobject_cast<QAbstractItemView*>(watched);
+            QAbstractItemView* view = (watched == m_resultView || watched == m_resultView->viewport()) ? 
+                                      static_cast<QAbstractItemView*>(m_resultView) : 
+                                      static_cast<QAbstractItemView*>(m_iconView);
             QModelIndex idx = view->currentIndex();
             if (idx.isValid()) {
                 if (m_quickLook->isVisible()) {
@@ -2696,6 +2774,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true; // 拦截事件，防止 TableView 处理空格导致滚动
         }
     }
+
     if (watched == m_sizeSlider && event->type() == QEvent::MouseButtonPress) {
         QMouseEvent* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
@@ -2704,6 +2783,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true;
         }
     }
+
     if ((watched == m_searchEdit || watched == m_extEdit) && event->type() == QEvent::MouseButtonDblClick) {
         bool isQuery = (watched == m_searchEdit);
         const QStringList& history = isQuery ? m_config.queryHistory : m_config.extHistory;
@@ -2748,6 +2828,7 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
             return true;
         }
     }
+
     return FramelessDialog::eventFilter(watched, event);
 }
 
