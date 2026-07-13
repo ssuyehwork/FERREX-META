@@ -1510,9 +1510,11 @@ void ScanDialog::setupUi() {
                 int minWidth = calculateNameColumnMinimumWidth();
 
                 // 动态上限拦截，确保不挤死右侧各列空间
+                // 路径列预留宽度与 ListResultView::setMinimumSectionSize(60) 保持一致口径
                 int viewportWidth = resultTableView->viewport()->width();
                 if (viewportWidth <= 0) viewportWidth = resultTableView->width();
-                int reservedWidth = 150 + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
+                int pathColumnFloor = resultTableView->horizontalHeader()->minimumSectionSize();
+                int reservedWidth = pathColumnFloor + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
                 int maxWidth = viewportWidth - reservedWidth;
                 if (maxWidth < minWidth) maxWidth = minWidth;
 
@@ -1526,6 +1528,9 @@ void ScanDialog::setupUi() {
                     resultTableView->horizontalHeader()->blockSignals(false);
                 }
             }
+            // 注意：第 1 列（路径）在 ListResultView 构造函数中被设为 QHeaderView::Stretch，
+            // 其宽度完全由 Qt 自动接管填充剩余空间，用户无法拖拽，因此这里不需要（也不可能生效）
+            // 对 logicalIndex == 1 做手动宽度 clamp —— 之前加的那段是与 Qt 内置机制重复且不会触发的死代码，已移除。
             else if (logicalIndex == 2) {
                 // 用户手动调整“大小”列，限制其宽度不得小于 80 像素
                 if (newSize < 80) {
@@ -2232,7 +2237,9 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
 
     // 为防“修改日期”列超出 UI 范围而不可见：
     // 必须要为右侧列预留安全像素宽度。
-    // - 路径列：预留至少 150 像素。
+    // - 路径列：预留 QHeaderView::minimumSectionSize()（与 ListResultView 里
+    //   setMinimumSectionSize(60) 保持同一口径，而不是这里另外瞎猜一个数字）。
+    //   路径列是 Stretch 模式，会自动收缩到这个下限，之前没有它就会真正超出视口。
     // - 大小列：预留当前实际大小（或至少 80 像素最小硬限）
     // - 修改日期列：预留当前实际大小（或至少 90 像素最小硬限）
     int viewportWidth = resultTableView->viewport()->width();
@@ -2241,7 +2248,8 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
     }
 
     if (viewportWidth > 0) {
-        int reservedWidth = 150 + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
+        int pathColumnFloor = resultTableView->horizontalHeader()->minimumSectionSize();
+        int reservedWidth = pathColumnFloor + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
         int maxAllowedWidth = viewportWidth - reservedWidth;
         if (maxAllowedWidth < 200) {
             maxAllowedWidth = 200; // 维持名称列最低 200 像素的基本显示
@@ -2334,6 +2342,12 @@ void ScanDialog::resizeEvent(QResizeEvent* event) {
     if (m_config.viewMode == 0 && m_listResultView) {
         auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
         if (resultTableView) {
+            // 2026-07-13 修复：第 1 列（路径）在 ListResultView 里是 QHeaderView::Stretch，
+            // 由 Qt 自动接管、自动收缩填充剩余空间，不需要（也不能）在这里手动 setColumnWidth(1, ...)——
+            // 之前那段路径列兜底压缩逻辑是与 Qt 内置机制重复的死代码，已移除。
+            // 只要 calculateNameColumnMinimumWidth() 用的“保留宽度”和 ListResultView 里
+            // 真实的 setMinimumSectionSize(60) 口径一致，Stretch 列自己就会在必要时收缩到底，
+            // 从而保证名称/大小/修改日期几列始终留在可视范围内。
             int minWidth = calculateNameColumnMinimumWidth();
             resultTableView->setColumnWidth(0, minWidth);
         }

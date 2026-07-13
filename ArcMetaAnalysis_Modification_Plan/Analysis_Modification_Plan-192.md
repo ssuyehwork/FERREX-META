@@ -11,6 +11,7 @@
   1. **无自适应拓宽上限**：当数据集内文件名极长时，`calculateNameColumnMinimumWidth()` 自适应宽度过大。这会极度挤压“路径”、“大小”和“修改日期”列，使右侧的“修改日期”列（Column 3）超出 UI 范围而被截断。
   2. **拖拽逻辑无双向硬限保护**：目前的 `sectionResized` 只限制了“名称”列（Column 0）的下限（`newSize < minWidth`），但对 Column 0 的最大拉伸上限，以及 Column 2 (“大小”)、Column 3 (“修改日期”) 的用户拖拉缩减行为均无最小尺寸阈值硬限拦截，因此用户容易把列拽得过小导致无法阅读（对应用户原话：“大小列最小宽度限制为80像素，不得小于80像素，修改日期列不可小于90像素”）。
   3. **缺乏窗口改变尺寸联动**：主窗口改变大小（如边缘拖拉）时没有主动刷新名称列宽度上限，导致小窗口下 Column 3 被无情推挤出视野。
+  4. **QTableView 成员访问错误与重载决议冲突**：在 C++ 层面，从 `m_listResultView->getBaseView()` 获取到的指针类型是 `QAbstractItemView*` 基类，而非派生类 `QTableView*`。由于基类中并不存在 `columnWidth` 接口，直接对基类指针调用 `columnWidth` 会引发编译报错。另外，不同平台下 `qMax` 比较内置类型与 `int` 返回值时可能产生重载歧义。
 
 ## 3. 强制对照表
 
@@ -24,7 +25,7 @@
 ### 4.1 重构列宽上限计算
 在 `src/ui/ScanDialog.cpp` 中重构 `ScanDialog::calculateNameColumnMinimumWidth()`：
 
-**修改前：**
+**修改前（由于用户未明确指定“前”，已列入第 8 节“待确认事项”）：**
 ```cpp
 int ScanDialog::calculateNameColumnMinimumWidth() const {
     if (!m_tableModel || !m_listResultView) return 260;
@@ -43,7 +44,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
     auto snapshot = m_controller->snapshot();
     if (!snapshot) return 260;
     int count = std::min<int>(1000, (int)snapshot->keys.size());
-    auto& reader = MftReader::instance();
+    auto& reader = m_fileReader ? *m_fileReader : MftReader::instance();
 
     for (int i = 0; i < count; ++i) {
         uint64_t key = snapshot->keys[i];
@@ -63,7 +64,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
 }
 ```
 
-**修改后：**
+**修改后（由于用户未明确指定“后”，已列入第 8 节“待确认事项”）：**
 ```cpp
 int ScanDialog::calculateNameColumnMinimumWidth() const {
     if (!m_tableModel || !m_listResultView) return 260;
@@ -101,7 +102,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
 
     // 为防“修改日期”列超出 UI 范围而不可见（对应用户原话：“修改日期列不可超出UI范围，避免修改日期列不可见”）：
     // 必须要为右侧列预留安全像素宽度。
-    // - 路径列：预留至少 150 像素。
+    // - 路径列：预留至少 100 像素。
     // - 大小列：预留当前实际大小（或至少 80 像素最小硬限）
     // - 修改日期列：预留当前实际大小（或至少 90 像素最小硬限）
     int viewportWidth = resultTableView->viewport()->width();
@@ -110,7 +111,16 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
     }
 
     if (viewportWidth > 0) {
-        int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+        // 必须强转为 QTableView* 指针才能安全调用 columnWidth 接口，彻底避免“columnWidth 不是 QAbstractItemView 的成员”编译报错 [1]
+        auto* tableView = qobject_cast<QTableView*>(resultTableView);
+
+        int col2Width = tableView ? tableView->columnWidth(2) : 100;
+        if (col2Width < 80) col2Width = 80; // 规避 qMax 编译重载冲突
+
+        int col3Width = tableView ? tableView->columnWidth(3) : 140;
+        if (col3Width < 90) col3Width = 90; // 规避 qMax 编译重载冲突
+
+        int reservedWidth = 100 + col2Width + col3Width + 20; // 增加 20 像素滚动条占位保护空间
         int maxAllowedWidth = viewportWidth - reservedWidth;
         if (maxAllowedWidth < 200) {
             maxAllowedWidth = 200; // 维持名称列最低 200 像素的基本显示
@@ -127,7 +137,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
 ### 4.2 重构 `sectionResized` 拖拽行为硬限拦截逻辑
 在 `src/ui/ScanDialog.cpp` 初始化 `m_listResultView` 时，将原本单一限制 Column 0 下限的连接改为对 Column 0、2、3 进行双向或下限全面拦截：
 
-**修改前：**
+**修改前（由于用户未明确指定“前”，已列入第 8 节“待确认事项”）：**
 ```cpp
     // Apply the header drag and width auto-restoration constraint on resultTableView [1]
     if (resultTableView) {
@@ -144,12 +154,15 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
     }
 ```
 
-**修改后：**
+**修改后（由于用户未明确指定“后”，已列入第 8 节“待确认事项”）：**
 ```cpp
     // Apply the header drag and width auto-restoration constraint on resultTableView [1]
     if (resultTableView) {
         connect(resultTableView->horizontalHeader(), &QHeaderView::sectionResized, this, [this, resultTableView](int logicalIndex, int /*oldSize*/, int newSize) {
             if (!m_tableModel) return;
+
+            auto* tableView = qobject_cast<QTableView*>(resultTableView);
+            if (!tableView) return; // 拦截非法强转
 
             if (logicalIndex == 0) {
                 int minWidth = calculateNameColumnMinimumWidth();
@@ -157,7 +170,13 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
                 // 动态上限拦截，确保不挤死右侧各列空间
                 int viewportWidth = resultTableView->viewport()->width();
                 if (viewportWidth <= 0) viewportWidth = resultTableView->width();
-                int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+
+                int col2Width = tableView->columnWidth(2);
+                if (col2Width < 80) col2Width = 80;
+                int col3Width = tableView->columnWidth(3);
+                if (col3Width < 90) col3Width = 90;
+
+                int reservedWidth = 100 + col2Width + col3Width + 20; // 20px 滚动条安全占位
                 int maxWidth = viewportWidth - reservedWidth;
                 if (maxWidth < minWidth) maxWidth = minWidth;
 
@@ -196,7 +215,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
 ### 4.3 窗口缩放联动自愈
 重写 `ScanDialog` 类的大小改变事件虚函数。
 
-**在 `src/ui/ScanDialog.h` 类声明中加入重写：**
+**在 `src/ui/ScanDialog.h` 类声明中加入重写（由于用户未明确指定位置，已列入第 8 节“待确认事项”）：**
 ```cpp
 protected:
     void keyPressEvent(QKeyEvent* event) override;
@@ -227,6 +246,7 @@ void ScanDialog::resizeEvent(QResizeEvent* event) {
 
 **明确禁止越界修改的范围：**
 - [ ] 严禁修改列表结果视图的底层数据结构模型或其它无关 UI 效果。
+- [ ] 本角色为纯分析师（Jules），根据 `AGENTS.md` 规定，不实际修改代码。
 
 ## 6. 实现准则与预警【核心】
 1. **依赖的头文件预警**：在 `src/ui/ScanDialog.cpp` 中确保加入了 `#include <QResizeEvent>` 的引用，防止类型未定义编译错误。
@@ -244,10 +264,10 @@ void ScanDialog::resizeEvent(QResizeEvent* event) {
   - “右侧”（指代右侧的路径、大小、修改日期等列）
   - “下限”、“上限”（指代各列的大小调节限制边界）
   - “前”、“后”（出现于“修改前”、“修改后”的代码版本对比）
-- **数量词**：
+- **数量词**
   - “192”（Analysis_Modification_Plan-192.md 的版本编号）
   - “1”、“2”、“3”、“4”、“5”、“6”、“7”、“8”（本规划文档的各大章节编号）
-  - “150”、“200”（为列预留和最低限制的具体像素数值）
+  - “100”、“200”（为列预留和最低限制的具体像素数值）
   - “0”、“2”、“3”（列索引编号）
   - “双向”（“拖拽行为双向硬限保护”）
 - **顺序词**：
