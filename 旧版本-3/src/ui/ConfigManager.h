@@ -10,9 +10,6 @@
 
 namespace FERREX {
 
-extern const QSet<QString> DEFAULT_BLACKLIST;
-extern const QSet<QString> DEFAULT_WHITELIST;
-
 struct ScanConfig {
     QSet<QString> activeDrives;
     QSet<QString> defaultDrives;

@@ -1403,4 +1403,142 @@ bool ScanDialog::eventFilter(QObject* watched, QEvent* event) {
     return FramelessDialog::eventFilter(watched, event);
 }
 
+// ============================================================================
+// PreviewRulesDialog 实现
+// ============================================================================
+PreviewRulesDialog::PreviewRulesDialog(ScanConfig& config, QWidget* parent)
+    : FramelessDialog("预览配置", parent), m_config(config)
+{
+    resize(600, 480);
+    setMinimumSize(500, 400);
+
+    auto* layout = new QVBoxLayout(m_contentArea);
+    layout->setContentsMargins(20, 15, 20, 20);
+    layout->setSpacing(10);
+
+    // 1. Whitelist label and editor
+    auto* lblWhite = new QLabel("文件预览白名单 (放行规则，以中英文逗号分隔):");
+    lblWhite->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
+    layout->addWidget(lblWhite);
+
+    m_whitelistEdit = new QTextEdit();
+    m_whitelistEdit->setPlaceholderText("例如: jpg, png, txt, cpp, h, py");
+    m_whitelistEdit->setStyleSheet(
+        "QTextEdit {"
+        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
+        "  padding: 8px; color: white; selection-background-color: #3498db;"
+        "  font-size: 13px; line-height: 1.4;"
+        "}"
+        "QTextEdit:focus { border: 1px solid #3498db; }"
+    );
+    layout->addWidget(m_whitelistEdit);
+
+    // 2. Blacklist label and editor
+    auto* lblBlack = new QLabel("文件预览黑名单 (拦截规则，以中英文逗号分隔):");
+    lblBlack->setStyleSheet("color: #EEEEEE; font-size: 12px; font-weight: bold;");
+    layout->addWidget(lblBlack);
+
+    m_blacklistEdit = new QTextEdit();
+    m_blacklistEdit->setPlaceholderText("例如: exe, dll, zip, rar, mp4");
+    m_blacklistEdit->setStyleSheet(
+        "QTextEdit {"
+        "  background-color: #2D2D2D; border: 1px solid #444; border-radius: 6px;"
+        "  padding: 8px; color: white; selection-background-color: #3498db;"
+        "  font-size: 13px; line-height: 1.4;"
+        "}"
+        "QTextEdit:focus { border: 1px solid #3498db; }"
+    );
+    layout->addWidget(m_blacklistEdit);
+
+    // Populate data
+    QStringList whiteList;
+    for (const auto& ext : m_config.previewWhitelist) whiteList.append(ext);
+    whiteList.sort();
+    m_whitelistEdit->setPlainText(whiteList.join(", "));
+
+    QStringList blackList;
+    for (const auto& ext : m_config.previewBlacklist) blackList.append(ext);
+    blackList.sort();
+    m_blacklistEdit->setPlainText(blackList.join(", "));
+
+    // 3. Buttons row
+    auto* btnLayout = new QHBoxLayout();
+    
+    auto* btnRestore = new QPushButton("恢复默认");
+    btnRestore->setFixedSize(100, 32);
+    btnRestore->setCursor(Qt::PointingHandCursor);
+    btnRestore->setStyleSheet(
+        "QPushButton { background-color: transparent; color: #FF8C00; border: 1px solid #FF8C00; border-radius: 4px; } "
+        "QPushButton:hover { background-color: rgba(255, 140, 0, 0.1); }"
+    );
+    connect(btnRestore, &QPushButton::clicked, this, &PreviewRulesDialog::onRestoreDefaults);
+    btnLayout->addWidget(btnRestore);
+
+    btnLayout->addStretch();
+    
+    auto* btnCancel = new QPushButton("取消");
+    btnCancel->setFixedSize(80, 32);
+    btnCancel->setCursor(Qt::PointingHandCursor);
+    btnCancel->setStyleSheet(
+        "QPushButton { background-color: transparent; color: #888; border: 1px solid #444; border-radius: 4px; } "
+        "QPushButton:hover { color: #EEE; background-color: #333; }"
+    );
+    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
+    btnLayout->addWidget(btnCancel);
+
+    auto* btnOk = new QPushButton("确定");
+    btnOk->setFixedSize(80, 32);
+    btnOk->setCursor(Qt::PointingHandCursor);
+    btnOk->setStyleSheet(
+        "QPushButton { background-color: #3498db; color: white; border: none; border-radius: 4px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #1a7abf; }" 
+    );
+    connect(btnOk, &QPushButton::clicked, this, &PreviewRulesDialog::onConfirm);
+    btnLayout->addWidget(btnOk);
+
+    layout->addLayout(btnLayout);
+}
+
+void PreviewRulesDialog::onRestoreDefaults() {
+    QStringList whiteList;
+    for (const auto& ext : DEFAULT_WHITELIST) whiteList.append(ext);
+    whiteList.sort();
+    m_whitelistEdit->setPlainText(whiteList.join(", "));
+
+    QStringList blackList;
+    for (const auto& ext : DEFAULT_BLACKLIST) blackList.append(ext);
+    blackList.sort();
+    m_blacklistEdit->setPlainText(blackList.join(", "));
+}
+
+void PreviewRulesDialog::onConfirm() {
+    auto parseExtensions = [](const QString& text) -> QSet<QString> {
+        QSet<QString> set;
+        QString temp = text;
+        // 1. 将中文逗号、回车、换行全部统一替换为西文逗号（对应用户原话：“支持中英文逗号分割”）
+        temp.replace(QString::fromUtf8("，"), ",");
+        temp.replace('\n', ',');
+        temp.replace('\r', ',');
+        
+        // 2. 严格按逗号进行物理分割，而不是空格分割（对应用户原话：“采用逗号分割……而不是空格分割”）
+        QStringList list = temp.split(',', Qt::SkipEmptyParts);
+        for (const QString& item : list) {
+            // 去除多余的空格（例如逗号后的空格）
+            QString clean = item.trimmed().toLower();
+            if (clean.startsWith('.')) {
+                clean = clean.mid(1);
+            }
+            if (!clean.isEmpty()) {
+                set.insert(clean);
+            }
+        }
+        return set;
+    };
+
+    m_config.previewWhitelist = parseExtensions(m_whitelistEdit->toPlainText());
+    m_config.previewBlacklist = parseExtensions(m_blacklistEdit->toPlainText());
+
+    accept();
+}
+
 } // namespace FERREX

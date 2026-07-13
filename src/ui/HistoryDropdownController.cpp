@@ -6,6 +6,7 @@
 #include <QWidgetAction>
 #include <QCoreApplication>
 #include <QMouseEvent>
+#include <QMenu>
 
 namespace FERREX {
 
