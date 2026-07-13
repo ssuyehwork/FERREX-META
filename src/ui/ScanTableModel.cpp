@@ -275,7 +275,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
-        if (it != m_currentResultSet->metadata.end()) {
+        if (it != m_currentResultSet->metadata.end() && it->second.color.isValid()) {
             return it->second.color;
         }
 
