@@ -2194,7 +2194,7 @@ void ScanDialog::refreshVisibleMetadataRange() {
 
 int ScanDialog::calculateNameColumnMinimumWidth() const {
     if (!m_tableModel || !m_listResultView) return 260;
-    auto* resultTableView = m_listResultView->getBaseView();
+    auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
     if (!resultTableView) return 260;
 
     int rowHeight = m_config.iconSize;
