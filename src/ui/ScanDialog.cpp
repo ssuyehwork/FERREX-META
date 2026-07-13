@@ -6,6 +6,7 @@
 #include "HistoryDropdownController.h"
 #include "ResultTableColumnWidthPolicy.h"
 #include "StatusBarFormatter.h"
+#include "FramelessResizeBorder.h"
 #include "ContextMenuExecutor.h"
 #include "ThumbnailWarmupPipeline.h"
 #include "GlobalKeyboardShortcutHandler.h"
@@ -103,11 +104,14 @@ ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent), m_config(ConfigManager::instance().getConfig())
 {
     // 初始化子系统控制器实例
+    m_resizeFilter = new FramelessResizeBorder(this);
     m_historyDropdownController = new HistoryDropdownController(this);
     m_contextMenuExecutor = new ContextMenuExecutor(this);
     m_thumbnailWarmupPipeline = new ThumbnailWarmupPipeline(this);
     m_globalKeyboardShortcutHandler = new GlobalKeyboardShortcutHandler(this);
     m_viewportTooltipController = new ViewportTooltipController(this);
+
+    QCoreApplication::instance()->installEventFilter(m_resizeFilter);
 
     if (!UiHelper::isRunAsAdmin()) {
         QMessageBox::critical(nullptr, "权限不足", "访问 MFT/USN 需要管理员权限。\n请右键以管理员身份运行程序。");
@@ -524,6 +528,9 @@ ScanDialog::ScanDialog(QWidget* parent)
 }
 
 ScanDialog::~ScanDialog() {
+    if (m_resizeFilter) {
+        QCoreApplication::instance()->removeEventFilter(m_resizeFilter);
+    }
 }
 
 
@@ -545,7 +552,7 @@ void ScanDialog::switchToView(int viewMode, int layoutMode) {
         m_currentActiveView->refreshLayout();
     }
 
-    onTriggerSearch();
+    m_tableModel->updateResults();
     m_config.save();
 }
 
@@ -647,7 +654,6 @@ void ScanDialog::setupUi() {
         state.includeSystem = m_checkSystem->isChecked();
         state.includeDollar = m_checkDollar->isChecked();
         state.autoDisplay = m_checkAuto->isChecked();
-        state.galleryOnly = (m_config.viewMode == 1);
         QString extText = m_extEdit->text().toLower();
         if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
         
@@ -1119,7 +1125,6 @@ void ScanDialog::onFilterOptionChanged() {
     state.includeSystem = m_config.includeSystem;
     state.includeDollar = m_config.includeDollar;
     state.autoDisplay = m_config.autoDisplay;
-    state.galleryOnly = (m_config.viewMode == 1);
     QString extText = m_extEdit->text().toLower();
     if (!extText.isEmpty()) state.extensionList = extText.split(QRegularExpression("[,;\\s]+"), Qt::SkipEmptyParts);
     

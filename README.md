@@ -1,8 +1,10 @@
 # 备份备注
 
-**备份时间**：2026-07-09 14:43:25  
-**备份目录**：Buk_20260709_144325  
+**备份时间**：2026-07-13 17:21:08  
+**备份目录**：Buk_20260713_172107  
 
 ---
 
-成功修复了文本预览状态下，QPlainTextEdit 控件聚焦导致再次按空格键无法关闭预览窗口，反而触发默认向下翻页的问题。我们通过在 m_textEdit 上安装 QuickLookWindow 自身作为事件过滤器，并在 eventFilter 早期过滤阶段强行捕获并拦截了空格键，统一了所有文件类型在空格键控制下的开闭交互一致性。同时完美巩固了 GridMode 持久化、双轨平滑缩放、以及还原按钮精细图标等成果。
+1. 在 `HistoryDropdownController.cpp` 中引入了 `#include <QMenu>`，修复了 7 处由 `QMenu` 未定义导致的类型及重载转换编译错误。
+2. 将 `ConfigManager.cpp` 中的 `DEFAULT_BLACKLIST` 和 `DEFAULT_WHITELIST` 变更为全局可用（移除 `static`），并在 `ConfigManager.h` 中通过 `extern` 进行了公开声明。
+3. 在 `ScanDialog.cpp` 尾部完整补充了 `PreviewRulesDialog` 及其成员函数的实现，完美解决了因缺失实现而导致的所有“无法解析的外部符号”链接错误。

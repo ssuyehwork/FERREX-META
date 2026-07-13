@@ -122,26 +122,6 @@ void ScanController::performSearch() {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
         }
 
-        if (state.galleryOnly) {
-            std::vector<uint64_t> filteredKeys;
-            filteredKeys.reserve(keys.size() / 2);
-            auto& reader = MftReader::instance();
-            static const QSet<QString> mediaExts = {
-                "jpg", "jpeg", "png", "bmp", "gif", "webp", "svg", "psd", "ai", "eps",
-                "mp4", "mkv", "avi", "mov", "flv", "rmvb", "wmv", "webm"
-            };
-            for (uint64_t key : keys) {
-                int actualIndex = reader.getIndexByKey(key);
-                if (actualIndex == -1) continue;
-                if (reader.isDirectory(actualIndex)) continue;
-                QString ext = reader.getExtQString(actualIndex).toLower();
-                if (mediaExts.contains(ext)) {
-                    filteredKeys.push_back(key);
-                }
-            }
-            keys = std::move(filteredKeys);
-        }
-
         int64_t searchMs = subTimer.elapsed();
         auto rs = std::make_shared<ResultSet>();
         rs->keys = std::move(keys);
@@ -159,20 +139,11 @@ void ScanController::performSearch() {
             QString path = reader.getFullPath(idx);
             if (path.isEmpty()) continue;
 
-            RenderMeta rm;
-            rm.name = reader.getName(idx);
-            rm.fullPath = path;
-            rm.isDirectory = reader.isDirectory(idx);
-            rm.size = reader.getSize(idx);
-            rm.modifyTime = reader.getModifyTime(idx);
-            rm.hasCache = true;
-
             auto meta = MetadataManager::instance().getMeta(path.toStdWString());
             if (!meta.color.empty()) {
                 QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-                if (c.isValid()) rm.color = c;
+                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
             }
-            rs->metadata[k] = rm;
         }
         int64_t decorMs = subTimer.elapsed();
 
@@ -306,16 +277,7 @@ void ScanController::processBatchUpdates() {
         return;
     }
 
-    static QElapsedTimer lastFullSearchTimer;
-    if (!lastFullSearchTimer.isValid()) {
-        lastFullSearchTimer.start();
-    }
     if (events.size() > 2000) {
-        if (lastFullSearchTimer.elapsed() < 1000) {
-            qDebug() << "[ScanController] 积压事件超限且处于防抖静默期内，跳过本轮全量异步搜索";
-            return;
-        }
-        lastFullSearchTimer.restart();
         qDebug() << "[ScanController] 积压事件超限 (" << events.size() << ")，切换至全量异步搜索";
         triggerSearch(true);
         return;

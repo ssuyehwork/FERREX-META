@@ -73,7 +73,6 @@ private:
     ScanController* m_controller;
     std::shared_ptr<ResultSet> m_currentResultSet;
     int m_displayCount = 0;
-    mutable QCache<uint64_t, QString> m_pathCache;
 
     QThreadPool* m_thumbPool = nullptr; // 2026-06-xx 任务二：缩略图生成专用隔离线程池
 
