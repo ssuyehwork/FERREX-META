@@ -73,16 +73,24 @@ set(SOURCES
     src/meta/MetadataManager.h
     src/mft/MftReader.cpp
     src/mft/MftReader.h
+    src/mft/NtfsVolumeMftParser.cpp
+    src/mft/NtfsVolumeMftParser.h
+    src/mft/MemoryQueryEngine.cpp
+    src/mft/MemoryQueryEngine.h
     src/mft/ScchCache.cpp
     src/mft/ScchCache.h
+    src/mft/UsnJournalTreeSynchronizer.cpp
+    src/mft/UsnJournalTreeSynchronizer.h
+    src/mft/DiskIndexCacheCoordinator.cpp
+    src/mft/DiskIndexCacheCoordinator.h
     src/ui/FramelessDialog.cpp
     src/ui/FramelessDialog.h
     src/ui/JustifiedView.cpp
     src/ui/JustifiedView.h
     src/ui/QuickLookWindow.cpp
     src/ui/QuickLookWindow.h
-    src/ui/ResizeEventFilter.cpp
-    src/ui/ResizeEventFilter.h
+    src/ui/FramelessResizeBorder.cpp
+    src/ui/FramelessResizeBorder.h
     src/ui/ToolTipOverlay.cpp
     src/ui/ToolTipOverlay.h
     src/ui/HoverEventFilter.cpp
@@ -95,6 +103,24 @@ set(SOURCES
     src/ui/ScanController.h
     src/ui/ScanDialog.cpp
     src/ui/ScanDialog.h
+    src/ui/ScanTableModel.cpp
+    src/ui/ScanTableModel.h
+    src/ui/ResultTableColumnWidthPolicy.cpp
+    src/ui/ResultTableColumnWidthPolicy.h
+    src/ui/StatusBarFormatter.cpp
+    src/ui/StatusBarFormatter.h
+    src/ui/SystemDriveScanner.cpp
+    src/ui/SystemDriveScanner.h
+    src/ui/HistoryDropdownController.cpp
+    src/ui/HistoryDropdownController.h
+    src/ui/ContextMenuExecutor.cpp
+    src/ui/ContextMenuExecutor.h
+    src/ui/ThumbnailWarmupPipeline.cpp
+    src/ui/ThumbnailWarmupPipeline.h
+    src/ui/GlobalKeyboardShortcutHandler.cpp
+    src/ui/GlobalKeyboardShortcutHandler.h
+    src/ui/ViewportTooltipController.cpp
+    src/ui/ViewportTooltipController.h
     src/ui/IScanResultView.h
     src/ui/ListResultView.cpp
     src/ui/ListResultView.h
