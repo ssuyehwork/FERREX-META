@@ -1503,11 +1503,38 @@ void ScanDialog::setupUi() {
     // Apply the header drag and width auto-restoration constraint on resultTableView [1]
     if (resultTableView) {
         connect(resultTableView->horizontalHeader(), &QHeaderView::sectionResized, this, [this, resultTableView](int logicalIndex, int /*oldSize*/, int newSize) {
-            if (logicalIndex == 0 && m_tableModel) {
+            if (!m_tableModel) return;
+
+            if (logicalIndex == 0) {
                 int minWidth = calculateNameColumnMinimumWidth();
+
+                int viewportWidth = resultTableView->viewport()->width();
+                if (viewportWidth <= 0) viewportWidth = resultTableView->width();
+                int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+                int maxWidth = viewportWidth - reservedWidth;
+                if (maxWidth < minWidth) maxWidth = minWidth;
+
                 if (newSize < minWidth) {
                     resultTableView->horizontalHeader()->blockSignals(true);
                     resultTableView->setColumnWidth(0, minWidth);
+                    resultTableView->horizontalHeader()->blockSignals(false);
+                } else if (newSize > maxWidth) {
+                    resultTableView->horizontalHeader()->blockSignals(true);
+                    resultTableView->setColumnWidth(0, maxWidth);
+                    resultTableView->horizontalHeader()->blockSignals(false);
+                }
+            }
+            else if (logicalIndex == 2) {
+                if (newSize < 80) {
+                    resultTableView->horizontalHeader()->blockSignals(true);
+                    resultTableView->setColumnWidth(2, 80);
+                    resultTableView->horizontalHeader()->blockSignals(false);
+                }
+            }
+            else if (logicalIndex == 3) {
+                if (newSize < 90) {
+                    resultTableView->horizontalHeader()->blockSignals(true);
+                    resultTableView->setColumnWidth(3, 90);
                     resultTableView->horizontalHeader()->blockSignals(false);
                 }
             }
@@ -2197,8 +2224,25 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
         }
     }
 
-    // 精确返回：正方形卡片宽度 + 最长文件名像素宽 + 间距补偿 [1]
-    return cardWidth + maxTextWidth + basePadding;
+    int calculatedWidth = cardWidth + maxTextWidth + basePadding;
+
+    int viewportWidth = resultTableView->viewport()->width();
+    if (viewportWidth <= 0) {
+        viewportWidth = resultTableView->width();
+    }
+
+    if (viewportWidth > 0) {
+        int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+        int maxAllowedWidth = viewportWidth - reservedWidth;
+        if (maxAllowedWidth < 200) {
+            maxAllowedWidth = 200;
+        }
+        if (calculatedWidth > maxAllowedWidth) {
+            calculatedWidth = maxAllowedWidth;
+        }
+    }
+
+    return calculatedWidth;
 }
 
 QString ScanDialog::formatNumber(int64_t n) {
@@ -2273,6 +2317,18 @@ void ScanDialog::reopenHistoryMenu(bool isQuery) {
     }
 }
 
+
+void ScanDialog::resizeEvent(QResizeEvent* event) {
+    FramelessDialog::resizeEvent(event);
+
+    if (m_config.viewMode == 0 && m_listResultView) {
+        auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
+        if (resultTableView) {
+            int minWidth = calculateNameColumnMinimumWidth();
+            resultTableView->setColumnWidth(0, minWidth);
+        }
+    }
+}
 
 void ScanDialog::keyPressEvent(QKeyEvent* event) {
     // 2026-07-10 新增：专属 ScanDialog 主窗口的两段式 Esc 处理（对应用户原话：“当在ScanDialog窗口首次按下键时”）

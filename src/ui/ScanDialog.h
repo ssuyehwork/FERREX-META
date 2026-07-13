@@ -11,6 +11,7 @@
 #include <QFuture>
 #include <QFutureWatcher>
 #include <QCloseEvent>
+#include <QResizeEvent>
 #include <QLineEdit>
 #include <QTableView>
 #include <QAbstractTableModel>
@@ -154,6 +155,7 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
