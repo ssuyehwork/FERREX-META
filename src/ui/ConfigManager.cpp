@@ -6,14 +6,14 @@
 
 namespace FERREX {
 
-static const QSet<QString> DEFAULT_BLACKLIST = {
+const QSet<QString> DEFAULT_BLACKLIST = {
     "exe", "dll", "sys", "bin", "dat", "lib", "obj", "msi", "com",
     "zip", "rar", "7z", "iso", "tar", "gz", "bz2", "dmg", "pkg",
     "mp3", "wav", "wma", "flac", "aac", "ogg", "m4a", "ape", "opus", "aiff", "amr",
     "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
 };
 
-static const QSet<QString> DEFAULT_WHITELIST = {
+const QSet<QString> DEFAULT_WHITELIST = {
     "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
     "txt", "md", "markdown", "rst", "log", "nfo", "tex", "latex", "diff", "patch",
     "csv", "tsv", "html", "htm", "xhtml", "xml", "xsl", "xslt", "xaml",
