@@ -535,6 +535,7 @@ ScanDialog::~ScanDialog() {
 
 
 void ScanDialog::switchToView(int viewMode, int layoutMode) {
+    // 还原旧版本-3：零查询视图切换逻辑（还原设计三），此处彻底移除对 onTriggerSearch() 的多余调用，实现零耗时的秒级模式切换，且完美不丢失当前的选中项
     m_config.viewMode = viewMode;
     m_config.layoutMode = layoutMode;
 
@@ -552,6 +553,7 @@ void ScanDialog::switchToView(int viewMode, int layoutMode) {
         m_currentActiveView->refreshLayout();
     }
 
+    // 还原设计三：switchToView 的末尾还原为直接调用 m_tableModel->updateResults();
     m_tableModel->updateResults();
     m_config.save();
 }
