@@ -83,6 +83,8 @@ int ScanController::resultCount() const {
 }
 
 void ScanController::performSearch() {
+    // 还原旧版本-3：彻底剥离多媒体异步过滤（还原设计一），使其总是返回纯粹的全量数据
+    // [已物理移除] performSearch 中的 if (state.galleryOnly) { ... } 过滤数据块，恢复数据库检索只进行基本的过滤（不再参与自适应或网格的媒体剪裁）
     if (m_watcher.isRunning()) {
         m_watcher.cancel();
         qInfo() << "[ScanController] 取消正在运行的搜索任务";
