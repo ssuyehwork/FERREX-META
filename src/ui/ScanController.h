@@ -24,9 +24,10 @@ struct ScanFilterState {
     bool includeSystem = true;
     bool includeDollar = true;
     bool autoDisplay = false;
+    bool galleryOnly = false;
 
     bool isEmpty() const { 
-        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay; 
+        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay && !galleryOnly; 
     }
 };
 
@@ -35,6 +36,13 @@ struct ScanFilterState {
  */
 struct RenderMeta {
     QColor color;
+    QString name;
+    QString fullPath;
+    int64_t size = 0;
+    int64_t modifyTime = 0;
+    bool isDirectory = false;
+    bool hasCache = false;
+
     explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
 };
 

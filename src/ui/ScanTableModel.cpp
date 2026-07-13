@@ -70,6 +70,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         m_thumbPool->setMaxThreadCount(1);
     }
 
+    m_pathCache.setMaxCost(1000); // 限制路径缓存数量为 1000
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
@@ -156,28 +157,49 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
 
-    // 2026-06-xx 极致性能重构：行内计算缓存。
-    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
-    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
-    thread_local static int lastRow = -1;
-    thread_local static uint64_t lastKey = 0;
-    thread_local static QString cachedPath;
-    
+    // 检测是否有预取的元数据投影缓存，如果有，则直接无锁 O(1) 获取
+    auto cacheIt = m_currentResultSet->metadata.find(key);
+    bool useCache = (cacheIt != m_currentResultSet->metadata.end() && cacheIt->second.hasCache);
+
     auto getPath = [&]() {
+        // 1. 优先查询行内临时缓存
+        thread_local static int lastRow = -1;
+        thread_local static uint64_t lastKey = 0;
+        thread_local static QString cachedPath;
         if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
+
+        // 2. 查询 LRU 缓存
+        QString* lruPath = m_pathCache.object(key);
+        if (lruPath) {
+            lastRow = row; lastKey = key;
+            cachedPath = *lruPath;
+            return cachedPath;
+        }
+
+        // 3. 查询去锁投影缓存
+        if (useCache) {
+            lastRow = row; lastKey = key;
+            cachedPath = cacheIt->second.fullPath;
+            m_pathCache.insert(key, new QString(cachedPath));
+            return cachedPath;
+        }
+
+        // 4. 兜底进入磁盘/MFT 读取并拼接
         lastRow = row; lastKey = key;
         cachedPath = reader.getFullPath(actualIndex);
+        m_pathCache.insert(key, new QString(cachedPath));
         return cachedPath;
     };
     
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
-            case 0: return reader.getName(actualIndex);
+            case 0: return useCache ? cacheIt->second.name : reader.getName(actualIndex);
             case 1: return getPath();
             case 2: {
-                if (reader.isDirectory(actualIndex)) return "-";
-                int64_t size = reader.getSize(actualIndex);
-                if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
+                bool isDir = useCache ? cacheIt->second.isDirectory : reader.isDirectory(actualIndex);
+                if (isDir) return "-";
+                int64_t size = useCache ? cacheIt->second.size : reader.getSize(actualIndex);
+                if (size == 0 && (useCache ? false : !reader.isMetadataFetched(actualIndex))) {
                     return "...";
                 }
                 if (size < 1024) return QString("%1 B").arg(size);
@@ -186,8 +208,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 return QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
             }
             case 3: {
-                int64_t ts = reader.getModifyTime(actualIndex);
-                if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
+                int64_t ts = useCache ? cacheIt->second.modifyTime : reader.getModifyTime(actualIndex);
+                if (ts == 0 && (useCache ? false : !reader.isMetadataFetched(actualIndex))) {
                     return "-";
                 }
                 if (ts == 0) return "-";
@@ -405,49 +427,7 @@ QVariant ScanTableModel::headerData(int section, Qt::Orientation orientation, in
 }
 
 void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
-    auto baseSet = nextSet ? nextSet : m_controller->snapshot();
-    auto newSet = std::make_shared<ResultSet>();
-    newSet->metadata = baseSet->metadata;
-    newSet->keyToPos = baseSet->keyToPos;
-
-    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-    bool isMediaView = false;
-    if (dlg) {
-        // viewMode == 1 代表自适应与网格的多媒体画廊视图，viewMode == 0 代表全文件列表视图
-        isMediaView = (dlg->m_config.viewMode == 1);
-    }
-
-    if (isMediaView) {
-        // 自适应与网格模式必须遵循其媒体画廊视图本身的展示使命与渲染承载力，在源头只保留视频与图像
-        auto& reader = MftReader::instance();
-        static const QSet<QString> mediaExts = {
-            "jpg", "jpeg", "png", "bmp", "gif", "webp", "svg", "psd", "ai", "eps",
-            "mp4", "mkv", "avi", "mov", "flv", "rmvb", "wmv", "webm"
-        };
-        
-        newSet->keys.reserve(baseSet->keys.size() / 2);
-        for (uint64_t key : baseSet->keys) {
-            int actualIndex = reader.getIndexByKey(key);
-            if (actualIndex == -1) continue;
-            
-            // 剔除所有文件夹以及不属于画廊美学展示范围的常规普通非媒体文件
-            if (reader.isDirectory(actualIndex)) continue;
-            
-            QString ext = reader.getExtQString(actualIndex).toLower();
-            if (mediaExts.contains(ext)) {
-                newSet->keys.push_back(key);
-            }
-        }
-        
-        // 重建过滤后结果集的 O(1) 反向索引映射
-        newSet->keyToPos.clear();
-        for (size_t i = 0; i < newSet->keys.size(); ++i) {
-            newSet->keyToPos[newSet->keys[i]] = static_cast<int>(i);
-        }
-    } else {
-        // 列表模式：保留全量普通文件、文件夹及多媒体过滤数据
-        newSet->keys = baseSet->keys;
-    }
+    auto newSet = nextSet ? nextSet : m_controller->snapshot();
 
     int oldSize = (int)m_currentResultSet->keys.size();
     int newSize = (int)newSet->keys.size();
@@ -456,8 +436,8 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
     // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
-    // 如果变动巨大或初始加载，或者模式切换导致的数据量落差，回退到 Reset 模式
-    if (oldSize == 0 || std::abs(newSize - oldSize) > 500 || isMediaView != (oldSize != (int)baseSet->keys.size())) {
+    // 如果变动巨大或初始加载，回退到 Reset 模式
+    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
         m_displayCount = newSize; 
