@@ -161,8 +161,8 @@ void ContextMenuExecutor::executeContextMenu(const QPoint& pos) {
     refreshAction->setShortcut(QKeySequence(Qt::Key_F5));
     connect(refreshAction, &QAction::triggered, dialog, &ScanDialog::onTriggerSearch);
 
-    QAbstractItemView* view = qobject_cast<QAbstractItemView*>(sender());
-    if (view) menu.exec(view->viewport()->mapToGlobal(pos));
+    // 修复：不使用 sender() 查找视图，防止解耦后返回空指针；直接使用已获取并校验过的活动视图 activeView
+    menu.exec(activeView->viewport()->mapToGlobal(pos));
 }
 
 } // namespace FERREX
