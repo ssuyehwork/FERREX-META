@@ -413,12 +413,11 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
     bool isMediaView = false;
     if (dlg) {
-        // viewMode == 1 代表自适应与网格的多媒体画廊视图，viewMode == 0 代表全文件列表视图
+        // viewMode == 1 代表自适应与网格的多媒体画廊视图
         isMediaView = (dlg->m_config.viewMode == 1);
     }
 
     if (isMediaView) {
-        // 自适应与网格模式必须遵循其媒体画廊视图本身的展示使命与渲染承载力，在源头只保留视频与图像
         auto& reader = MftReader::instance();
         static const QSet<QString> mediaExts = {
             "jpg", "jpeg", "png", "bmp", "gif", "webp", "svg", "psd", "ai", "eps",
@@ -430,7 +429,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
             int actualIndex = reader.getIndexByKey(key);
             if (actualIndex == -1) continue;
             
-            // 剔除所有文件夹以及不属于画廊美学展示范围的常规普通非媒体文件
+            // 剔除所有文件夹以及非媒体文件
             if (reader.isDirectory(actualIndex)) continue;
             
             QString ext = reader.getExtQString(actualIndex).toLower();
@@ -439,13 +438,12 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
             }
         }
         
-        // 重建过滤后结果集的 O(1) 反向索引映射
         newSet->keyToPos.clear();
         for (size_t i = 0; i < newSet->keys.size(); ++i) {
             newSet->keyToPos[newSet->keys[i]] = static_cast<int>(i);
         }
     } else {
-        // 列表模式：保留全量普通文件、文件夹及多媒体过滤数据
+        // 列表模式：保留全量普通文件、文件夹及过滤数据
         newSet->keys = baseSet->keys;
     }
 
