@@ -154,6 +154,7 @@ public:
 
 protected:
     void keyPressEvent(QKeyEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override; // 重载大小变更
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
