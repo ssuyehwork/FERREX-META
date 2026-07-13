@@ -158,8 +158,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
 
     // 检测是否有预取的元数据投影缓存，如果有，则直接无锁 O(1) 获取
-    auto it = m_currentResultSet->metadata.find(key);
-    bool useCache = (it != m_currentResultSet->metadata.end() && it->second.hasCache);
+    auto cacheIt = m_currentResultSet->metadata.find(key);
+    bool useCache = (cacheIt != m_currentResultSet->metadata.end() && cacheIt->second.hasCache);
 
     auto getPath = [&]() {
         // 1. 优先查询行内临时缓存
@@ -179,7 +179,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         // 3. 查询去锁投影缓存
         if (useCache) {
             lastRow = row; lastKey = key;
-            cachedPath = it->second.fullPath;
+            cachedPath = cacheIt->second.fullPath;
             m_pathCache.insert(key, new QString(cachedPath));
             return cachedPath;
         }
@@ -193,12 +193,12 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
-            case 0: return useCache ? it->second.name : reader.getName(actualIndex);
+            case 0: return useCache ? cacheIt->second.name : reader.getName(actualIndex);
             case 1: return getPath();
             case 2: {
-                bool isDir = useCache ? it->second.isDirectory : reader.isDirectory(actualIndex);
+                bool isDir = useCache ? cacheIt->second.isDirectory : reader.isDirectory(actualIndex);
                 if (isDir) return "-";
-                int64_t size = useCache ? it->second.size : reader.getSize(actualIndex);
+                int64_t size = useCache ? cacheIt->second.size : reader.getSize(actualIndex);
                 if (size == 0 && (useCache ? false : !reader.isMetadataFetched(actualIndex))) {
                     return "...";
                 }
@@ -208,7 +208,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 return QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
             }
             case 3: {
-                int64_t ts = useCache ? it->second.modifyTime : reader.getModifyTime(actualIndex);
+                int64_t ts = useCache ? cacheIt->second.modifyTime : reader.getModifyTime(actualIndex);
                 if (ts == 0 && (useCache ? false : !reader.isMetadataFetched(actualIndex))) {
                     return "-";
                 }
