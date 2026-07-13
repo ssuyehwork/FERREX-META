@@ -4,6 +4,8 @@
 #include <QKeyEvent>
 #include <QTimer>
 #include <QApplication>
+#include <QScreen>
+#include <QWindow>
 #include <windows.h>
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
@@ -166,10 +168,19 @@ FramelessDialog::ResizeDir FramelessDialog::getResizeDir(const QPoint& pos) cons
     int w = this->width();
     int h = this->height();
 
-    bool left = (x >= 0 && x <= PADDING);
-    bool right = (x >= w - PADDING && x <= w);
-    bool top = (y >= 0 && y <= PADDING);
-    bool bottom = (y >= h - PADDING && y <= h);
+    int padding = PADDING;
+    double dpi = 96.0;
+    if (windowHandle() && windowHandle()->screen()) {
+        dpi = windowHandle()->screen()->logicalDotsPerInch();
+    } else if (QGuiApplication::primaryScreen()) {
+        dpi = QGuiApplication::primaryScreen()->logicalDotsPerInch();
+    }
+    padding = qRound(dpi / 96.0 * (double)PADDING);
+
+    bool left = (x >= 0 && x <= padding);
+    bool right = (x >= w - padding && x <= w);
+    bool top = (y >= 0 && y <= padding);
+    bool bottom = (y >= h - padding && y <= h);
 
     if (left && top) return DIR_TOPLEFT;
     if (right && top) return DIR_TOPRIGHT;
@@ -460,6 +471,8 @@ bool FramelessDialog::eventFilter(QObject* watched, QEvent* event) {
                 mousePressEvent(&mappedEvent);
                 return true; // 拦截此事件，不向子部件派发，避免边缘拖拽导致子控件获焦或误触
             }
+        } else if (event->type() == QEvent::Leave) {
+            setCursor(Qt::ArrowCursor);
         }
     }
     return QDialog::eventFilter(watched, event);

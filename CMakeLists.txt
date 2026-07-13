@@ -89,8 +89,6 @@ set(SOURCES
     src/ui/JustifiedView.h
     src/ui/QuickLookWindow.cpp
     src/ui/QuickLookWindow.h
-    src/ui/FramelessResizeBorder.cpp
-    src/ui/FramelessResizeBorder.h
     src/ui/ToolTipOverlay.cpp
     src/ui/ToolTipOverlay.h
     src/ui/HoverEventFilter.cpp

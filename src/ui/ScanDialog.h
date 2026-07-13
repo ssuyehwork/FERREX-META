@@ -61,7 +61,6 @@ private:
 class ScanTableModel;
 class ResultTableColumnWidthPolicy;
 class StatusBarFormatter;
-class FramelessResizeBorder;
 class HistoryDropdownController;
 class ContextMenuExecutor;
 class ThumbnailWarmupPipeline;
@@ -73,7 +72,6 @@ class ScanDialog : public FramelessDialog {
     friend class ScanTableModel;
     friend class ResultTableColumnWidthPolicy;
     friend class StatusBarFormatter;
-    friend class FramelessResizeBorder;
     friend class HistoryDropdownController;
     friend class ContextMenuExecutor;
     friend class ThumbnailWarmupPipeline;
@@ -109,7 +107,6 @@ private:
     static constexpr int kResizeMargin = 6; // DPI 基准热区像素宽度
 
     // 辅助控制子系统实例
-    FramelessResizeBorder* m_resizeFilter = nullptr;
     HistoryDropdownController* m_historyDropdownController = nullptr;
     ContextMenuExecutor* m_contextMenuExecutor = nullptr;
     ThumbnailWarmupPipeline* m_thumbnailWarmupPipeline = nullptr;
