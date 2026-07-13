@@ -2,6 +2,7 @@
 #include "JustifiedView.h"
 #include "ThumbnailDelegate.h"
 #include "ScanDialog.h"
+#include "ScanTableModel.h"
 #include <QThreadPool>
 
 namespace FERREX {

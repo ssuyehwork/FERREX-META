@@ -1,4 +1,4 @@
-#include "ResizeEventFilter.h"
+#include "FramelessResizeBorder.h"
 #include "ScanDialog.h"
 #include <QMouseEvent>
 #include <QWidget>
@@ -7,10 +7,10 @@
 
 namespace FERREX {
 
-ResizeEventFilter::ResizeEventFilter(ScanDialog* window) 
+FramelessResizeBorder::FramelessResizeBorder(ScanDialog* window)
     : QObject(window), m_window(window) {}
 
-ResizeEventFilter::ResizeDirection ResizeEventFilter::getResizeDirection(const QPoint& pos) const {
+FramelessResizeBorder::ResizeDirection FramelessResizeBorder::getResizeDirection(const QPoint& pos) const {
     int m = kResizeMargin;
     if (m_window->windowHandle()) {
         m = qRound(m_window->windowHandle()->screen()->logicalDotsPerInch() / 96.0 * (double)kResizeMargin);
@@ -32,7 +32,7 @@ ResizeEventFilter::ResizeDirection ResizeEventFilter::getResizeDirection(const Q
     return None;
 }
 
-void ResizeEventFilter::updateCursorShape(ResizeDirection dir) {
+void FramelessResizeBorder::updateCursorShape(ResizeDirection dir) {
     switch (dir) {
         case Left:        case Right:       m_window->setCursor(Qt::SizeHorCursor);  break;
         case Top:         case Bottom:      m_window->setCursor(Qt::SizeVerCursor);  break;
@@ -42,7 +42,7 @@ void ResizeEventFilter::updateCursorShape(ResizeDirection dir) {
     }
 }
 
-bool ResizeEventFilter::eventFilter(QObject* watched, QEvent* event) {
+bool FramelessResizeBorder::eventFilter(QObject* watched, QEvent* event) {
     // 仅拦截和过滤 ScanDialog 窗口自身的事件，对子控件（如输入框、按钮等）完全放行，保障标题栏控件交互正常
     if (watched != m_window) {
         return QObject::eventFilter(watched, event);

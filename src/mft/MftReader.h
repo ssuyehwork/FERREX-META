@@ -38,9 +38,18 @@ class UsnWatcher;
 /**
  * @brief 高性能 MFT 索引引擎 (SoA 架构)
  */
+class NtfsVolumeMftParser;
+class UsnJournalTreeSynchronizer;
+class DiskIndexCacheCoordinator;
+class MemoryQueryEngine;
+
 class MftReader : public QObject {
     Q_OBJECT
     friend class ScanController; // 2026-06-xx 极致架构：允许控制器直接访问 SoA，消除锁竞争开销
+    friend class NtfsVolumeMftParser;
+    friend class UsnJournalTreeSynchronizer;
+    friend class DiskIndexCacheCoordinator;
+    friend class MemoryQueryEngine;
 public:
     static MftReader& instance();
 

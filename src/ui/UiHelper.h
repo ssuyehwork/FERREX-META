@@ -5,6 +5,8 @@
 
 #include <QIcon>
 #include <QString>
+#include <QReadWriteLock>
+#include <QHash>
 #include <QColor>
 #include <QSvgRenderer>
 #include <QPainter>
@@ -114,6 +116,33 @@ public:
         if (colorName == "white" || colorName == "白") return QColor("#FFFFFF");
         
         return QColor();
+    }
+
+    static QIcon getCachedIcon(const QString& ext, bool isDir) {
+        static QHash<QString, QIcon> icon_cache;
+        static QReadWriteLock iconCacheLock;
+        QString key = isDir ? "folder" : ext.toLower();
+        {
+            QReadLocker lock(&iconCacheLock);
+            auto it = icon_cache.find(key);
+            if (it != icon_cache.end()) return *it;
+        }
+
+        QFileIconProvider provider;
+        QIcon icon;
+        if (isDir) {
+            icon = provider.icon(QFileIconProvider::Folder);
+        } else {
+            if (key.length() > 12) key = "unknown";
+            icon = provider.icon(QFileInfo("dummy." + key));
+            if (icon.isNull()) icon = provider.icon(QFileIconProvider::File);
+        }
+
+        {
+            QWriteLocker lock(&iconCacheLock);
+            icon_cache[key] = icon;
+        }
+        return icon;
     }
 
 

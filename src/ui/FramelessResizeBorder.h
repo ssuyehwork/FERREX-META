@@ -9,15 +9,11 @@ namespace FERREX {
 
 class ScanDialog;
 
-/**
- * @brief 边缘缩放与拖拽事件过滤器 (完整接管无边框窗口的所有鼠标行为)
- * 完美托管，解决子控件遮挡导致的光标状态机异常，彻底使 ScanDialog 减负
- */
-class ResizeEventFilter : public QObject {
+class FramelessResizeBorder : public QObject {
     Q_OBJECT
 
 public:
-    explicit ResizeEventFilter(ScanDialog* window);
+    explicit FramelessResizeBorder(ScanDialog* window);
 
     enum ResizeDirection {
         None = 0,
