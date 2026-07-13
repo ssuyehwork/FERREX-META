@@ -1512,7 +1512,7 @@ void ScanDialog::setupUi() {
                 // 动态上限拦截，确保不挤死右侧各列空间
                 int viewportWidth = resultTableView->viewport()->width();
                 if (viewportWidth <= 0) viewportWidth = resultTableView->width();
-                int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+                int reservedWidth = 150 + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
                 int maxWidth = viewportWidth - reservedWidth;
                 if (maxWidth < minWidth) maxWidth = minWidth;
 
@@ -2198,7 +2198,7 @@ void ScanDialog::refreshVisibleMetadataRange() {
 
 int ScanDialog::calculateNameColumnMinimumWidth() const {
     if (!m_tableModel || !m_listResultView) return 260;
-    auto* resultTableView = m_listResultView->getBaseView();
+    auto* resultTableView = qobject_cast<QTableView*>(m_listResultView->getBaseView());
     if (!resultTableView) return 260;
 
     int rowHeight = m_config.iconSize;
@@ -2241,7 +2241,7 @@ int ScanDialog::calculateNameColumnMinimumWidth() const {
     }
 
     if (viewportWidth > 0) {
-        int reservedWidth = 150 + qMax(80, resultTableView->columnWidth(2)) + qMax(90, resultTableView->columnWidth(3));
+        int reservedWidth = 150 + qMax<int>(80, resultTableView->columnWidth(2)) + qMax<int>(90, resultTableView->columnWidth(3));
         int maxAllowedWidth = viewportWidth - reservedWidth;
         if (maxAllowedWidth < 200) {
             maxAllowedWidth = 200; // 维持名称列最低 200 像素的基本显示
