@@ -888,17 +888,8 @@ void ScanDialog::refreshDriveList(bool forceProbe) {
                         weakThis->m_config.activeDrives.insert(info.letter);
                     }
                 }
-            } else {
-                if (!weakThis->m_config.activeDrives.contains("C:")) {
-                    for (const auto& info : drives) {
-                        if (info.letter == "C:") {
-                            weakThis->m_config.activeDrives.insert("C:");
-                            break;
-                        }
-                    }
-                }
+                weakThis->m_config.save();
             }
-            weakThis->m_config.save();
 
             QLayoutItem* item;
             while ((item = weakThis->m_driveLayout->takeAt(0)) != nullptr) {
