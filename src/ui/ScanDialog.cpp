@@ -1050,7 +1050,7 @@ void ScanDialog::onItemDoubleClicked(const QModelIndex& index) {
     if (!index.isValid()) return;
     
     QString path = m_tableModel->data(m_tableModel->index(index.row(), 1)).toString();
-    QProcess::startDetached("explorer.exe", {"/select," + QDir::toNativeSeparators(path)});
+    ShellHelper::openInExplorer(path);
 }
 
 void ScanDialog::onSelectionChanged() {
