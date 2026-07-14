@@ -1,5 +1,6 @@
 #include "UsnJournalTreeSynchronizer.h"
 #include <QWriteLocker>
+#include <QReadLocker>
 #include <QDebug>
 #include <QThreadPool>
 
@@ -50,15 +51,22 @@ void UsnJournalTreeSynchronizer::updateEntryFromUsn(MftReader* reader, USN_RECOR
     int64_t finalModifyTime = filetimeToUnixMs(timestamp.QuadPart);
     uint32_t finalAttr = attr;
 
-    QWriteLocker lock(&reader->m_dataLock);
+    // --- 1. 锁外重度计算 & 编解码 ---
     QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
-    
+    QByteArray utf8 = name.toUtf8();
+    std::string extStr;
+    splitNameAndExt(utf8.toStdString(), extStr);
+
+    // --- 2. 盘符索引读锁化预查 ---
     int dIdx = -1;
-    for (size_t i = 0; i < reader->m_drive_list.size(); ++i) { 
-        if (_wcsicmp(reader->m_drive_list[i].c_str(), volume.c_str()) == 0) { 
-            dIdx = (int)i; 
-            break; 
-        } 
+    {
+        QReadLocker readLock(&reader->m_dataLock);
+        for (size_t i = 0; i < reader->m_drive_list.size(); ++i) { 
+            if (_wcsicmp(reader->m_drive_list[i].c_str(), volume.c_str()) == 0) { 
+                dIdx = (int)i; 
+                break; 
+            } 
+        }
     }
     if (dIdx == -1) {
         qDebug() << "[MftReader] 警告：接收到未索引驱动器的 USN 记录:" << QString::fromStdWString(volume);
@@ -67,97 +75,102 @@ void UsnJournalTreeSynchronizer::updateEntryFromUsn(MftReader* reader, USN_RECOR
 
     uint64_t encodedPf = MftReader::makeKey((size_t)dIdx, parentFrn);
     uint64_t compositeKey = MftReader::makeKey(dIdx, frn);
-    auto it = reader->m_frn_to_idx.find(compositeKey);
     uint32_t finalIdx = 0;
     bool isNew = false;
+    bool shouldCompact = false;
 
-    if (it != reader->m_frn_to_idx.end()) {
-        finalIdx = it->second;
-        reader->m_parent_frns[finalIdx] = encodedPf;
-        
-        auto itParent = reader->m_frn_to_idx.find(encodedPf);
-        reader->m_parent_indices[finalIdx] = (itParent != reader->m_frn_to_idx.end()) ? itParent->second : 0xFFFFFFFF;
+    // --- 3. 临界区极简写锁更新 ---
+    {
+        QWriteLocker lock(&reader->m_dataLock);
+        auto it = reader->m_frn_to_idx.find(compositeKey);
 
-        reader->m_attributes[finalIdx] = finalAttr;
-        reader->m_metadata_fetched[finalIdx] = 0; 
-        
-        reader->m_sizes[finalIdx] = fileSize;
-        reader->m_timestamps[finalIdx] = finalModifyTime;
+        if (it != reader->m_frn_to_idx.end()) {
+            finalIdx = it->second;
+            reader->m_parent_frns[finalIdx] = encodedPf;
+            
+            auto itParent = reader->m_frn_to_idx.find(encodedPf);
+            reader->m_parent_indices[finalIdx] = (itParent != reader->m_frn_to_idx.end()) ? itParent->second : 0xFFFFFFFF;
 
-        QByteArray utf8 = name.toUtf8();
-        uint32_t oldOff = reader->m_name_offsets[finalIdx];
-        const char* oldPtr = reinterpret_cast<const char*>(reader->m_string_pool.data() + oldOff);
-        size_t oldLen = strlen(oldPtr);
-        
-        uint32_t oldExtOff = reader->m_ext_offsets[finalIdx];
-        reader->m_wasted_string_bytes += (strlen(reinterpret_cast<const char*>(reader->m_string_pool.data() + oldExtOff)) + 1);
+            reader->m_attributes[finalIdx] = finalAttr;
+            reader->m_metadata_fetched[finalIdx] = 0; 
+            
+            reader->m_sizes[finalIdx] = fileSize;
+            reader->m_timestamps[finalIdx] = finalModifyTime;
 
-        if ((size_t)utf8.size() <= oldLen) {
-            memcpy(reader->m_string_pool.data() + oldOff, utf8.constData(), utf8.size());
-            reader->m_string_pool[oldOff + utf8.size()] = '\0';
-            if ((size_t)utf8.size() < oldLen) reader->m_wasted_string_bytes += (oldLen - utf8.size());
+            uint32_t oldOff = reader->m_name_offsets[finalIdx];
+            const char* oldPtr = reinterpret_cast<const char*>(reader->m_string_pool.data() + oldOff);
+            size_t oldLen = strlen(oldPtr);
+            
+            uint32_t oldExtOff = reader->m_ext_offsets[finalIdx];
+            reader->m_wasted_string_bytes += (strlen(reinterpret_cast<const char*>(reader->m_string_pool.data() + oldExtOff)) + 1);
+
+            if ((size_t)utf8.size() <= oldLen) {
+                memcpy(reader->m_string_pool.data() + oldOff, utf8.constData(), utf8.size());
+                reader->m_string_pool[oldOff + utf8.size()] = '\0';
+                if ((size_t)utf8.size() < oldLen) reader->m_wasted_string_bytes += (oldLen - utf8.size());
+            } else {
+                reader->m_wasted_string_bytes += (oldLen + 1);
+                reader->m_name_offsets[finalIdx] = (uint32_t)reader->m_string_pool.size();
+                reader->m_string_pool.insert(reader->m_string_pool.end(), utf8.begin(), utf8.end());
+                reader->m_string_pool.push_back('\0');
+            }
+
+            reader->m_ext_offsets[finalIdx] = (uint32_t)reader->m_string_pool.size();
+            reader->m_string_pool.insert(reader->m_string_pool.end(), extStr.begin(), extStr.end());
+            reader->m_string_pool.push_back('\0');
         } else {
-            reader->m_wasted_string_bytes += (oldLen + 1);
-            reader->m_name_offsets[finalIdx] = (uint32_t)reader->m_string_pool.size();
+            finalIdx = (uint32_t)reader->m_frns.size();
+            isNew = true;
+            reader->m_frns.push_back(frn);
+            reader->m_parent_frns.push_back(encodedPf);
+            
+            auto itParent = reader->m_frn_to_idx.find(encodedPf);
+            reader->m_parent_indices.push_back(itParent != reader->m_frn_to_idx.end() ? itParent->second : 0xFFFFFFFF);
+
+            reader->m_sizes.push_back(fileSize);
+            reader->m_timestamps.push_back(finalModifyTime);
+            reader->m_attributes.push_back(finalAttr);
+            reader->m_metadata_fetched.push_back(0); 
+            
+            reader->m_name_offsets.push_back((uint32_t)reader->m_string_pool.size());
             reader->m_string_pool.insert(reader->m_string_pool.end(), utf8.begin(), utf8.end());
             reader->m_string_pool.push_back('\0');
+
+            reader->m_ext_offsets.push_back((uint32_t)reader->m_string_pool.size());
+            reader->m_string_pool.insert(reader->m_string_pool.end(), extStr.begin(), extStr.end());
+            reader->m_string_pool.push_back('\0');
+
+            reader->m_frn_to_idx[compositeKey] = finalIdx;
         }
-
-        std::string extStr;
-        splitNameAndExt(utf8.toStdString(), extStr);
-        reader->m_ext_offsets[finalIdx] = (uint32_t)reader->m_string_pool.size();
-        reader->m_string_pool.insert(reader->m_string_pool.end(), extStr.begin(), extStr.end());
-        reader->m_string_pool.push_back('\0');
-    } else {
-        finalIdx = (uint32_t)reader->m_frns.size();
-        isNew = true;
-        reader->m_frns.push_back(frn);
-        reader->m_parent_frns.push_back(encodedPf);
+        { std::unique_lock<std::shared_mutex> l(reader->m_pathCacheMutex); reader->m_path_cache.erase(compositeKey); }
+        reader->m_next_usns[volume] = usn;
+        reader->m_dirty_count++;
+        {
+            std::lock_guard<std::mutex> dLock(reader->m_dirtyLock);
+            reader->m_dirty_indices.insert(finalIdx);
+        }
         
-        auto itParent = reader->m_frn_to_idx.find(encodedPf);
-        reader->m_parent_indices.push_back(itParent != reader->m_frn_to_idx.end() ? itParent->second : 0xFFFFFFFF);
-
-        reader->m_sizes.push_back(fileSize);
-        reader->m_timestamps.push_back(finalModifyTime);
-        reader->m_attributes.push_back(finalAttr);
-        reader->m_metadata_fetched.push_back(0); 
-        
-        QByteArray utf8 = name.toUtf8();
-        reader->m_name_offsets.push_back((uint32_t)reader->m_string_pool.size());
-        reader->m_string_pool.insert(reader->m_string_pool.end(), utf8.begin(), utf8.end());
-        reader->m_string_pool.push_back('\0');
-
-        std::string extStr;
-        splitNameAndExt(utf8.toStdString(), extStr);
-        reader->m_ext_offsets.push_back((uint32_t)reader->m_string_pool.size());
-        reader->m_string_pool.insert(reader->m_string_pool.end(), extStr.begin(), extStr.end());
-        reader->m_string_pool.push_back('\0');
-
-        reader->m_frn_to_idx[compositeKey] = finalIdx;
+        if (reader->m_wasted_string_bytes > 20 * 1024 * 1024 || reader->m_dead_count > 100000) {
+            shouldCompact = true;
+        }
     }
-    { std::lock_guard<std::mutex> l(reader->m_pathCacheMutex); reader->m_path_cache.erase(compositeKey); }
-    reader->m_next_usns[volume] = usn;
-    reader->m_dirty_count++;
-    {
-        std::lock_guard<std::mutex> dLock(reader->m_dirtyLock);
-        reader->m_dirty_indices.insert(finalIdx);
-    }
-    
-    if (reader->m_wasted_string_bytes > 20 * 1024 * 1024 || reader->m_dead_count > 100000) {
-        lock.unlock();
-        reader->compact();
-        reader->buildSortedIndices();
-        lock.relock();
-        finalIdx = reader->m_frn_to_idx[compositeKey];
+
+    // --- 4. 完全移出写锁范围，通过全局线程池无锁并发紧凑化整理 ---
+    if (shouldCompact) {
+        QThreadPool::globalInstance()->start([reader]() {
+            reader->compact();
+            reader->buildSortedIndices();
+        });
     }
 
     bool shouldSave = false;
-    if (reader->m_dirty_count >= 1000) { 
-        reader->m_dirty_count = 0; 
-        shouldSave = true;
+    {
+        QWriteLocker lock(&reader->m_dataLock);
+        if (reader->m_dirty_count >= 1000) { 
+            reader->m_dirty_count = 0; 
+            shouldSave = true;
+        }
     }
-    
-    lock.unlock(); 
 
     if (shouldSave) {
         QThreadPool::globalInstance()->start([reader, dIdx]() {
@@ -215,7 +228,7 @@ void UsnJournalTreeSynchronizer::removeEntryByFrn(MftReader* reader, const std::
         const char* p = reinterpret_cast<const char*>(reader->m_string_pool.data() + reader->m_name_offsets[idx]);
         reader->m_wasted_string_bytes += (strlen(p) + 1);
         
-        { std::lock_guard<std::mutex> lockCache(reader->m_pathCacheMutex); reader->m_path_cache.erase(compositeKey); }
+        { std::unique_lock<std::shared_mutex> lockCache(reader->m_pathCacheMutex); reader->m_path_cache.erase(compositeKey); }
         
         bool shouldCompact = (reader->m_dead_count > 50000 || reader->m_wasted_string_bytes > 10 * 1024 * 1024);
         

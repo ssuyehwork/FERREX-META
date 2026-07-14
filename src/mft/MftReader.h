@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <mutex>
+#include <shared_mutex>
 #include <windows.h>
 #include <winioctl.h>
 #include <QIcon>
@@ -169,7 +170,7 @@ private:
     std::unordered_map<size_t, bool>                    m_drive_ever_saved; // 2026-06-xx 按盘符独立维护全量保存状态
 
     mutable std::unordered_map<uint64_t, std::wstring>  m_path_cache;
-    mutable std::mutex m_pathCacheMutex;
+    mutable std::shared_mutex m_pathCacheMutex;
 
     std::unordered_map<std::wstring, uint64_t>          m_next_usns;
     std::unordered_map<std::wstring, UsnWatcher*>      m_watcher_map; // 2026-07-07 物理重构：使用 Map 管理监听器以支持按盘符卸载

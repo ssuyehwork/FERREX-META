@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -90,7 +91,7 @@ private:
 
     std::shared_ptr<ResultSet> m_resultSet;
     std::shared_ptr<ResultSet> m_sortBaseSnap; // 2026-06-xx 新增：记录重排序任务的基准快照，防止数据过期覆盖
-    mutable std::mutex m_resultsMutex;
+    mutable std::shared_mutex m_resultsMutex;
     
     QTimer* m_debounceTimer = nullptr;
     QTimer* m_batchTimer = nullptr;
