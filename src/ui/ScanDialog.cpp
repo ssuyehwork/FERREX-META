@@ -120,6 +120,22 @@ ScanDialog::ScanDialog(QWidget* parent)
     }
 
     m_config.load();
+
+    m_configSaveTimer = new QTimer(this);
+    m_configSaveTimer->setInterval(500);
+    m_configSaveTimer->setSingleShot(true);
+    connect(m_configSaveTimer, &QTimer::timeout, this, [this]() {
+        m_config.save();
+    });
+
+    m_zoomDebounceTimer = new QTimer(this);
+    m_zoomDebounceTimer->setInterval(200);
+    m_zoomDebounceTimer->setSingleShot(true);
+    connect(m_zoomDebounceTimer, &QTimer::timeout, this, [this]() {
+        m_tableModel->clearThumbCache(true);
+        m_tableModel->updateResults();
+    });
+
     resize(1000, 700);
     setMinimumSize(800, 500);
 
@@ -229,9 +245,8 @@ ScanDialog::ScanDialog(QWidget* parent)
                     }
                 }
 
-                m_tableModel->clearThumbCache(true); 
-                m_tableModel->updateResults(); 
-                m_config.save(); 
+                m_zoomDebounceTimer->start();
+                m_configSaveTimer->start();
             }); 
             
             QPushButton* rulesBtn = new QPushButton();
@@ -528,6 +543,11 @@ ScanDialog::ScanDialog(QWidget* parent)
 }
 
 ScanDialog::~ScanDialog() {
+    if (m_configSaveTimer) { m_configSaveTimer->stop(); delete m_configSaveTimer; m_configSaveTimer = nullptr; }
+    if (m_zoomDebounceTimer) { m_zoomDebounceTimer->stop(); delete m_zoomDebounceTimer; m_zoomDebounceTimer = nullptr; }
+
+    m_config.save();
+
     if (m_resizeFilter) {
         QCoreApplication::instance()->removeEventFilter(m_resizeFilter);
     }
@@ -555,7 +575,7 @@ void ScanDialog::switchToView(int viewMode, int layoutMode) {
 
     // 还原设计三：switchToView 的末尾还原为直接调用 m_tableModel->updateResults();
     m_tableModel->updateResults();
-    m_config.save();
+    m_configSaveTimer->start();
 }
 
 void ScanDialog::closeEvent(QCloseEvent* event) {
