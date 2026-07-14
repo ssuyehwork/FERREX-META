@@ -94,17 +94,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
             
-            // 2026-07-11 物理强化 (对应用户原话：“排查一下为何图标这么小？”)：
-            // QFileIconProvider 返回的 QIcon 直接绘制可能带有冗余透明边缘或在大型卡片中缩放失效。
-            // 使用 QIcon::pixmap() 显式提取指定尺寸的高画质 Pixmap 资产，配合高质量双线性拉伸居中绘制，确保常规文件的图标在自适应中清晰醒目、100% 居中对称。
-            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
-            QPixmap pix = icon.pixmap(QSize(iconSize, iconSize));
-            if (!pix.isNull()) {
-                QRect iconRect(m.cardRect.center().x() - pix.width() / 2,
-                               m.cardRect.center().y() - pix.height() / 2,
-                               pix.width(), pix.height());
-                painter->drawPixmap(iconRect, pix);
-            }
+            // 彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
+            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
+            QRect iconRect(m.cardRect.center().x() - iconSize / 2,
+                           m.cardRect.center().y() - iconSize / 2,
+                           iconSize, iconSize);
+
+            icon.paint(painter, iconRect);
             
             painter->setOpacity(1.0);
         }
