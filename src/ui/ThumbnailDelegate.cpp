@@ -48,7 +48,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     bool isSelected = (option.state & QStyle::State_Selected);
     bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
-    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持/未就绪, 1=有可用缩略图物理资产
     QVariant decoData = index.data(Qt::DecorationRole);
     
     QPixmap thumb;
