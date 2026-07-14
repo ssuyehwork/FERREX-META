@@ -9,6 +9,34 @@
 
 namespace FERREX {
 
+class ListDefaultColumnDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        painter->save();
+        int hoveredRow = -1;
+        if (option.widget) {
+            hoveredRow = option.widget->property("hoveredRow").toInt();
+        }
+        bool isSelected = (option.state & QStyle::State_Selected);
+        bool isHovered = (index.row() == hoveredRow);
+
+        if (isSelected) {
+            painter->fillRect(option.rect, QColor("#094771"));
+        } else if (isHovered) {
+            painter->fillRect(option.rect, QColor("#2A2A2A"));
+        }
+
+        QStyleOptionViewItem opt = option;
+        opt.state &= ~QStyle::State_Selected;
+        opt.state &= ~QStyle::State_MouseOver;
+        
+        QStyledItemDelegate::paint(painter, opt, index);
+        painter->restore();
+    }
+};
+
 class ListThumbnailDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -18,11 +46,17 @@ public:
         painter->setRenderHint(QPainter::Antialiasing);
         painter->setRenderHint(QPainter::SmoothPixmapTransform);
 
+        int hoveredRow = -1;
+        if (option.widget) {
+            hoveredRow = option.widget->property("hoveredRow").toInt();
+        }
         bool isSelected = (option.state & QStyle::State_Selected);
+        bool isHovered = (index.row() == hoveredRow);
+
         if (isSelected) {
             painter->fillRect(option.rect, QColor("#094771")); 
-        } else if (option.state & QStyle::State_MouseOver) {
-            painter->fillRect(option.rect, QColor("#2A2A2A")); 
+        } else if (isHovered) {
+            painter->fillRect(option.rect, QColor("#2A2A2A"));
         }
 
         int padding = 3;
@@ -116,11 +150,54 @@ public:
     }
 };
 
+class ListRowHoverFilter : public QObject {
+public:
+    explicit ListRowHoverFilter(QTableView* tableView) : QObject(tableView), m_tableView(tableView) {
+        m_tableView->viewport()->setAttribute(Qt::WA_Hover, true);
+        m_tableView->viewport()->setMouseTracking(true);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == m_tableView->viewport()) {
+            if (event->type() == QEvent::MouseMove || event->type() == QEvent::HoverMove ||
+                event->type() == QEvent::Enter || event->type() == QEvent::HoverEnter) {
+                QPoint pos = m_tableView->viewport()->mapFromGlobal(QCursor::pos());
+                QModelIndex idx = m_tableView->indexAt(pos);
+                int row = idx.isValid() ? idx.row() : -1;
+                
+                int oldRow = m_tableView->property("hoveredRow").toInt();
+                if (row != oldRow) {
+                    m_tableView->setProperty("hoveredRow", row);
+                    m_tableView->viewport()->update();
+                }
+            } else if (event->type() == QEvent::Leave || event->type() == QEvent::HoverLeave) {
+                int oldRow = m_tableView->property("hoveredRow").toInt();
+                if (oldRow != -1) {
+                    m_tableView->setProperty("hoveredRow", -1);
+                    m_tableView->viewport()->update();
+                }
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QTableView* m_tableView;
+};
+
 ListResultView::ListResultView(QWidget* parent) : IScanResultView(parent) {
     m_tableView = new QTableView(parent);
     m_tableView->verticalHeader()->setDefaultSectionSize(30); 
     m_tableView->setItemDelegateForColumn(0, new ListThumbnailDelegate(m_tableView)); 
+    m_tableView->setItemDelegateForColumn(1, new ListDefaultColumnDelegate(m_tableView)); 
+    m_tableView->setItemDelegateForColumn(2, new ListDefaultColumnDelegate(m_tableView)); 
+    m_tableView->setItemDelegateForColumn(3, new ListDefaultColumnDelegate(m_tableView)); 
     m_tableView->setContextMenuPolicy(Qt::CustomContextMenu);
+    
+    m_tableView->setProperty("hoveredRow", -1);
+    ListRowHoverFilter* hoverFilter = new ListRowHoverFilter(m_tableView);
+    m_tableView->viewport()->installEventFilter(hoverFilter);
     
     m_tableView->setStyleSheet(
         "QTableView { "
@@ -135,6 +212,7 @@ ListResultView::ListResultView(QWidget* parent) : IScanResultView(parent) {
         "padding: 10px 0 0 10px; "
         "}"
         "QTableView::item { border-bottom: 1px solid #252526; }"
+        "QTableView::item:hover { background-color: #2A2A2A; }"
         "QHeaderView::section { background-color: #252526; color: #888; border: none; border-right: 1px solid #333; padding: 4px; height: 24px; }"
         "QHeaderView::section:horizontal:first { padding-left: 14px; }" 
         "QHeaderView { background-color: #252526; border: none; }"
