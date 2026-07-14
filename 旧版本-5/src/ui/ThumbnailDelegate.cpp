@@ -48,14 +48,15 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     bool isSelected = (option.state & QStyle::State_Selected);
     bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
+    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持/未就绪, 1=有可用缩略图物理资产
     QVariant decoData = index.data(Qt::DecorationRole);
     
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 【物理还原缩略图 QPixmap 优先准入与无损渲染机制】：彻底废除关于缩略图渲染的 thumbStatus == 1 前置校验！
-    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取渲染！
-    if (decoData.canConvert<QPixmap>()) {
+    // 【核心修复】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
+    // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
+    if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
             hasValidThumb = true;
@@ -93,7 +94,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
             
-            // [性能重构方案物理对齐]：彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
+            // 彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,
@@ -134,7 +135,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!ext.isEmpty()) {
             QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-            if (!hasValidThumb) {
+            if (thumbStatus != 1) {
                 badgeColor.setAlpha(160);
             }
 
@@ -142,7 +143,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
             painter->setPen(Qt::NoPen);
             painter->setBrush(badgeColor);
             painter->drawRoundedRect(extRect, 2, 2);
-            painter->setPen(hasValidThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+            painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
             QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
             painter->setFont(extFont);
             painter->drawText(extRect, Qt::AlignCenter, ext);
