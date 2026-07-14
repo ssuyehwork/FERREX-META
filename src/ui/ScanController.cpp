@@ -24,7 +24,11 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
     connect(m_batchTimer, &QTimer::timeout, this, &ScanController::processBatchUpdates);
 
     auto& reader = MftReader::instance();
-    connect(&reader, &MftReader::entriesChangedBatch, this, &ScanController::processBatchUpdates);
+    connect(&reader, &MftReader::entriesChangedBatch, this, [this]() {
+        if (!m_batchTimer->isActive()) {
+            m_batchTimer->start();
+        }
+    });
 
     connect(&m_sortWatcher, &QFutureWatcher<std::shared_ptr<ResultSet>>::finished, this, [this]() {
         if (m_sortWatcher.isCanceled()) return;
@@ -212,28 +216,99 @@ void ScanController::sort(int column, int order) {
         if (newSet->keys.empty()) return newSet;
 
         auto& reader = MftReader::instance();
+
+        // 1. 投影准备阶段：申请极其短暂的读锁，直接物理拷贝 SoA 投影
+        // 理由：彻底避免在整个 getPathFast/排序 循环中持续霸占读锁，防止 GUI 线程因写锁排队而被挂起。
+        std::unordered_map<uint64_t, uint32_t> local_frn_to_idx;
+        std::vector<uint32_t> local_name_offsets;
+        std::vector<uint8_t> local_string_pool;
+        std::vector<uint64_t> local_parent_frns;
+        std::vector<uint64_t> local_frns;
+        std::vector<uint32_t> local_parent_indices;
+        std::vector<int64_t> local_sizes;
+        std::vector<int64_t> local_timestamps;
+
+        {
+            QReadLocker lock(&reader.m_dataLock);
+            local_frn_to_idx = reader.m_frn_to_idx;
+            if (column == 0 || column == 1) {
+                local_name_offsets = reader.m_name_offsets;
+                local_string_pool = reader.m_string_pool;
+            }
+            if (column == 1) {
+                local_parent_frns = reader.m_parent_frns;
+                local_frns = reader.m_frns;
+                local_parent_indices = reader.m_parent_indices;
+            }
+            if (column == 2) {
+                local_sizes = reader.m_sizes;
+            }
+            if (column == 3) {
+                local_timestamps = reader.m_timestamps;
+            }
+        }
+
+        auto getPathFastLocal = [&](size_t driveIdx, uint64_t frn) -> std::wstring {
+            uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
+            auto idxIt = local_frn_to_idx.find(compositeKey);
+            if (idxIt == local_frn_to_idx.end()) return L"";
+
+            uint32_t curIdx = idxIt->second;
+            std::vector<std::wstring> segments;
+            int depth = 0;
+            while (curIdx != 0xFFFFFFFF && depth < 64) {
+                if (curIdx >= local_name_offsets.size()) break;
+                const char* p = reinterpret_cast<const char*>(local_string_pool.data() + local_name_offsets[curIdx]);
+                segments.push_back(QString::fromUtf8(p).toStdWString());
+
+                if (curIdx >= local_parent_frns.size()) break;
+                uint64_t parentFrn = local_parent_frns[curIdx] & 0x0000FFFFFFFFFFFFull;
+                if (parentFrn == 5 || parentFrn == 0) break;
+
+                if (curIdx >= local_parent_indices.size()) break;
+                curIdx = local_parent_indices[curIdx];
+                depth++;
+            }
+
+            if (segments.empty()) return L"";
+            std::wstring fullPath;
+            for (auto rit = segments.rbegin(); rit != segments.rend(); ++rit) {
+                if (!fullPath.empty()) fullPath += L"\\";
+                fullPath += *rit;
+            }
+            return fullPath;
+        };
+
         std::vector<SortProxy> proxies;
         proxies.reserve(newSet->keys.size());
 
-        // 1. 投影阶段：申请单次大范围读锁，直接从 SoA 池物理拷贝数据
-        // 理由：彻底消除 O(N) 次的锁申请/释放开销，并绕过 QString 中转，极致压榨 CPU 性能。
-        {
-            QReadLocker lock(&reader.m_dataLock);
-            for (uint64_t k : newSet->keys) {
-                auto it = reader.m_frn_to_idx.find(k);
-                SortProxy p; p.key = k;
-                if (it != reader.m_frn_to_idx.end()) {
-                    uint32_t idx = it->second;
-                    if (column == 0) p.sVal = reinterpret_cast<const char*>(reader.m_string_pool.data() + reader.m_name_offsets[idx]);
-                    else if (column == 1) {
-                        // 路径投影相对复杂，暂时维持现状或使用缓存。为了安全与一致性，此处调用 getPathFast
-                        p.sVal = QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[idx] >> 48), reader.m_frns[idx])).toStdString();
+        for (uint64_t k : newSet->keys) {
+            auto it = local_frn_to_idx.find(k);
+            SortProxy p; p.key = k;
+            if (it != local_frn_to_idx.end()) {
+                uint32_t idx = it->second;
+                if (column == 0) {
+                    if (idx < local_name_offsets.size()) {
+                        p.sVal = reinterpret_cast<const char*>(local_string_pool.data() + local_name_offsets[idx]);
                     }
-                    else if (column == 2) p.iVal = reader.m_sizes[idx];
-                    else if (column == 3) p.iVal = reader.m_timestamps[idx];
                 }
-                proxies.push_back(std::move(p));
+                else if (column == 1) {
+                    if (idx < local_parent_frns.size() && idx < local_frns.size()) {
+                        p.sVal = QString::fromStdWString(getPathFastLocal(static_cast<size_t>(local_parent_frns[idx] >> 48), local_frns[idx])).toStdString();
+                    }
+                }
+                else if (column == 2) {
+                    if (idx < local_sizes.size()) {
+                        p.iVal = local_sizes[idx];
+                    }
+                }
+                else if (column == 3) {
+                    if (idx < local_timestamps.size()) {
+                        p.iVal = local_timestamps[idx];
+                    }
+                }
             }
+            proxies.push_back(std::move(p));
         }
 
         // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
@@ -279,8 +354,9 @@ void ScanController::processBatchUpdates() {
         return;
     }
 
-    if (events.size() > 2000) {
-        qDebug() << "[ScanController] 积压事件超限 (" << events.size() << ")，切换至全量异步搜索";
+    // [性能重构方案物理对齐]：当积压的 USN 事件数超过 2000 时，不进行繁重的后台增量排序，直接降级进行快速的全量异步重索，彻底规避锁冲突
+    if (static_cast<int>(events.size()) > 2000) {
+        qDebug() << "[ScanController] 积压事件数超过2000阈值 (" << events.size() << ")，快速降级至全量异步重新检索";
         triggerSearch(true);
         return;
     }
@@ -339,7 +415,7 @@ void ScanController::processBatchUpdates() {
         if (changed && newSet) {
             newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
             
-            // 执行后台安全重排序 (复用投影排序逻辑)
+            // 执行后台安全增量重排序 (因为事件积压限制在 2000 个以内，故不拷贝千万级巨型 SoA Map，直接在后台线程下通过短时读锁检索)
             std::vector<SortProxy> proxies;
             proxies.reserve(newSet->keys.size());
             {

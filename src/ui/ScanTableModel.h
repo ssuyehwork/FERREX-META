@@ -13,6 +13,7 @@
 #include <memory>
 #include <QList>
 #include <QMimeData>
+#include <atomic>
 
 #ifdef min
 #undef min
@@ -70,6 +71,7 @@ private slots:
     void processThumbQueue();
 
 private:
+    std::atomic<bool> m_isDestroying{false};
     ScanController* m_controller;
     std::shared_ptr<ResultSet> m_currentResultSet;
     int m_displayCount = 0;

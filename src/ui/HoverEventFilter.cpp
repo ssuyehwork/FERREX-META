@@ -2,6 +2,7 @@
 #include "ToolTipOverlay.h"
 #include <QCursor>
 #include <QVariant>
+#include <QCoreApplication>
 
 namespace FERREX {
 
@@ -12,10 +13,14 @@ bool HoverEventFilter::eventFilter(QObject* watched, QEvent* event) {
         QString text = watched->property("tooltipText").toString();
         if (!text.isEmpty()) {
             // 悬停触发的提示设置 timeout 为 0（代表不自动隐藏，伴随鼠标移动并由 Leave 事件销毁）
-            ToolTipOverlay::instance()->showText(QCursor::pos(), text, 0);
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [text]() {
+                ToolTipOverlay::instance()->showText(QCursor::pos(), text, 0);
+            }, Qt::QueuedConnection);
         }
     } else if (event->type() == QEvent::HoverLeave || event->type() == QEvent::Leave || event->type() == QEvent::MouseButtonPress) {
-        ToolTipOverlay::hideTip();
+        QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
+            ToolTipOverlay::hideTip();
+        }, Qt::QueuedConnection);
     }
     return QObject::eventFilter(watched, event);
 }
