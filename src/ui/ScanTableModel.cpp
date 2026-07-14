@@ -410,42 +410,8 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     newSet->metadata = baseSet->metadata;
     newSet->keyToPos = baseSet->keyToPos;
 
-    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-    bool isMediaView = false;
-    if (dlg) {
-        // viewMode == 1 代表自适应与网格的多媒体画廊视图
-        isMediaView = (dlg->m_config.viewMode == 1);
-    }
-
-    if (isMediaView) {
-        auto& reader = MftReader::instance();
-        static const QSet<QString> mediaExts = {
-            "jpg", "jpeg", "png", "bmp", "gif", "webp", "svg", "psd", "ai", "eps",
-            "mp4", "mkv", "avi", "mov", "flv", "rmvb", "wmv", "webm"
-        };
-        
-        newSet->keys.reserve(baseSet->keys.size() / 2);
-        for (uint64_t key : baseSet->keys) {
-            int actualIndex = reader.getIndexByKey(key);
-            if (actualIndex == -1) continue;
-            
-            // 剔除所有文件夹以及非媒体文件
-            if (reader.isDirectory(actualIndex)) continue;
-            
-            QString ext = reader.getExtQString(actualIndex).toLower();
-            if (mediaExts.contains(ext)) {
-                newSet->keys.push_back(key);
-            }
-        }
-        
-        newSet->keyToPos.clear();
-        for (size_t i = 0; i < newSet->keys.size(); ++i) {
-            newSet->keyToPos[newSet->keys[i]] = static_cast<int>(i);
-        }
-    } else {
-        // 列表模式：保留全量普通文件、文件夹及过滤数据
-        newSet->keys = baseSet->keys;
-    }
+    // 彻底废除多媒体过滤与限制：三种视图模式全量共享 ResultSet 结果集（全量普通文件及文件夹数据）
+    newSet->keys = baseSet->keys;
 
     int oldSize = (int)m_currentResultSet->keys.size();
     int newSize = (int)newSet->keys.size();
@@ -455,7 +421,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
     
     // 如果变动巨大或初始加载，或者模式切换导致的数据量落差，回退到 Reset 模式
-    if (oldSize == 0 || std::abs(newSize - oldSize) > 500 || isMediaView != (oldSize != (int)baseSet->keys.size())) {
+    if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();
         m_currentResultSet = newSet;
         m_displayCount = newSize; 
