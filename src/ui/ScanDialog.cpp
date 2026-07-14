@@ -103,6 +103,9 @@ namespace FERREX {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent), m_config(ConfigManager::instance().getConfig())
 {
+    // 强制首层主线程实例化 ToolTipOverlay，安全冷启动
+    (void)ToolTipOverlay::instance();
+
     // 初始化子系统控制器实例
     m_resizeFilter = new FramelessResizeBorder(this);
     m_historyDropdownController = new HistoryDropdownController(this);
@@ -122,7 +125,7 @@ ScanDialog::ScanDialog(QWidget* parent)
     m_config.load();
 
     m_configSaveTimer = new QTimer(this);
-    m_configSaveTimer->setInterval(500);
+    m_configSaveTimer->setInterval(1000);
     m_configSaveTimer->setSingleShot(true);
     connect(m_configSaveTimer, &QTimer::timeout, this, [this]() {
         m_config.save();
@@ -579,6 +582,7 @@ void ScanDialog::switchToView(int viewMode, int layoutMode) {
 }
 
 void ScanDialog::closeEvent(QCloseEvent* event) {
+    m_config.save();
     hide();
     event->ignore();
 }

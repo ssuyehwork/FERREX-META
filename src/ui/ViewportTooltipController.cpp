@@ -4,6 +4,7 @@
 #include "ToolTipOverlay.h"
 #include "IScanResultView.h"
 #include <QEvent>
+#include <QCoreApplication>
 #include <QMouseEvent>
 #include <QAbstractItemView>
 
@@ -22,7 +23,9 @@ void ViewportTooltipController::onTooltipTimeout() {
     if (m_hoveredIndex.isValid() && m_dialog && m_dialog->m_tableModel) {
         QString tipText = m_dialog->m_tableModel->data(m_hoveredIndex, Qt::ToolTipRole).toString();
         if (!tipText.isEmpty()) {
-            ToolTipOverlay::instance()->showText(m_hoveredGlobalPos, tipText, 0);
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [globalPos = m_hoveredGlobalPos, tipText]() {
+                ToolTipOverlay::instance()->showText(globalPos, tipText, 0);
+            }, Qt::QueuedConnection);
         }
     }
 }
@@ -58,20 +61,26 @@ bool ViewportTooltipController::handleEvent(QObject* watched, QEvent* event) {
                 QModelIndex col0Idx = m_dialog->m_tableModel->index(idx.row(), 0);
                 
                 m_itemToolTipTimer->stop();
-                ToolTipOverlay::hideTip();
+                QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
+                    ToolTipOverlay::hideTip();
+                }, Qt::QueuedConnection);
 
                 m_hoveredIndex = col0Idx;
                 m_hoveredGlobalPos = me->globalPosition().toPoint();
                 m_itemToolTipTimer->start();
             } else {
                 m_itemToolTipTimer->stop();
-                ToolTipOverlay::hideTip();
+                QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
+                    ToolTipOverlay::hideTip();
+                }, Qt::QueuedConnection);
                 m_hoveredIndex = QModelIndex();
             }
         } else if (event->type() == QEvent::Leave || event->type() == QEvent::HoverLeave ||
                    event->type() == QEvent::MouseButtonPress || event->type() == QEvent::FocusOut) {
             m_itemToolTipTimer->stop();
-            ToolTipOverlay::hideTip();
+            QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
+                ToolTipOverlay::hideTip();
+            }, Qt::QueuedConnection);
             m_hoveredIndex = QModelIndex();
         }
     }

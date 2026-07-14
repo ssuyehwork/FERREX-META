@@ -54,7 +54,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 【核心修复】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
+    // 【性能重构方案物理对齐】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
     // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
     if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
@@ -94,7 +94,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
             
-            // 彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
+            // [性能重构方案物理对齐]：彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,

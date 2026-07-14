@@ -377,12 +377,16 @@ void JustifiedView::doLayout() {
             int rowStart = i;
             double rowAspectRatioSum = 0;
             std::vector<double> aspectRatios;
+            std::vector<bool> isRegularFlags;
 
             while (i < count) {
-                double ar = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
-                if (ar <= 0) ar = 1.0;
+                double origAr = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
+                bool isReg = (origAr <= 0.0);
+                double ar = origAr;
+                if (ar <= 0.01) ar = 1.0;
                 
                 aspectRatios.push_back(ar);
+                isRegularFlags.push_back(isReg);
                 rowAspectRatioSum += ar;
                 
                 int numInRow = (int)aspectRatios.size();
@@ -390,6 +394,7 @@ void JustifiedView::doLayout() {
                 if (estimatedWidth > containerWidth) {
                     if (numInRow > 1) {
                         aspectRatios.pop_back();
+                        isRegularFlags.pop_back();
                         rowAspectRatioSum -= ar;
                     } else {
                         i++;
@@ -405,7 +410,12 @@ void JustifiedView::doLayout() {
 
             int actualHeight = m_targetRowHeight;
             bool isLastRow = (i == count);
-            bool rowIsJustified = !isLastRow;
+            
+            bool containsRegular = false;
+            for (bool isReg : isRegularFlags) {
+                if (isReg) { containsRegular = true; break; }
+            }
+            bool rowIsJustified = !isLastRow && !containsRegular;
 
             int availableImageWidth = containerWidth - (spacing * (numInRow - 1)) - (6 * numInRow);
 
@@ -413,7 +423,6 @@ void JustifiedView::doLayout() {
                 actualHeight = qRound(availableImageWidth / rowAspectRatioSum);
                 actualHeight = std::max(actualHeight, (int)(m_targetRowHeight * 0.75));
                 actualHeight = std::min(actualHeight, (int)(m_targetRowHeight * 1.5));
-                rowIsJustified = true; 
             }
 
             int currentX = margin;
