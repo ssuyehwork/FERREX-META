@@ -258,6 +258,10 @@ QAbstractItemView* ListResultView::getBaseView() {
 
 void ListResultView::setModel(QAbstractItemModel* model) {
     m_tableView->setModel(model);
+    m_tableView->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_tableView->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_tableView->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
+    m_tableView->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
 }
 
 void ListResultView::setIconSize(int size) {
