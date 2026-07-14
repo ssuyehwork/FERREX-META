@@ -12,6 +12,7 @@
 
 #include <QMessageBox>
 #include <QDateTime>
+#include <QPointer>
 #include <QReadLocker>
 #include <QWriteLocker>
 #include <QtConcurrent/QtConcurrent>
@@ -134,6 +135,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     });
 }
 ScanTableModel::~ScanTableModel() {
+    m_isDestroying = true;
     if (m_thumbTimer) { m_thumbTimer->stop(); delete m_thumbTimer; m_thumbTimer = nullptr; }
     if (m_throttleTimer) { m_throttleTimer->stop(); delete m_throttleTimer; m_throttleTimer = nullptr; }
     if (m_metadataTimer) { m_metadataTimer->stop(); delete m_metadataTimer; m_metadataTimer = nullptr; }
@@ -143,7 +145,6 @@ ScanTableModel::~ScanTableModel() {
         QThreadPool* poolToDestroy = m_thumbPool;
         m_thumbPool = nullptr;
         QThreadPool::globalInstance()->start([poolToDestroy]() {
-            poolToDestroy->waitForDone();
             delete poolToDestroy;
         });
     }
@@ -341,7 +342,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
         return 0;
     } else if (role == Qt::UserRole + 2) {
-        // 返回宽高比 (用于 JustifiedView 布局)
+        // [性能重构方案物理对齐]：返回宽高比 (用于 JustifiedView 布局)
         // 2026-07-11 物理重构：自适应模式仅限于视频和图形图像文件，文件夹与其余常规文件直接返回 -1.0 禁用自适应拉伸 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
         if (reader.isDirectory(actualIndex)) {
             return -1.0;
@@ -350,9 +351,9 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         QString ext = reader.getExtQString(actualIndex).toLower();
         static const QSet<QString> mediaExts = {
             // 图形图像类
-            "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "eps", "pdf", "svg",
+            "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "svg",
             // 视频类
-            "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "3gp", "ts", "rmvb", "rm", "vob"
+            "mp4", "m4v", "mov", "avi", "mkv", "wmv", "flv", "webm", "rmvb"
         };
 
         if (!mediaExts.contains(ext)) {
@@ -492,9 +493,13 @@ void ScanTableModel::processThumbQueue() {
     auto currentTasks = std::move(m_thumbTaskQueue);
     std::reverse(currentTasks.begin(), currentTasks.end());
 
+    QPointer<ScanTableModel> weakThis(this);
+
     // 使用独立线程池异步执行缩略图提取，不使用全局线程池以防饥饿
     for (const auto& t : currentTasks) {
-        m_thumbPool->start([this, t]() {
+        m_thumbPool->start([weakThis, t]() {
+            if (!weakThis || weakThis->m_isDestroying) return;
+
             // 确保工作线程已初始化 COM 环境
             static QThreadStorage<ScopedComInit> comStorage;
             if (!comStorage.hasLocalData()) {
@@ -505,9 +510,11 @@ void ScanTableModel::processThumbQueue() {
             int actualIdx = reader.getIndexByKey(t.key);
             if (actualIdx == -1) return;
 
+            if (!weakThis || weakThis->m_isDestroying) return;
             QString fullPath = reader.getFullPath(actualIdx);
             if (fullPath.isEmpty()) return;
 
+            if (!weakThis || weakThis->m_isDestroying) return;
             QImage img;
             if (t.ext == "svg") {
                 QSvgRenderer renderer(fullPath);
@@ -522,33 +529,37 @@ void ScanTableModel::processThumbQueue() {
                 img = FERREX::UiHelper::getShellThumbnail(fullPath, t.size);
             }
 
+            if (!weakThis || weakThis->m_isDestroying) return;
+
             if (!img.isNull()) {
                 double ar = (double)img.width() / (double)img.height();
                 // 切回主线程登记单条结果
-                QMetaObject::invokeMethod(this, [this, key = t.key, cacheKey = t.cacheKey, img, ar]() {
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, key = t.key, cacheKey = t.cacheKey, img, ar]() {
+                    if (!weakThis || weakThis->m_isDestroying) return;
                     QPixmap pix = QPixmap::fromImage(img);
                     if (!pix.isNull()) {
-                        m_thumbCache.insert(cacheKey, new QPixmap(pix));
-                        m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
+                        weakThis->m_thumbCache.insert(cacheKey, new QPixmap(pix));
+                        weakThis->m_lastPixmapCache.insert(QString::number(key), new QPixmap(pix)); // 实时注册副本，作为下一次调节时的渐进拉伸源
                     }
-                    m_aspectRatios[key] = ar;
+                    weakThis->m_aspectRatios[key] = ar;
 
-                    auto snapshot = m_controller->snapshot();
+                    auto snapshot = weakThis->m_controller->snapshot();
                     auto itPos = snapshot->keyToPos.find(key);
-                    if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
-                        m_pendingRows.insert(itPos->second);
-                        if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+                    if (itPos != snapshot->keyToPos.end() && itPos->second < weakThis->m_displayCount) {
+                        weakThis->m_pendingRows.insert(itPos->second);
+                        if (!weakThis->m_throttleTimer->isActive()) weakThis->m_throttleTimer->start();
                     }
                 }, Qt::QueuedConnection);
             } else {
                 // 【核心改进】：获取失败，记录进失败名单，并强制刷新，退化使用默认图标兜底
-                QMetaObject::invokeMethod(this, [this, key = t.key]() {
-                    m_failedThumbs.insert(key);
-                    auto snapshot = m_controller->snapshot();
+                QMetaObject::invokeMethod(weakThis.data(), [weakThis, key = t.key]() {
+                    if (!weakThis || weakThis->m_isDestroying) return;
+                    weakThis->m_failedThumbs.insert(key);
+                    auto snapshot = weakThis->m_controller->snapshot();
                     auto itPos = snapshot->keyToPos.find(key);
-                    if (itPos != snapshot->keyToPos.end() && itPos->second < m_displayCount) {
-                        m_pendingRows.insert(itPos->second);
-                        if (!m_throttleTimer->isActive()) m_throttleTimer->start();
+                    if (itPos != snapshot->keyToPos.end() && itPos->second < weakThis->m_displayCount) {
+                        weakThis->m_pendingRows.insert(itPos->second);
+                        if (!weakThis->m_throttleTimer->isActive()) weakThis->m_throttleTimer->start();
                     }
                 }, Qt::QueuedConnection);
             }
