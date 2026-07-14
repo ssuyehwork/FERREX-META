@@ -166,6 +166,8 @@ private:
     QLabel* m_selectionLabel = nullptr;  
     QProgressBar* m_progressBar = nullptr;
     QSlider* m_sizeSlider = nullptr;
+    QTimer* m_configSaveTimer = nullptr;
+    QTimer* m_zoomDebounceTimer = nullptr;
 
     int64_t m_lastSearchMs = 0;
 

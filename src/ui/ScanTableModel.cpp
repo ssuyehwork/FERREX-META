@@ -134,8 +134,18 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     });
 }
 ScanTableModel::~ScanTableModel() {
+    if (m_thumbTimer) { m_thumbTimer->stop(); delete m_thumbTimer; m_thumbTimer = nullptr; }
+    if (m_throttleTimer) { m_throttleTimer->stop(); delete m_throttleTimer; m_throttleTimer = nullptr; }
+    if (m_metadataTimer) { m_metadataTimer->stop(); delete m_metadataTimer; m_metadataTimer = nullptr; }
+
     if (m_thumbPool) {
-        m_thumbPool->waitForDone();
+        m_thumbPool->clear();
+        QThreadPool* poolToDestroy = m_thumbPool;
+        m_thumbPool = nullptr;
+        QThreadPool::globalInstance()->start([poolToDestroy]() {
+            poolToDestroy->waitForDone();
+            delete poolToDestroy;
+        });
     }
 }
 
