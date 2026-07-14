@@ -54,9 +54,9 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 【性能重构方案物理对齐】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
-    // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
-    if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
+    // 【物理还原缩略图 QPixmap 优先准入与无损渲染机制】：彻底废除关于缩略图渲染的 thumbStatus == 1 前置校验！
+    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取渲染！
+    if (decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
             hasValidThumb = true;
@@ -135,7 +135,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!ext.isEmpty()) {
             QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-            if (thumbStatus != 1) {
+            if (!hasValidThumb) {
                 badgeColor.setAlpha(160);
             }
 
@@ -143,7 +143,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
             painter->setPen(Qt::NoPen);
             painter->setBrush(badgeColor);
             painter->drawRoundedRect(extRect, 2, 2);
-            painter->setPen(thumbStatus == 1 ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+            painter->setPen(hasValidThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
             QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
             painter->setFont(extFont);
             painter->drawText(extRect, Qt::AlignCenter, ext);

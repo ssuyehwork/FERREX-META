@@ -133,27 +133,10 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // 2026-06-xx 性能优化：在异步线程预取前 N 个结果的元数据（装饰过程）
-        // 渲染性能低下的主因是 UI 线程在 data() 中同步请求元数据导致的磁盘 IO
-        subTimer.restart();
-        size_t decorCount = std::min(rs->keys.size(), static_cast<size_t>(2000)); 
-        for (size_t i = 0; i < decorCount; ++i) {
-            uint64_t k = rs->keys[i];
-            auto& reader = MftReader::instance();
-            int idx = reader.getIndexByKey(k);
-            if (idx == -1) continue;
-            QString path = reader.getFullPath(idx);
-            if (path.isEmpty()) continue;
-
-            auto meta = MetadataManager::instance().getMeta(path.toStdWString());
-            if (!meta.color.empty()) {
-                QColor c = UiHelper::parseColorName(QString::fromStdWString(meta.color));
-                if (c.isValid()) rs->metadata[k] = RenderMeta(c);
-            }
-        }
-        int64_t decorMs = subTimer.elapsed();
-
-        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 元数据装饰耗时:" << decorMs << "ms, 结果数:" << rs->keys.size();
+        // [性能重构方案物理对齐]：彻底解耦筛选与显示渲染。后台搜索线程不应该去高开销获取元数据，
+        // 否则会频繁霸占 MftReader.m_dataLock 锁，造成前台 UI 在 data() 渲染时由于锁等待而卡死。
+        // 将后台元数据装饰块完全移除，回归极速过滤模式。
+        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
     });
