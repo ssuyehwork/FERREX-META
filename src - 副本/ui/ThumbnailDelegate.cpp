@@ -27,12 +27,10 @@ void ThumbnailDelegate::setIsEmptyRole(int role) { m_isEmptyRole = role; }
 ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptionViewItem& option) const {
     Metrics m;
     const int textHeight = 36;
-    const int gap = 6; // 卡片与文件名的紧凑间隙
+    const int gap = 6; 
 
-    // 底部预留高度调整：文件名高度 + 间距 + 底部内边距补偿(3px)
     m.cardRect = option.rect.adjusted(3, 3, -3, -(textHeight + gap + 3));
-    
-    // 文件名框紧贴卡片底部下方 gap 像素的位置
+
     m.textRect = QRect(option.rect.left() + 3,
                        m.cardRect.bottom() + gap,
                        option.rect.width() - 6,
@@ -48,14 +46,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     bool isSelected = (option.state & QStyle::State_Selected);
     bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
-    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); // 0=不支持/未就绪, 1=有可用缩略图物理资产
+    int thumbStatus = index.data(m_hasThumbnailRole).toInt(); 
     QVariant decoData = index.data(Qt::DecorationRole);
     
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 【核心修复】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
-    // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
+    
     if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
@@ -67,7 +64,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->setRenderHint(QPainter::Antialiasing);
     painter->setRenderHint(QPainter::SmoothPixmapTransform);
 
-    // ① 绘制内容与裁剪 (Cover 模式)
     painter->save();
     QPainterPath clipPath;
     clipPath.addRoundedRect(m.cardRect, 6, 6);
@@ -77,9 +73,8 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->setBrush(QColor("#2d2d2d"));
     painter->drawRect(m.cardRect);
 
-    // 关键路径重构：缩略图优先（直接以 100% 完全不透明度绘制）
     if (hasValidThumb) {
-        // 缩略图平滑拉伸并充满卡片（100% Cover/Contain）
+        
         QPixmap scaled = thumb.scaled(m.cardRect.size(), 
                                       isGrid ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding, 
                                       Qt::SmoothTransformation);
@@ -88,26 +83,27 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         
         painter->drawPixmap(x, y, scaled);
     } else {
-        // 系统默认图标只作为【没有缩略图或生成失败时】的最后兜底回退手段
-        // 在没有有效缩略图物理资产时，直接以 100% 的完全不透明度绘制默认的文件类型关联图标，绝不闪现空白卡片
+
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
+
             
-            // 彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
-            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
-            QRect iconRect(m.cardRect.center().x() - iconSize / 2,
-                           m.cardRect.center().y() - iconSize / 2,
-                           iconSize, iconSize);
             
-            icon.paint(painter, iconRect);
+            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
+            QPixmap pix = icon.pixmap(QSize(iconSize, iconSize));
+            if (!pix.isNull()) {
+                QRect iconRect(m.cardRect.center().x() - pix.width() / 2,
+                               m.cardRect.center().y() - pix.height() / 2,
+                               pix.width(), pix.height());
+                painter->drawPixmap(iconRect, pix);
+            }
             
             painter->setOpacity(1.0);
         }
     }
     painter->restore();
 
-    // ③ 绘制卡片边框
     painter->save();
     if (isSelected) {
         painter->setPen(QPen(QColor("#3498db"), 3));
@@ -118,7 +114,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->drawRoundedRect(m.cardRect, 6, 6);
     painter->restore();
 
-    // 状态位图标绘制
     if (m_managedRole != -1) {
         bool isManaged = index.data(m_managedRole).toBool();
         if (isManaged) {
@@ -127,7 +122,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         }
     }
 
-    // 扩展名角标
     if (m_pathRole != -1) {
         QString path = index.data(m_pathRole).toString();
         QFileInfo info(path);
@@ -150,9 +144,7 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         }
     }
 
-    // [已停用] 星级渲染逻辑：星级已不再使用，此处直接跳过以节省 CPU 消耗
-
-    // ③ 文件名（卡片下方）
+    
     painter->save();
     QString name = index.data(Qt::DisplayRole).toString();
     painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
@@ -169,7 +161,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     displayName.replace("_", "_\u200B");
     displayName.replace(".", ".\u200B");
 
-    // 采用方案 A：使用 QTextLayout 进行精准的双行物理修剪与第二行末尾省略
     QTextLayout textLayout(displayName, painter->font());
     QTextOption textOption;
     textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
@@ -178,11 +169,10 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
 
     textLayout.beginLayout();
     int lineCount = 0;
-    int textWidth = m.textRect.width() - 8; // 两侧留出 4px 安全边距 (对应 adjusted(4, 0, -4, 0))
+    int textWidth = m.textRect.width() - 8; 
     int currentY = m.textRect.top();
     int fontHeight = option.fontMetrics.height();
 
-    // 存储切分出的各行
     struct RenderLine {
         QString text;
         int y;
@@ -198,33 +188,32 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         lineCount++;
 
         if (lineCount == 1) {
-            // 第一行完整保留
+            
             int start = line.textStart();
             int len = line.textLength();
             linesToRender.append({displayName.mid(start, len), currentY});
             currentY += fontHeight;
         } else if (lineCount == 2) {
-            // 关键路径：检查是否存在第三行
+            
             QTextLine nextLine = textLayout.createLine();
             if (nextLine.isValid()) {
-                // 确实存在第三行或更多，第二行必须承接全部剩余的长尾内容，并做 ElideMiddle 裁剪
+                
                 int start = line.textStart();
                 QString remainingText = displayName.mid(start);
-                // 物理省略
+                
                 QString elidedRemaining = option.fontMetrics.elidedText(remainingText, Qt::ElideMiddle, textWidth);
                 linesToRender.append({elidedRemaining, currentY});
             } else {
-                // 没有第三行，第二行正常显示
+                
                 int start = line.textStart();
                 int len = line.textLength();
                 linesToRender.append({displayName.mid(start, len), currentY});
             }
-            break; // 绝对阻断第三行，退出排版循环
+            break; 
         }
     }
     textLayout.endLayout();
 
-    // 物理渲染
     for (const auto& rLine : linesToRender) {
         QRect lineRect(m.textRect.left() + 4, rLine.y, textWidth, fontHeight);
         painter->drawText(lineRect, Qt::AlignCenter, rLine.text);
@@ -232,7 +221,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
 
     painter->restore();
 
-    // ④ 空文件夹特殊标记
     if (!isSelected && m_isEmptyRole != -1) {
         if (index.data(m_isEmptyRole).toBool()) {
             painter->save();
@@ -264,9 +252,9 @@ QWidget* ThumbnailDelegate::createEditor(QWidget* parent, const QStyleOptionView
 
 void ThumbnailDelegate::updateEditorGeometry(QWidget* editor,
                                               const QStyleOptionViewItem& option,
-                                              const QModelIndex& /*index*/) const {
+                                              const QModelIndex& ) const {
     Metrics m = calculateMetrics(option);
-    // 重命名编辑框位置微调，完美契合没有星级后的新 textRect 布局 [1]
+    
     editor->setGeometry(m.textRect.adjusted(1, 5, -1, -5));
 }
 
@@ -307,8 +295,8 @@ bool ThumbnailDelegate::eventFilter(QObject* obj, QEvent* event) {
 } 
 
 bool ThumbnailDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) {
-    // 2026-07-xx 重构：星级已不再使用，不拦截 any 鼠标按下事件修改星级，直接走基类逻辑 [1]
+    
     return QStyledItemDelegate::editorEvent(event, model, option, index);
 }
 
-} // namespace FERREX
+} 
