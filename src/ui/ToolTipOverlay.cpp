@@ -58,12 +58,14 @@ void ToolTipOverlay::showText(const QPoint& globalPos, const QString& text, int 
 
     if (text.isEmpty()) { hide(); return; }
 
-    // 脏检查：防止在微动时引发重绘闪烁
-    if (isVisible() && m_text == text && m_currentBorderColor == borderColor) {
-        move(globalPos + QPoint(15, 15));
+    // 脏检查与节流：若在 80ms 内对完全相同的内容重复刷新，直接返回，消除闪烁
+    if (isVisible() && m_lastShowTime.isValid() && m_lastShowTime.elapsed() < 80 && m_plainText == text) {
         return;
     }
-    
+
+    m_plainText = text;
+    m_lastShowTime.restart();
+
     if (timeout > 0) {
         timeout = qBound(500, timeout, 60000); 
     }
@@ -109,17 +111,22 @@ void ToolTipOverlay::showText(const QPoint& globalPos, const QString& text, int 
     
     resize(w, h);
     
-    QPoint pos = globalPos + QPoint(15, 15);
-    
+    double dpr = 1.0;
     QScreen* screen = QGuiApplication::screenAt(globalPos);
+    if (screen) {
+        dpr = screen->devicePixelRatio();
+    }
+    int offset = qRound(15.0 / dpr);
+    QPoint pos = globalPos + QPoint(offset, offset);
+
     if (!screen) screen = QGuiApplication::primaryScreen();
     if (screen) {
         QRect screenGeom = screen->geometry();
         if (pos.x() + width() > screenGeom.right()) {
-            pos.setX(globalPos.x() - width() - 15);
+            pos.setX(globalPos.x() - width() - offset);
         }
         if (pos.y() + height() > screenGeom.bottom()) {
-            pos.setY(globalPos.y() - height() - 15);
+            pos.setY(globalPos.y() - height() - offset);
         }
     }
     

@@ -31,6 +31,7 @@ class ToolTipOverlay : public QWidget {
     Q_OBJECT
 public:
     static ToolTipOverlay* instance() {
+        Q_ASSERT(QThread::currentThread() == qApp->thread());
         static QPointer<ToolTipOverlay> inst;
         if (!inst) {
             inst = new ToolTipOverlay();
@@ -58,6 +59,8 @@ protected:
 
 private:
     QString m_text;
+    QString m_plainText;
+    QElapsedTimer m_lastShowTime;
     QTextDocument m_doc;
     QTimer m_hideTimer;
     QColor m_currentBorderColor = QColor("#B0B0B0");

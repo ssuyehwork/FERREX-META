@@ -103,6 +103,9 @@ namespace FERREX {
 ScanDialog::ScanDialog(QWidget* parent)
     : FramelessDialog("FERREX-META", parent), m_config(ConfigManager::instance().getConfig())
 {
+    // 物理哨兵：在主 GUI 线程冷启动实例化单例，彻底切断非 GUI 线程首次加载的风险
+    ToolTipOverlay::instance();
+
     // 初始化子系统控制器实例
     m_resizeFilter = new FramelessResizeBorder(this);
     m_historyDropdownController = new HistoryDropdownController(this);

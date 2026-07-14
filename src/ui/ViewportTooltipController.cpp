@@ -57,12 +57,16 @@ bool ViewportTooltipController::handleEvent(QObject* watched, QEvent* event) {
             if (idx.isValid()) {
                 QModelIndex col0Idx = m_dialog->m_tableModel->index(idx.row(), 0);
                 
-                m_itemToolTipTimer->stop();
-                ToolTipOverlay::hideTip();
+                if (m_hoveredIndex != col0Idx) {
+                    m_itemToolTipTimer->stop();
+                    ToolTipOverlay::hideTip();
 
-                m_hoveredIndex = col0Idx;
-                m_hoveredGlobalPos = me->globalPosition().toPoint();
-                m_itemToolTipTimer->start();
+                    m_hoveredIndex = col0Idx;
+                    m_hoveredGlobalPos = me->globalPosition().toPoint();
+                    m_itemToolTipTimer->start();
+                } else {
+                    m_hoveredGlobalPos = me->globalPosition().toPoint();
+                }
             } else {
                 m_itemToolTipTimer->stop();
                 ToolTipOverlay::hideTip();
