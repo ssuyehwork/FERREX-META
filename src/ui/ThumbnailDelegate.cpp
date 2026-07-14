@@ -54,8 +54,9 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取！
-    if (decoData.canConvert<QPixmap>()) {
+    // 【核心修复】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
+    // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
+    if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
             hasValidThumb = true;
