@@ -112,6 +112,10 @@ public:
     void updateEntryFromUsn(USN_RECORD_V2* record, const std::wstring& volume);
     void removeEntryByFrn(const std::wstring& volume, uint64_t frn);
 
+    // 搜索原子取消管理
+    inline bool isSearchCanceled() const { return m_searchCancelRequested.load(std::memory_order_relaxed); }
+    inline void setSearchCanceled(bool canceled) { m_searchCancelRequested.store(canceled, std::memory_order_relaxed); }
+
     // 变动日志访问 (供 Controller 批量拉取)
     struct ChangeEvent {
         enum Type { Added, Removed, Updated } type;
@@ -182,6 +186,7 @@ private:
 
     bool m_isInitialized = false;
     std::atomic<bool> m_isStopping{false}; // 2026-06-xx 新增：全局退出/中断令牌
+    std::atomic<bool> m_searchCancelRequested{false}; // 2026-07-xx 新增：高频搜索取消令牌
     uint32_t m_dirty_count = 0;
     std::unordered_set<uint32_t> m_dirty_indices; // 2026-06-xx 新增：记录变动的 SoA 下标
     std::unordered_map<uint32_t, uint64_t> m_dead_frns; // 2026-06-xx 新增：记录已删除项的原始 FRN 用于落盘
