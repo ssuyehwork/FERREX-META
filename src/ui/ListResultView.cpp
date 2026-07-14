@@ -209,7 +209,6 @@ ListResultView::ListResultView(QWidget* parent) : IScanResultView(parent) {
         "selection-color: #FFFFFF; "
         "outline: none; "
         "gridline-color: transparent; "
-        "padding: 10px 0 0 10px; "
         "}"
         "QTableView::item { border-bottom: 1px solid #252526; }"
         "QHeaderView::section { background-color: #252526; color: #888; border: none; border-right: 1px solid #333; padding: 4px; height: 24px; }"
