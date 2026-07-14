@@ -21,8 +21,6 @@ public:
         bool isSelected = (option.state & QStyle::State_Selected);
         if (isSelected) {
             painter->fillRect(option.rect, QColor("#094771")); 
-        } else if (option.state & QStyle::State_MouseOver) {
-            painter->fillRect(option.rect, QColor("#2A2A2A")); 
         }
 
         int padding = 3;
@@ -135,6 +133,7 @@ ListResultView::ListResultView(QWidget* parent) : IScanResultView(parent) {
         "padding: 10px 0 0 10px; "
         "}"
         "QTableView::item { border-bottom: 1px solid #252526; }"
+        "QTableView::item:hover { background-color: #2A2A2A; }"
         "QHeaderView::section { background-color: #252526; color: #888; border: none; border-right: 1px solid #333; padding: 4px; height: 24px; }"
         "QHeaderView::section:horizontal:first { padding-left: 14px; }" 
         "QHeaderView { background-color: #252526; border: none; }"
