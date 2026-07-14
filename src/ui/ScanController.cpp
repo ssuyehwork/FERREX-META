@@ -98,8 +98,6 @@ void ScanController::performSearch() {
     }
     if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
 
-    MftReader::instance().setSearchCanceled(false); // 重置底层搜索取消令牌，为新一轮搜索做准备
-
     emit searchStarted();
     
     QElapsedTimer timer;
@@ -121,6 +119,9 @@ void ScanController::performSearch() {
     }
 
     auto future = QtConcurrent::run([this, text, state]() {
+        // 在新搜索后台线程体启动之初，重置取消状态为 false。因为此时上一个任务必然已经响应了取消或者已被 cancel 中断
+        MftReader::instance().setSearchCanceled(false);
+
         QElapsedTimer subTimer;
         subTimer.start();
         
@@ -131,6 +132,10 @@ void ScanController::performSearch() {
         }
         else {
             keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+        }
+
+        if (MftReader::instance().isSearchCanceled()) {
+            return std::shared_ptr<ResultSet>(nullptr);
         }
 
         int64_t searchMs = subTimer.elapsed();
@@ -151,6 +156,7 @@ void ScanController::performSearch() {
         if (m_watcher.isCanceled()) return;
         
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
+        if (!newSet) return; // 拦截空指针，绝对不覆盖当前界面的搜索数据
 
         {
             std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
@@ -217,7 +223,7 @@ void ScanController::sort(int column, int order) {
         std::vector<int64_t> local_sizes;
         std::vector<int64_t> local_timestamps;
 
-        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         {
             QReadLocker lock(&reader.m_dataLock);
@@ -276,7 +282,7 @@ void ScanController::sort(int column, int order) {
         size_t keyIndex = 0;
         for (uint64_t k : newSet->keys) {
             if ((keyIndex++ & 4095) == 0 && mySortId != m_currentSortId.load(std::memory_order_relaxed)) {
-                return std::make_shared<ResultSet>();
+                return std::shared_ptr<ResultSet>(nullptr);
             }
 
             auto it = local_frn_to_idx.find(k);
@@ -307,7 +313,7 @@ void ScanController::sort(int column, int order) {
             proxies.push_back(std::move(p));
         }
 
-        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
         std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
@@ -320,7 +326,7 @@ void ScanController::sort(int column, int order) {
             return (order == 0) ? less : !less;
         });
 
-        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         // 3. 写回结果并构建映射
         for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
@@ -375,7 +381,7 @@ void ScanController::processBatchUpdates() {
         size_t eventIndex = 0;
         for (const auto& ev : events) {
             if ((eventIndex++ & 4095) == 0 && mySortId != m_currentSortId.load(std::memory_order_relaxed)) {
-                return std::make_shared<ResultSet>();
+                return std::shared_ptr<ResultSet>(nullptr);
             }
 
             // 在未确定变动前，使用旧 snap 的映射进行 O(1) 预判
@@ -418,7 +424,7 @@ void ScanController::processBatchUpdates() {
             }
         }
 
-        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         if (changed && newSet) {
             newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
@@ -431,7 +437,7 @@ void ScanController::processBatchUpdates() {
                 size_t kIndex = 0;
                 for (uint64_t k : newSet->keys) {
                     if ((kIndex++ & 4095) == 0 && mySortId != m_currentSortId.load(std::memory_order_relaxed)) {
-                        return std::make_shared<ResultSet>();
+                        return std::shared_ptr<ResultSet>(nullptr);
                     }
 
                     auto it = reader.m_frn_to_idx.find(k);
@@ -447,14 +453,14 @@ void ScanController::processBatchUpdates() {
                 }
             }
 
-            if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+            if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
             std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
                 bool less = (column == 0 || column == 1) ? (_stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0) : (a.iVal < b.iVal);
                 return (order == 0) ? less : !less;
             });
 
-            if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::make_shared<ResultSet>();
+            if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);

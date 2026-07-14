@@ -126,20 +126,19 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
         fileName = std::wstring(reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(v3) + v3->FileNameOffset), v3->FileNameLength / 2);
     } else return;
 
-    // 将文件名转为小写以便安全匹配
+    // 将文件名转为小写以便安全匹配，使用宽字符安全的 towlower 避免 CRT 崩溃
     std::wstring lowerName = fileName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
 
     // 1. 项目自身及调试日志拦截
     if (lowerName.find(L"ferrex_debug.log") != std::wstring::npos ||
         lowerName.find(L"log_") != std::wstring::npos) {
         return;
     }
-    // 2. 索引与高速缓存相关资产拦截
-    if (lowerName.find(L".bin") != std::wstring::npos ||
-        lowerName.find(L".idx") != std::wstring::npos ||
+    // 2. 索引与高速缓存临时文件拦截（只精准拦截 .bin.tmp / .idx.tmp 等临时及 diskindex 内部资产，保留常规用户 .bin / .idx 文件变更）
+    if (lowerName.find(L".bin.tmp") != std::wstring::npos ||
+        lowerName.find(L".idx.tmp") != std::wstring::npos ||
         lowerName.find(L"diskindex") != std::wstring::npos) {
-        // 包含 .bin.tmp / .idx.tmp / .bin / .idx 一并物理阻断
         return;
     }
     // 3. 配置文件拦截

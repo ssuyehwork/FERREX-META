@@ -11,11 +11,11 @@ static int64_t filetimeToUnixMs(int64_t filetime) {
 }
 
 static void splitNameAndExt(const std::string& fullName, std::string& outExt) {
+    outExt.clear();
     size_t lastDot = fullName.find_last_of('.');
     if (lastDot != std::string::npos && lastDot > 0) {
         outExt = fullName.substr(lastDot + 1);
-    } else {
-        outExt.clear();
+        std::transform(outExt.begin(), outExt.end(), outExt.begin(), ::tolower);
     }
 }
 
