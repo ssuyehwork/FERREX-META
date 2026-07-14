@@ -54,8 +54,9 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     QPixmap thumb;
     bool hasValidThumb = false;
 
-    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取！
-    if (decoData.canConvert<QPixmap>()) {
+    // 【核心修复】：必须同时满足 thumbStatus == 1（后台物理大图提取就绪）和可以转换为 QPixmap 两个条件 [1]
+    // 彻底切断 QIcon 被系统隐式误判为 QPixmap 导致拉伸撑破卡片圆角的通路 [1]
+    if (thumbStatus == 1 && decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
             hasValidThumb = true;
@@ -93,17 +94,13 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
             
-            // 2026-07-11 物理强化 (对应用户原话：“排查一下为何图标这么小？”)：
-            // QFileIconProvider 返回的 QIcon 直接绘制可能带有冗余透明边缘或在大型卡片中缩放失效。
-            // 使用 QIcon::pixmap() 显式提取指定尺寸的高画质 Pixmap 资产，配合高质量双线性拉伸居中绘制，确保常规文件的图标在自适应中清晰醒目、100% 居中对称。
-            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.6;
-            QPixmap pix = icon.pixmap(QSize(iconSize, iconSize));
-            if (!pix.isNull()) {
-                QRect iconRect(m.cardRect.center().x() - pix.width() / 2,
-                               m.cardRect.center().y() - pix.height() / 2,
-                               pix.width(), pix.height());
-                painter->drawPixmap(iconRect, pix);
-            }
+            // 彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
+            int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
+            QRect iconRect(m.cardRect.center().x() - iconSize / 2,
+                           m.cardRect.center().y() - iconSize / 2,
+                           iconSize, iconSize);
+
+            icon.paint(painter, iconRect);
             
             painter->setOpacity(1.0);
         }
