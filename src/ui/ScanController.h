@@ -104,6 +104,8 @@ private:
     std::vector<PendingEvent> m_pendingEvents;
     std::mutex m_pendingMutex;
 
+    std::atomic<uint32_t> m_currentSortId{0}; // 2026-07-xx 新增：排序任务唯一递增版本号
+
     QFutureWatcher<std::shared_ptr<ResultSet>> m_watcher;
     QFutureWatcher<std::shared_ptr<ResultSet>> m_sortWatcher;
 };

@@ -66,7 +66,13 @@ std::vector<uint64_t> MemoryQueryEngine::search(MftReader* reader, const QString
                 return _strnicmp(name, q, strlen(q)) < 0;
             });
         
+        size_t counter = 0;
         for (auto it = it_start; it != reader->m_sorted_indices.end(); ++it) {
+            if ((counter++ & 4095) == 0 && reader->isSearchCanceled()) {
+                qInfo() << "[MftReader] 前缀搜索分支检测到取消信号，提前终止";
+                return {};
+            }
+
             uint32_t i = *it;
             if (i >= reader->m_frns.size() || reader->m_frns[i] == 0) continue;
             
@@ -97,6 +103,9 @@ std::vector<uint64_t> MemoryQueryEngine::search(MftReader* reader, const QString
 
         qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
         QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
+            // 分块执行开始前，首先检测外部取消信号
+            if (reader->isSearchCanceled()) return; // 瞬间拦截，不参与任何耗时逻辑
+
             std::vector<uint64_t> localRes;
             size_t startPos = chunkIdx * grainSize;
             
@@ -105,6 +114,9 @@ std::vector<uint64_t> MemoryQueryEngine::search(MftReader* reader, const QString
                 size_t endPos = (std::min)(startPos + grainSize, reader->m_frns.size());
 
                 for (size_t i = startPos; i < endPos; ++i) {
+                    // 每执行一定步长检测一次，保证百万级扫描极速响应取消
+                    if ((i & 4095) == 0 && reader->isSearchCanceled()) return;
+
                     if (reader->m_frns[i] == 0) continue;
                     
                     size_t dIdx = static_cast<size_t>(reader->m_parent_frns[i] >> 48);
