@@ -116,7 +116,7 @@ void MftReader::clearInternal() {
     m_frn_to_idx.clear();
     m_sorted_indices.clear();
     {
-        std::lock_guard<std::mutex> lock(m_pathCacheMutex);
+        std::unique_lock<std::shared_mutex> lock(m_pathCacheMutex);
         m_path_cache.clear();
     }
     {
@@ -315,7 +315,7 @@ void MftReader::unloadDrive(const QString& drive) {
         // 2026-07-07 物理补齐：按盘符卸载时清理路径缓存与 USN 锚点
         m_next_usns.erase(vol);
         {
-            std::lock_guard<std::mutex> pathLock(m_pathCacheMutex);
+            std::unique_lock<std::shared_mutex> pathLock(m_pathCacheMutex);
             auto itP = m_path_cache.begin();
             while (itP != m_path_cache.end()) {
                 if ((itP->first >> 48) == dIdx) itP = m_path_cache.erase(itP);
@@ -521,7 +521,7 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
     uint64_t compositeKey = (static_cast<uint64_t>(driveIdx) << 48) | (frn & 0x0000FFFFFFFFFFFFull);
 
     {
-        std::lock_guard<std::mutex> lock(m_pathCacheMutex);
+        std::shared_lock<std::shared_mutex> lock(m_pathCacheMutex);
         auto it = m_path_cache.find(compositeKey);
         if (it != m_path_cache.end()) return it->second;
     }
@@ -558,7 +558,7 @@ std::wstring MftReader::getPathFast(size_t driveIdx, uint64_t frn) {
     for (auto it = segments.rbegin(); it != segments.rend(); ++it) path += L"\\" + *it;
 
     {
-        std::lock_guard<std::mutex> lock(m_pathCacheMutex);
+        std::unique_lock<std::shared_mutex> lock(m_pathCacheMutex);
         if (m_path_cache.size() > 200000) { // 2026-05-16 扩容路径缓存以提升深度目录渲染性能
             auto it_clear = m_path_cache.begin();
             for (int i = 0; i < 2000; ++i) it_clear = m_path_cache.erase(it_clear);

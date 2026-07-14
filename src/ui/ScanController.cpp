@@ -33,7 +33,7 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
         if (!newSet || newSet->keys.empty()) return;
 
         {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
             // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
             // 此时后台异步完成的增量排序结果已经失效（基于旧数据），必须舍弃，防止搜索结果被“秒消失”。
             if (m_resultSet != m_sortBaseSnap) {
@@ -73,12 +73,12 @@ void ScanController::triggerSearch(bool immediate) {
 }
 
 std::shared_ptr<ResultSet> ScanController::snapshot() const {
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
+    std::shared_lock<std::shared_mutex> lock(m_resultsMutex);
     return m_resultSet;
 }
 
 int ScanController::resultCount() const {
-    std::lock_guard<std::mutex> lock(m_resultsMutex);
+    std::shared_lock<std::shared_mutex> lock(m_resultsMutex);
     return static_cast<int>(m_resultSet->keys.size());
 }
 
@@ -103,7 +103,7 @@ void ScanController::performSearch() {
     if (!state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
         auto newSet = std::make_shared<ResultSet>();
         {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
             m_resultSet = newSet;
         }
         emit resultsSwapped(newSet);
@@ -161,7 +161,7 @@ void ScanController::performSearch() {
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
 
         {
-            std::lock_guard<std::mutex> lock(m_resultsMutex);
+            std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
             m_resultSet = newSet;
         }
         emit resultsSwapped(newSet);
