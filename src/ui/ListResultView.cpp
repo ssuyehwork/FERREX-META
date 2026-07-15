@@ -107,6 +107,8 @@ public:
         // 【物理自绘底部分割线补齐逻辑】（对应用户原话：“唯独名称列到路径列出现这样的截断 / 冗余像素...排查根本原因”）
         // 在 delegate 绘制的最后，使用与 QSS 相同的 #252526 灰色画笔，在最底下一像素处画一条贯通线，使之与第二列无缝相接
         painter->save();
+        // 显式关闭抗锯齿，确保绘制出 1 像素物理线，避免变粗和模糊
+        painter->setRenderHint(QPainter::Antialiasing, false);
         painter->setPen(QColor("#252526"));
         // QRect::bottom() 是底部的 y 坐标，绘制从左边缘到右边缘的 1px 水平线
         painter->drawLine(option.rect.left(), option.rect.bottom(), option.rect.right(), option.rect.bottom());
