@@ -64,3 +64,12 @@
 - **核心要求**：
     - **USN 反馈物理阻断**：在 `UsnWatcher` 接收到系统文件变动时，对项目自身所产生的任何 I/O 行为执行彻底拦截，阻断对日志文件（如 `log_*.txt`、`FERREX_debug.log`）、MFT 缓存文件（如 `.bin`、`.idx`、`.bin.tmp`、`.idx.tmp`、`DiskIndex`）、配置文件（如 `FERREX_scan_config.json`）、以及数据库中间产物（如 `*.db-wal`、`*.db-journal`、`*.db-shm`、`etilqs_*` 等临时锁资产）的处理，防止触发多线程无线写入与事件捕获死循环。
     - **分块搜索多线程原子取消**：在 `MemoryQueryEngine` 和并行搜索大循环以及重排序算法中，于迭代前、迭代中高频轮询取消原子状态。一旦收到来自控制器 `ScanController` 派发的取消（`m_cancelRequested` / `isInterrupted()` / `stopRequested` 等）信号，立刻无条件提前退出、退出计算线程并释放资源，从物理上杜绝多线程无效计算。
+
+### 10. 全局架构专业化评估与解耦规划 (Plan-204)
+- **目标**：彻底清除早期遗留的业余临时补丁，进行全局解耦，确保海量、高频变焦场景下的并发、内存及析构安全。
+- **核心重构要求**：
+    - **SoA 数据投影解耦**：重构 `ResultSet` 数据结构，将路径、大小等渲染特有属性进行后台线程一次性快照投影，消除 `TableModel::data` 在主线程对物理引擎的高频递归调用与跨线程排队锁申请。
+    - **清除运行期动态 HACK**：删除 `data()` 内对双轨缓存 `m_lastPixmapCache` 的动态拦截初始化逻辑，统一移至 `ScanTableModel` 构造函数。
+    - **线程池安全同步析构**：删除 `QThreadPool::globalInstance()` 延迟异步销毁局部线程池的逻辑，采用基于 `m_isDestroying` 原子检测与 `waitForDone()` 的局部安全同步回收。
+    - **解耦接口设计**：在 `src/core/ModelContract.h` 中引入 `IDataQueryEngine` 以支持数据引擎的可插拔。
+    - **清理 Memories.md**：清理无关的技术与 UI 残存规范。
