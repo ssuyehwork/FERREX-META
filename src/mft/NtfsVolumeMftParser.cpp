@@ -132,9 +132,9 @@ bool NtfsVolumeMftParser::loadMftDirect(const std::wstring& volume, MftReader::D
                 std::string path_base = "FERREX/cache/" + QString::fromStdWString(volume).left(1).toStdString();
                 uint64_t currentUsn = ed.StartFileReferenceNumber;
 
-                // 【核心根治方案】：使用 C++ 11/14 右值移动语义 std::move 捕获！
+                // 【核心根治方案】：使用 C++ 11 右值移动语义 std::move！
                 // 理由：彻底消灭在主扫描线程内对 delta (包含 100,000 项巨型 SoA 数据) 的完全物理值拷贝克隆，
-                // 瞬间将内存分配和拷贝损耗降至 O(1)。
+                // 瞬间将内存分配和拷贝损耗降至 $O(1)$。
                 (void)QtConcurrent::run([path_base, currentUsn, movingDelta = std::move(delta)]() mutable {
                     ScchCache::appendEntries(path_base, movingDelta, currentUsn);
                 });

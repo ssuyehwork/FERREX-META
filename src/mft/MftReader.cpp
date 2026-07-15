@@ -76,15 +76,12 @@ static bool enablePrivilege(LPCWSTR privilege) {
 }
 
 MftReader& MftReader::instance() {
+    static MftReader inst;
     static std::once_flag flag;
     std::call_once(flag, []() {
-        // 【核心根治方案】：必须确保 Windows 特权启用先于 MftReader 实例构造！
-        // 理由：否则静态实例 `inst` 在构造函数中打开卷句柄时，提权操作在多线程并发竞态下可能尚未就绪，
-        // 导致偶发性抛出 ERROR_ACCESS_DENIED 并初始化失败。
         enablePrivilege(SE_BACKUP_NAME);
         enablePrivilege(SE_RESTORE_NAME);
     });
-    static MftReader inst;
     return inst;
 }
 
