@@ -143,9 +143,35 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // [性能重构方案物理对齐]：彻底解耦筛选与显示渲染。后台搜索线程不应该去高开销获取元数据，
-        // 否则会频繁霸占 MftReader.m_dataLock 锁，造成前台 UI 在 data() 渲染时由于锁等待而卡死。
-        // 将后台元数据装饰块完全移除，回归极速过滤模式。
+        // [性能重构方案物理对齐]：在后台线程中利用极其短暂的引擎读锁，一次性全投影填充容器
+        // 彻底解耦筛选与显示渲染，让 TableModel::data 的高频滚动与物理 MftReader 引擎的大锁竞争降低为 0。
+        {
+            QReadLocker lock(&MftReader::instance().m_dataLock);
+            size_t size = rs->keys.size();
+            rs->cachedNames.reserve(size);
+            rs->cachedPaths.reserve(size);
+            rs->cachedSizes.reserve(size);
+            rs->cachedMtimes.reserve(size);
+            rs->isDirFlags.reserve(size);
+
+            for (uint64_t k : rs->keys) {
+                int actualIdx = MftReader::instance().getIndexByKey(k);
+                if (actualIdx != -1) {
+                    rs->cachedNames.push_back(MftReader::instance().getName(actualIdx));
+                    rs->cachedPaths.push_back(QString::fromStdWString(MftReader::instance().getPathFast(static_cast<size_t>(MftReader::instance().m_parent_frns[actualIdx] >> 48), MftReader::instance().m_frns[actualIdx])));
+                    rs->cachedSizes.push_back(MftReader::instance().m_sizes[actualIdx]);
+                    rs->cachedMtimes.push_back(MftReader::instance().m_timestamps[actualIdx]);
+                    rs->isDirFlags.push_back((MftReader::instance().m_attributes[actualIdx] & FILE_ATTRIBUTE_DIRECTORY) != 0);
+                } else {
+                    rs->cachedNames.push_back(QString());
+                    rs->cachedPaths.push_back(QString());
+                    rs->cachedSizes.push_back(0);
+                    rs->cachedMtimes.push_back(0);
+                    rs->isDirFlags.push_back(false);
+                }
+            }
+        }
+
         qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
@@ -222,12 +248,14 @@ void ScanController::sort(int column, int order) {
         std::vector<uint32_t> local_parent_indices;
         std::vector<int64_t> local_sizes;
         std::vector<int64_t> local_timestamps;
+        std::vector<uint32_t> local_attributes;
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         {
             QReadLocker lock(&reader.m_dataLock);
             local_frn_to_idx = reader.m_frn_to_idx;
+            local_attributes = reader.m_attributes;
             if (column == 0 || column == 1) {
                 local_name_offsets = reader.m_name_offsets;
                 local_string_pool = reader.m_string_pool;
@@ -315,22 +343,88 @@ void ScanController::sort(int column, int order) {
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
+        // 定义轻量级取消异常
+        struct SortCanceledException : public std::exception {
+            const char* what() const noexcept override { return "Sort Canceled"; }
+        };
+
         // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
-        std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
-            bool less = false;
-            if (column == 0 || column == 1) {
-                less = _stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0;
-            } else {
-                less = a.iVal < b.iVal;
-            }
-            return (order == 0) ? less : !less;
-        });
+        try {
+            std::sort(proxies.begin(), proxies.end(), [this, column, order, mySortId](const SortProxy& a, const SortProxy& b) {
+                if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) {
+                    // 抛出轻量级取消异常，瞬间打断并退出 std::sort 过程
+                    throw SortCanceledException();
+                }
+                bool less = false;
+                if (column == 0 || column == 1) {
+                    less = _stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0;
+                } else {
+                    less = a.iVal < b.iVal;
+                }
+                return (order == 0) ? less : !less;
+            });
+        } catch (const SortCanceledException&) {
+            return std::shared_ptr<ResultSet>(nullptr);
+        }
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         // 3. 写回结果并构建映射
         for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
         updateKeyToPosMapping(*newSet);
+
+        // 为排序后的 newSet 装配 1:1 数据投影 SoA 快照，免锁读取
+        {
+            size_t size = newSet->keys.size();
+            newSet->cachedNames.reserve(size);
+            newSet->cachedPaths.reserve(size);
+            newSet->cachedSizes.reserve(size);
+            newSet->cachedMtimes.reserve(size);
+            newSet->isDirFlags.reserve(size);
+
+            for (uint64_t k : newSet->keys) {
+                auto itIdx = local_frn_to_idx.find(k);
+                if (itIdx != local_frn_to_idx.end()) {
+                    uint32_t idx = itIdx->second;
+                    if (idx < local_name_offsets.size()) {
+                        newSet->cachedNames.push_back(reinterpret_cast<const char*>(local_string_pool.data() + local_name_offsets[idx]));
+                    } else {
+                        newSet->cachedNames.push_back(QString());
+                    }
+
+                    if (idx < local_parent_frns.size() && idx < local_frns.size()) {
+                        newSet->cachedPaths.push_back(QString::fromStdWString(getPathFastLocal(static_cast<size_t>(local_parent_frns[idx] >> 48), local_frns[idx])));
+                    } else {
+                        newSet->cachedPaths.push_back(QString());
+                    }
+
+                    if (idx < local_sizes.size()) {
+                        newSet->cachedSizes.push_back(local_sizes[idx]);
+                    } else {
+                        newSet->cachedSizes.push_back(0);
+                    }
+
+                    if (idx < local_timestamps.size()) {
+                        newSet->cachedMtimes.push_back(local_timestamps[idx]);
+                    } else {
+                        newSet->cachedMtimes.push_back(0);
+                    }
+
+                    if (idx < local_attributes.size()) { // 可以根据属性或其他逻辑设置
+                        newSet->isDirFlags.push_back((local_attributes[idx] & FILE_ATTRIBUTE_DIRECTORY) != 0);
+                    } else {
+                        newSet->isDirFlags.push_back(false);
+                    }
+                } else {
+                    newSet->cachedNames.push_back(QString());
+                    newSet->cachedPaths.push_back(QString());
+                    newSet->cachedSizes.push_back(0);
+                    newSet->cachedMtimes.push_back(0);
+                    newSet->isDirFlags.push_back(false);
+                }
+            }
+        }
+
         return newSet;
     });
 
@@ -455,15 +549,57 @@ void ScanController::processBatchUpdates() {
 
             if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
-            std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
-                bool less = (column == 0 || column == 1) ? (_stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0) : (a.iVal < b.iVal);
-                return (order == 0) ? less : !less;
-            });
+            // 定义轻量级取消异常
+            struct SortCanceledException : public std::exception {
+                const char* what() const noexcept override { return "Sort Canceled"; }
+            };
+
+            try {
+                std::sort(proxies.begin(), proxies.end(), [this, column, order, mySortId](const SortProxy& a, const SortProxy& b) {
+                    if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) {
+                        // 抛出轻量级取消异常，瞬间打断并退出 std::sort 过程
+                        throw SortCanceledException();
+                    }
+                    bool less = (column == 0 || column == 1) ? (_stricmp(a.sVal.c_str(), b.sVal.c_str()) < 0) : (a.iVal < b.iVal);
+                    return (order == 0) ? less : !less;
+                });
+            } catch (const SortCanceledException&) {
+                return std::shared_ptr<ResultSet>(nullptr);
+            }
 
             if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
+
+            // 同时为增量重排序后的 newSet 装配 1:1 数据投影 SoA 快照
+            {
+                QReadLocker lock(&reader.m_dataLock);
+                size_t size = newSet->keys.size();
+                newSet->cachedNames.reserve(size);
+                newSet->cachedPaths.reserve(size);
+                newSet->cachedSizes.reserve(size);
+                newSet->cachedMtimes.reserve(size);
+                newSet->isDirFlags.reserve(size);
+
+                for (uint64_t k : newSet->keys) {
+                    int actualIdx = reader.getIndexByKey(k);
+                    if (actualIdx != -1) {
+                        newSet->cachedNames.push_back(reader.getName(actualIdx));
+                        newSet->cachedPaths.push_back(QString::fromStdWString(reader.getPathFast(static_cast<size_t>(reader.m_parent_frns[actualIdx] >> 48), reader.m_frns[actualIdx])));
+                        newSet->cachedSizes.push_back(reader.m_sizes[actualIdx]);
+                        newSet->cachedMtimes.push_back(reader.m_timestamps[actualIdx]);
+                        newSet->isDirFlags.push_back((reader.m_attributes[actualIdx] & FILE_ATTRIBUTE_DIRECTORY) != 0);
+                    } else {
+                        newSet->cachedNames.push_back(QString());
+                        newSet->cachedPaths.push_back(QString());
+                        newSet->cachedSizes.push_back(0);
+                        newSet->cachedMtimes.push_back(0);
+                        newSet->isDirFlags.push_back(false);
+                    }
+                }
+            }
+
             return newSet;
         }
         

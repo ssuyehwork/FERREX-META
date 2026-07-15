@@ -142,12 +142,18 @@ ScanTableModel::~ScanTableModel() {
     if (m_metadataTimer) { m_metadataTimer->stop(); delete m_metadataTimer; m_metadataTimer = nullptr; }
 
     if (m_thumbPool) {
-        // 1. 快速排空排队任务
+        // 1. 快速清空排队中任务
         m_thumbPool->clear();
-        // 2. 干净同步回收（结合 m_isDestroying 瞬间折返，微秒级退出，绝对安全且无死等）
-        m_thumbPool->waitForDone();
-        delete m_thumbPool;
+
+        // 2. 彻底移除同步死等 waitForDone()，转由后台托管，防止 Shell COM 组件挂起主线程
+        QThreadPool* poolToDestroy = m_thumbPool;
         m_thumbPool = nullptr;
+
+        // 在独立后台线程中去安全、静默回收，主线程 0 延迟秒退
+        (void)QtConcurrent::run([poolToDestroy]() {
+            poolToDestroy->waitForDone();
+            delete poolToDestroy;
+        });
     }
 }
 
@@ -168,27 +174,41 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     int actualIndex = reader.getIndexByKey(key);
     if (actualIndex == -1) return QVariant(); // 文件可能已被删除
 
-    // 2026-06-xx 极致性能重构：行内计算缓存。
-    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
-    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
-    thread_local static int lastRow = -1;
-    thread_local static uint64_t lastKey = 0;
-    thread_local static QString cachedPath;
+    // 完美免锁：从预装配的 ResultSet SoA 离线快照直接 O(1) 无锁读取
+    bool hasCached = (row < (int)m_currentResultSet->cachedNames.size());
     
+    auto getName = [&]() {
+        if (hasCached) return m_currentResultSet->cachedNames[row];
+        return reader.getName(actualIndex);
+    };
+
     auto getPath = [&]() {
-        if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
-        lastRow = row; lastKey = key;
-        cachedPath = reader.getFullPath(actualIndex);
-        return cachedPath;
+        if (hasCached) return m_currentResultSet->cachedPaths[row];
+        return reader.getFullPath(actualIndex);
+    };
+
+    auto isDir = [&]() {
+        if (hasCached) return m_currentResultSet->isDirFlags[row];
+        return reader.isDirectory(actualIndex);
+    };
+
+    auto getSizeVal = [&]() {
+        if (hasCached) return m_currentResultSet->cachedSizes[row];
+        return reader.getSize(actualIndex);
+    };
+
+    auto getModifyTimeVal = [&]() {
+        if (hasCached) return m_currentResultSet->cachedMtimes[row];
+        return reader.getModifyTime(actualIndex);
     };
     
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
-            case 0: return reader.getName(actualIndex);
+            case 0: return getName();
             case 1: return getPath();
             case 2: {
-                if (reader.isDirectory(actualIndex)) return "-";
-                int64_t size = reader.getSize(actualIndex);
+                if (isDir()) return "-";
+                int64_t size = getSizeVal();
                 if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
                     return "...";
                 }
@@ -198,7 +218,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 return QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
             }
             case 3: {
-                int64_t ts = reader.getModifyTime(actualIndex);
+                int64_t ts = getModifyTimeVal();
                 if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
                     return "-";
                 }
@@ -211,10 +231,10 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         QString ext = reader.getExtQString(actualIndex);
         
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
-        if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
+        if (thumbExts.contains(ext) && !isDir()) {
             // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
-            int64_t size = reader.getSize(actualIndex);
-            int64_t mtime = reader.getModifyTime(actualIndex);
+            int64_t size = getSizeVal();
+            int64_t mtime = getModifyTimeVal();
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
 
             // 1. 精确尺寸缓存匹配
@@ -256,7 +276,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
         
         // 常规不支持缩略图的后缀（如 txt, exe），直接放行，回退到系统默认图标
-        return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
+        return reader.getCachedIcon(ext, isDir());
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
@@ -264,7 +284,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             return it->second.color;
         }
 
-        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
+        // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存且支持无锁SoA读取，性能依然极其优异
         QString qPath = getPath();
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         if (!meta.color.empty()) {
@@ -272,18 +292,18 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             if (tagC.isValid()) return tagC;
         }
         // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
-        if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
+        if (index.column() == 0 || isDir()) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
         // 2026-07-12 物理对齐需求：ToolTipOverlay 显示的内容包含项目名称、路径、大小、修改时间 (并兼容备注和标签)
-        QString name = reader.getName(actualIndex);
+        QString name = getName();
         QString qPath = getPath();
         
         QString sizeStr;
-        if (reader.isDirectory(actualIndex)) {
+        if (isDir()) {
             sizeStr = "-";
         } else {
-            int64_t size = reader.getSize(actualIndex);
+            int64_t size = getSizeVal();
             if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
                 sizeStr = "...";
             } else if (size < 1024) {
@@ -298,7 +318,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
 
         QString mtimeStr;
-        int64_t ts = reader.getModifyTime(actualIndex);
+        int64_t ts = getModifyTimeVal();
         if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
             mtimeStr = "-";
         } else if (ts == 0) {
@@ -326,10 +346,10 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         QString ext = reader.getExtQString(actualIndex);
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
-        if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
+        if (!thumbExts.contains(ext) || isDir()) return 0;
 
-        int64_t size = reader.getSize(actualIndex);
-        int64_t mtime = reader.getModifyTime(actualIndex);
+        int64_t size = getSizeVal();
+        int64_t mtime = getModifyTimeVal();
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
         // 只要 L1 精确匹配命中，或者 L2 历史备份可用，即视为存在可用物理缩略图资产并返回线索 1，彻底删除任何多余的过渡加载状态。
@@ -340,7 +360,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     } else if (role == Qt::UserRole + 2) {
         // [性能重构方案物理对齐]：返回宽高比 (用于 JustifiedView 布局)
         // 2026-07-11 物理重构：自适应模式仅限于视频和图形图像文件，文件夹与其余常规文件直接返回 -1.0 禁用自适应拉伸 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
-        if (reader.isDirectory(actualIndex)) {
+        if (isDir()) {
             return -1.0;
         }
 
