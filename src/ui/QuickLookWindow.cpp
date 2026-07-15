@@ -487,48 +487,68 @@ void QuickLookWindow::renderText(const QString& path) {
     m_textEdit->show();
     m_textEdit->setPlainText("正在读取文件...");
 
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        m_textEdit->setPlainText("无法打开文件进行预览。");
-        return;
-    }
+    QPointer<QuickLookWindow> weakThis(this);
+    (void)QtConcurrent::run([weakThis, path]() {
+        if (!weakThis) return;
 
-    QByteArray fileData = file.read(128 * 1024);
-    file.close();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) {
+            QMetaObject::invokeMethod(weakThis.data(), [weakThis]() {
+                if (weakThis) weakThis->m_textEdit->setPlainText("无法打开文件进行预览。");
+            });
+            return;
+        }
 
-    bool potentialUtf16 = fileData.startsWith("\xFF\xFE") || fileData.startsWith("\xFE\xFF");
-    if (!potentialUtf16 && isBinary(fileData)) {
-        m_textEdit->hide();
-        m_mediaContainer->hide();
-        m_graphicsView->show();
-        m_graphicsView->clear();
-        
-        QIcon fileIcon = UiHelper::getFileIcon(path, 256);
-        QPixmap pix = fileIcon.pixmap(256, 256);
-        m_graphicsView->setPixmap(pix);
-        
-        m_infoLabel->setText("二进制文件，无法直接预览文本");
-        m_infoLabel->setStyleSheet("color: #FF8C00; font-weight: bold; font-size: 14px;");
-        return;
-    }
+        // 在后台进行 128KB 高负载物理 I/O 和编码自适应解码，彻底保护 UI 主线程不被挂起
+        QByteArray fileData = file.read(128 * 1024);
+        file.close();
 
-    QString encodingName = detectEncoding(fileData);
-    QString text;
+        if (!weakThis) return;
 
-    if (encodingName == "UTF-8") {
-        text = QString::fromUtf8(fileData);
-    } else if (encodingName == "UTF-16LE") {
-        text = QString::fromWCharArray(reinterpret_cast<const wchar_t*>(fileData.constData()), fileData.size() / 2);
-    } else if (encodingName == "UTF-16BE") {
-        auto decoder = QStringDecoder(QStringDecoder::Utf16BE);
-        text = decoder(fileData);
-    } else {
-        text = QString::fromLocal8Bit(fileData);
-    }
+        bool potentialUtf16 = fileData.startsWith("\xFF\xFE") || fileData.startsWith("\xFE\xFF");
+        if (!potentialUtf16 && weakThis->isBinary(fileData)) {
+            QMetaObject::invokeMethod(weakThis.data(), [weakThis, path]() {
+                if (!weakThis || weakThis->m_currentPath != path) return;
+                weakThis->m_textEdit->hide();
+                weakThis->m_mediaContainer->hide();
+                weakThis->m_graphicsView->show();
+                weakThis->m_graphicsView->clear();
 
-    m_textEdit->setPlainText(text);
-    m_textEdit->verticalScrollBar()->setValue(0);
-    m_infoLabel->setText(QString("编码: %1 | 大小: %2 KB | %3").arg(encodingName).arg(QFileInfo(path).size() / 1024.0, 0, 'f', 1).arg(path));
+                QIcon fileIcon = UiHelper::getFileIcon(path, 256);
+                QPixmap pix = fileIcon.pixmap(256, 256);
+                weakThis->m_graphicsView->setPixmap(pix);
+
+                weakThis->m_infoLabel->setText("二进制文件，无法直接预览文本");
+                weakThis->m_infoLabel->setStyleSheet("color: #FF8C00; font-weight: bold; font-size: 14px;");
+            });
+            return;
+        }
+
+        QString encodingName = weakThis->detectEncoding(fileData);
+        QString text;
+
+        if (encodingName == "UTF-8") {
+            text = QString::fromUtf8(fileData);
+        } else if (encodingName == "UTF-16LE") {
+            text = QString::fromWCharArray(reinterpret_cast<const wchar_t*>(fileData.constData()), fileData.size() / 2);
+        } else if (encodingName == "UTF-16BE") {
+            auto decoder = QStringDecoder(QStringDecoder::Utf16BE);
+            text = decoder(fileData);
+        } else {
+            text = QString::fromLocal8Bit(fileData);
+        }
+
+        // 装载回主线程
+        QMetaObject::invokeMethod(weakThis.data(), [weakThis, text, encodingName, path]() {
+            if (!weakThis || weakThis->m_currentPath != path) return;
+            weakThis->m_textEdit->setPlainText(text);
+            weakThis->m_textEdit->verticalScrollBar()->setValue(0);
+            weakThis->m_infoLabel->setText(QString("编码: %1 | 大小: %2 KB | %3")
+                .arg(encodingName)
+                .arg(QFileInfo(path).size() / 1024.0, 0, 'f', 1)
+                .arg(path));
+        });
+    });
 }
 
 void QuickLookWindow::renderMedia(const QString& path) {
@@ -566,7 +586,16 @@ void QuickLookWindow::resetMedia() {
 #ifdef FERREX_HAS_MULTIMEDIA
     if (m_mediaPlayer) {
         m_mediaPlayer->stop();
-        m_mediaPlayer->setSource(QUrl());
+
+        // 【核心根治方案】：硬件解码管线解耦重置。
+        // 理由：直接在 UI 主线程同步设置 setSource(QUrl()) 可能会引发 WMF/DirectShow 专属解码线程
+        // 在硬件管道未清空时发生同步阻断，直接导致主线程死锁崩溃。改为利用 QTimer 延迟一个事件循环（或异步解耦）安全设置。
+        QPointer<QMediaPlayer> weakPlayer(m_mediaPlayer);
+        QTimer::singleShot(0, this, [weakPlayer]() {
+            if (weakPlayer) {
+                weakPlayer->setSource(QUrl());
+            }
+        });
     }
 #endif
     m_playBtn->setText("播放");
