@@ -26,6 +26,8 @@ public:
     void preScaleCache(double factor); // 按比例无损缩放双轨 LRU 缓存以作为后续拉伸源
     void clearCache();
 
+    QThreadPool* getThreadPool() const { return m_pool; }
+
 signals:
     // 异步加载成功后，通过信号精准通知观察者进行 UI 重绘
     void thumbnailReady(uint64_t key, const QPixmap& pixmap, double aspectRatio);

@@ -8,11 +8,6 @@
 
 namespace FERREX {
 
-struct ScopedComInit {
-    ScopedComInit() { CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE); }
-    ~ScopedComInit() { CoUninitialize(); }
-};
-
 ThumbnailManager::ThumbnailManager() {
     m_pool = new QThreadPool(this);
     m_pool->setMaxThreadCount(std::max(2, QThread::idealThreadCount() / 2)); // 保证流畅度

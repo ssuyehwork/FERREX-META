@@ -49,6 +49,7 @@ public:
 
     void setVisibleRange(int top, int bottom);
     void forceFetchAll(); // 2026-07-07 物理修复：强制加载全部结果以支持全选
+    QThreadPool* getThumbPool() const { return ThumbnailManager::instance().getThreadPool(); }
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
