@@ -105,6 +105,8 @@ set(SOURCES
     src/ui/ScanDialog.h
     src/ui/ScanTableModel.cpp
     src/ui/ScanTableModel.h
+    src/ui/ThumbnailManager.cpp
+    src/ui/ThumbnailManager.h
     src/ui/ResultTableColumnWidthPolicy.cpp
     src/ui/ResultTableColumnWidthPolicy.h
     src/ui/StatusBarFormatter.cpp

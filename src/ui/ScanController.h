@@ -1,5 +1,5 @@
+// 写入 / 替换 src/ui/ScanController.h 中的 ResultSet 声明
 #pragma once
-
 #include <QObject>
 #include <QString>
 #include <QColor>
@@ -8,14 +8,48 @@
 #include <QTimer>
 #include <QFutureWatcher>
 #include <vector>
-#include <cstdint>
-#include <memory>
-#include <mutex>
-#include <shared_mutex>
-#include <unordered_set>
 #include <unordered_map>
+#include <shared_mutex>
+#include <mutex>
 
 namespace FERREX {
+
+struct RenderMeta {
+    QColor color;
+    explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
+};
+
+/**
+ * @brief 高性能 SoA 视口滑动投影数据容器
+ */
+struct ResultSet {
+    // 基础索引，全量仅存储 Keys 8-byte 整数
+    std::vector<uint64_t> keys;
+    std::unordered_map<uint64_t, int> keyToPos;
+    std::unordered_map<uint64_t, RenderMeta> metadata;
+
+    // 滑动视口按需 SoA 缓存槽：它的尺寸与 keys 的全量大小一致，
+    // 但只有当前处于可见滑动窗口 [VisibleTop - 500, VisibleBottom + 500] 范围内的索引处才拥有有效数据。
+    // 其余非视口区域保持默认空状态，零内存动态分配。
+    std::vector<QString> cachedNames;  // 只读投影第 0 列名称
+    std::vector<QString> cachedPaths;  // 只读投影第 1 列路径
+    std::vector<int64_t> cachedSizes;  // 只读投影第 2 列物理大小 (-1 表示未装填)
+    std::vector<int64_t> cachedMtimes; // 只读投影第 3 列修改时间 (-1 表示未装填)
+    std::vector<bool> isDirFlags;      // 文件夹标识
+
+    void initialize(size_t totalCount) {
+        keys.clear();
+        keyToPos.clear();
+        metadata.clear();
+
+        // 预分配数组骨架，但此时由于 QString 默认为空，并不发生堆内存实体分配，开销极小
+        cachedNames.assign(totalCount, QString());
+        cachedPaths.assign(totalCount, QString());
+        cachedSizes.assign(totalCount, -1);
+        cachedMtimes.assign(totalCount, -1);
+        isDirFlags.assign(totalCount, false);
+    }
+};
 
 struct ScanFilterState {
     QStringList extensionList; 
@@ -29,28 +63,6 @@ struct ScanFilterState {
     bool isEmpty() const { 
         return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay; 
     }
-};
-
-/**
- * @brief 稳定的结果集封装 (支持 O(1) 定位)
- */
-struct RenderMeta {
-    QColor color;
-    explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
-};
-
-struct ResultSet {
-    std::vector<uint64_t> keys;
-    std::unordered_map<uint64_t, int> keyToPos;
-    std::unordered_map<uint64_t, RenderMeta> metadata;
-    
-    // 工业级 SoA 数据投影：将路径、大小等在后台线程利用引擎短暂读锁一次性装配完毕
-    // 彻底切断主线程 TableModel::data() 运行时对 MftReader 的高开销锁竞争与递归寻址
-    std::vector<QString> cachedNames;
-    std::vector<QString> cachedPaths;
-    std::vector<int64_t> cachedSizes;
-    std::vector<int64_t> cachedMtimes;
-    std::vector<bool> isDirFlags;
 };
 
 class ScanController : public QObject {

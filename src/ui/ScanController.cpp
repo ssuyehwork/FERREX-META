@@ -140,6 +140,9 @@ void ScanController::performSearch() {
 
         int64_t searchMs = subTimer.elapsed();
         auto rs = std::make_shared<ResultSet>();
+
+        // 【核心零分配SoA骨架方案】：仅初始化骨架大小，完全杜绝在此阶段全量分配 QString
+        rs->initialize(keys.size());
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
