@@ -1,3 +1,4 @@
+#include <mutex>
 #include "DiskIndexCacheCoordinator.h"
 #include "MftReader.h"
 #include "UsnWatcher.h"
