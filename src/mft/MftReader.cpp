@@ -938,4 +938,23 @@ QIcon MftReader::getCachedIcon(const QString& ext, bool isDir) {
     return UiHelper::getCachedIcon(ext, isDir);
 }
 
+std::vector<uint64_t> MftReader::queryKeys(const QString& keyword, const ScanFilterState& filterState) {
+    return search(keyword, filterState.useRegex, filterState.caseSensitive, filterState.extensionList,
+                  filterState.includeHidden, filterState.includeSystem, filterState.includeDollar);
+}
+
+FileMetaRecord MftReader::getRecordByKey(uint64_t key) const {
+    FileMetaRecord rec;
+    rec.key = key;
+    int idx = getIndexByKey(key);
+    if (idx != -1) {
+        rec.name = getName(idx);
+        rec.fullPath = getFullPath(idx);
+        rec.size = getSize(idx);
+        rec.mtime = getModifyTime(idx);
+        rec.isDirectory = isDirectory(idx);
+    }
+    return rec;
+}
+
 } // namespace FERREX

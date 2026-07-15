@@ -117,6 +117,8 @@ set(SOURCES
     src/ui/ContextMenuExecutor.h
     src/ui/ThumbnailWarmupPipeline.cpp
     src/ui/ThumbnailWarmupPipeline.h
+    src/ui/ThumbnailManager.cpp
+    src/ui/ThumbnailManager.h
     src/ui/GlobalKeyboardShortcutHandler.cpp
     src/ui/GlobalKeyboardShortcutHandler.h
     src/ui/ViewportTooltipController.cpp

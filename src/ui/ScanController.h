@@ -14,22 +14,9 @@
 #include <shared_mutex>
 #include <unordered_set>
 #include <unordered_map>
+#include "../core/ModelContract.h"
 
 namespace FERREX {
-
-struct ScanFilterState {
-    QStringList extensionList; 
-    bool useRegex = false;
-    bool caseSensitive = false;
-    bool includeHidden = true;
-    bool includeSystem = true;
-    bool includeDollar = true;
-    bool autoDisplay = false;
-
-    bool isEmpty() const { 
-        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay; 
-    }
-};
 
 /**
  * @brief 稳定的结果集封装 (支持 O(1) 定位)
@@ -51,12 +38,14 @@ struct ResultSet {
     std::vector<int64_t> cachedSizes;
     std::vector<int64_t> cachedMtimes;
     std::vector<bool> isDirFlags;
+    std::vector<QString> cachedExts;
 };
 
 class ScanController : public QObject {
     Q_OBJECT
 public:
-    explicit ScanController(QObject* parent = nullptr);
+    // 通过构造函数依赖注入，彻底断开对具体单例 MftReader::instance() 的静态依赖
+    explicit ScanController(std::shared_ptr<IDataQueryEngine> engine, QObject* parent = nullptr);
     ~ScanController() override;
 
     void setSearchText(const QString& text);
@@ -91,7 +80,9 @@ private slots:
 private:
     void performSearch();
     void updateKeyToPosMapping(ResultSet& rs);
+    void fillSoAProjection(ResultSet& rs);
 
+    std::shared_ptr<IDataQueryEngine> m_engine;
     QString m_searchText;
     ScanFilterState m_filterState;
     int m_currentSortColumn = 0;

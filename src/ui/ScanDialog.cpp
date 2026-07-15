@@ -711,7 +711,9 @@ void ScanDialog::setupUi() {
 
     mainLayout->addWidget(searchContainer);
 
-    m_controller = new ScanController(this);
+    // 将 MftReader 的智能指针形式作为 IDataQueryEngine 注入 ScanController
+    auto engine = std::shared_ptr<IDataQueryEngine>(&MftReader::instance(), [](IDataQueryEngine*){});
+    m_controller = new ScanController(engine, this);
     m_tableModel = new ScanTableModel(m_controller, this);
 
     m_listResultView = new ListResultView(this);
