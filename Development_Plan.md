@@ -13,7 +13,7 @@
 
 ### 2. 交互逻辑规约 (Plan-154 补充)
 - **左键逻辑**：盘符按钮左键仅用于 FilterState 切换，严禁触发数据库加载。
-- **右键逻辑**：提供显式的“加载数据”菜单，引导用户按需管理内存。
+- **右键逻辑**：提供显式的“加载数据”菜单，引导用户按需 management 内存。
 - **粘贴屏蔽**：彻底移除粘贴功能，改为状态栏提示。
 
 ### 3. 数据加载策略 (Plan-155)
@@ -73,3 +73,11 @@
     - **线程池安全同步析构**：删除 `QThreadPool::globalInstance()` 延迟异步销毁局部线程池的逻辑，采用基于 `m_isDestroying` 原子检测与 `waitForDone()` 的局部安全同步回收。
     - **解耦接口设计**：在 `src/core/ModelContract.h` 中引入 `IDataQueryEngine` 以支持数据引擎的可插拔。
     - **清理 Memories.md**：清理无关的技术与 UI 残存规范。
+
+### 11. 全局架构专业评估与模块化系统级解耦重构规划 (Plan-208)
+- **目标**：对 MVC 控制层、表现层与检索引擎的隐性、强耦合硬伤进行深度审计。
+- **核心解耦要求**：
+    - **MVC 控制与适配隔离**：将完全侵入 `ScanTableModel` 内部的线程池生命周期、L1/L2 双轨缓存、LIFO 队列和任务合并机制，彻底高聚类地解耦抽取为独立的 `ThumbnailManager` 全局单例组件。
+    - **依赖倒置与插拔式数据契约**：使用 `IDataQueryEngine` 彻底切断上层控制器、数据适配器与物理底层 `MftReader` 的硬编码耦合。
+    - **去除 Delegate 状态透传判定**：在 `ThumbnailDelegate` 渲染层中彻底移除类似 `index.data(Qt::UserRole + 1)` 等涉及业务加载状态的检查，由 `ThumbnailManager` 对 `Qt::DecorationRole` 提供透明的高速高画质 L1/L2 投影，在卡片调节过程中达成零延迟、平滑无缝且无白卡片占位的绘制，重现“旧版本-3”的极致顺滑。
+    - **完全免锁 SoA 快照二次投影**：实现 `ResultSet` 内部 1:1 的各列属性（Name、Path、Size、Mtime）快照投影填充，使得 `ScanTableModel::data()` 运行时对底层 MftReader 核心大锁的物理竞争彻底降为零，消灭百万文件高频滚动时的任何微卡顿。
