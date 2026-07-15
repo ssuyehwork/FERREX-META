@@ -18,7 +18,7 @@
 namespace FERREX {
 
 struct ScanFilterState {
-    QStringList extensionList; 
+    QStringList extensionList;
     bool useRegex = false;
     bool caseSensitive = false;
     bool includeHidden = true;
@@ -26,8 +26,8 @@ struct ScanFilterState {
     bool includeDollar = true;
     bool autoDisplay = false;
 
-    bool isEmpty() const { 
-        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay; 
+    bool isEmpty() const {
+        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay;
     }
 };
 

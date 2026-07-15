@@ -46,7 +46,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
 
     // 建立隔离的缩略图任务专用线程池，避免与主后台任务竞争资源
     m_thumbPool = new QThreadPool(this);
-    
+
     // 2026-06-xx 任务三：磁盘类型感知的线程调度
     // 默认保守策略：若无法获取配置或存在 HDD，则使用串行模式 (1) 保护寻道性能
     bool allSSD = true;
@@ -174,14 +174,14 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     thread_local static int lastRow = -1;
     thread_local static uint64_t lastKey = 0;
     thread_local static QString cachedPath;
-    
+
     auto getPath = [&]() {
         if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
         lastRow = row; lastKey = key;
         cachedPath = reader.getFullPath(actualIndex);
         return cachedPath;
     };
-    
+
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (index.column()) {
             case 0: return reader.getName(actualIndex);
@@ -247,7 +247,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
                 m_requestedThumbs.insert(key);
                 ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
                 int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
-                
+
                 m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
                 if (!m_thumbTimer->isActive()) m_thumbTimer->start();
             }
@@ -325,13 +325,13 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         // 对接 MftReader 预拆分字段
         QString ext = reader.getExtQString(actualIndex);
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
-        
+
         if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
 
         int64_t size = reader.getSize(actualIndex);
         int64_t mtime = reader.getModifyTime(actualIndex);
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
-        
+
         // 只要 L1 精确匹配命中，或者 L2 历史备份可用，即视为存在可用物理缩略图资产并返回线索 1，彻底删除任何多余的过渡加载状态。
         if (m_thumbCache.contains(cacheKey) || m_lastPixmapCache.contains(QString::number(key))) {
             return 1;
@@ -426,7 +426,7 @@ void ScanTableModel::updateResults(std::shared_ptr<ResultSet> nextSet) {
     // 2026-06-xx 极致性能重构：Diffing 局部刷新。
     // 物理铁律：在 emit 信号之前必须确保 m_currentResultSet 已更新，
     // 且信号范围必须与数据量绝对对齐，否则 TableView 内部索引越界会导致程序无响应（假死）。
-    
+
     // 如果变动巨大或初始加载，或者模式切换导致的数据量落差，回退到 Reset 模式
     if (oldSize == 0 || std::abs(newSize - oldSize) > 500) {
         beginResetModel();

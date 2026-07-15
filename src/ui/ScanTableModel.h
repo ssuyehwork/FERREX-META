@@ -54,9 +54,9 @@ public:
 
     void sort(int column, Qt::SortOrder order = Qt::AscendingOrder) override;
     void updateResults(std::shared_ptr<ResultSet> nextSet = nullptr);
-    void clearThumbCache(bool keepLastCache = false) { 
-        m_thumbCache.clear(); 
-        m_requestedThumbs.clear(); 
+    void clearThumbCache(bool keepLastCache = false) {
+        m_thumbCache.clear();
+        m_requestedThumbs.clear();
         m_thumbTaskQueue.clear();
         m_failedThumbs.clear();
         if (!keepLastCache) {
@@ -83,7 +83,7 @@ private:
     mutable QSet<uint64_t> m_requestedThumbs;
     mutable QSet<uint64_t> m_failedThumbs; // 记录由于格式损坏或物理错误导致提取失败的 FRN key，避免重复开销并允许兜底退化
     mutable QMap<uint64_t, double> m_aspectRatios; // 存储宽高比
-    
+
     // 2026-06-xx 极致架构：并行批处理缩略图队列
     struct ThumbTask {
         uint64_t key;
