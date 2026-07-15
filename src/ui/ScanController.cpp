@@ -140,6 +140,9 @@ void ScanController::performSearch() {
 
         int64_t searchMs = subTimer.elapsed();
         auto rs = std::make_shared<ResultSet>();
+
+        // 【核心零分配SoA骨架方案】：仅初始化骨架大小，完全杜绝在此阶段全量分配 QString
+        rs->initialize(keys.size());
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
@@ -315,7 +318,9 @@ void ScanController::sort(int column, int order) {
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
-        // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
+        // 2. 排序阶段：完全去锁化计算 (在排序开始前最终校验一次最新 ID，禁止在 std::sort 比较器内部修改返回值以严格遵守严格弱序，保证内存安全与线程安全)
+        if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
+
         std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
             bool less = false;
             if (column == 0 || column == 1) {
@@ -329,6 +334,8 @@ void ScanController::sort(int column, int order) {
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
         // 3. 写回结果并构建映射
+        newSet->keys.resize(proxies.size());
+        newSet->initializeSoASparse(proxies.size());
         for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
         updateKeyToPosMapping(*newSet);
         return newSet;
@@ -462,6 +469,8 @@ void ScanController::processBatchUpdates() {
 
             if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
+            newSet->keys.resize(proxies.size());
+            newSet->initializeSoASparse(proxies.size());
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
             return newSet;
