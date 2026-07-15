@@ -14,22 +14,9 @@
 #include <shared_mutex>
 #include <unordered_set>
 #include <unordered_map>
+#include "../core/ModelContract.h"
 
 namespace FERREX {
-
-struct ScanFilterState {
-    QStringList extensionList;
-    bool useRegex = false;
-    bool caseSensitive = false;
-    bool includeHidden = true;
-    bool includeSystem = true;
-    bool includeDollar = true;
-    bool autoDisplay = false;
-
-    bool isEmpty() const {
-        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay;
-    }
-};
 
 /**
  * @brief 稳定的结果集封装 (支持 O(1) 定位)
@@ -39,24 +26,34 @@ struct RenderMeta {
     explicit RenderMeta(const QColor& c = QColor()) : color(c) {}
 };
 
+/**
+ * @brief SoA 投影快照中的动态局部缓冲节点 (代表滑动视口内部单项)
+ */
+struct SoAProjRecord {
+    QString name;
+    QString fullPath;
+    int64_t size = 0;
+    int64_t mtime = 0;
+    bool isDirectory = false;
+    QString ext;
+};
+
 struct ResultSet {
     std::vector<uint64_t> keys;
     std::unordered_map<uint64_t, int> keyToPos;
     std::unordered_map<uint64_t, RenderMeta> metadata;
     
-    // 工业级 SoA 数据投影：将路径、大小等在后台线程利用引擎短暂读锁一次性装配完毕
-    // 彻底切断主线程 TableModel::data() 运行时对 MftReader 的高开销锁竞争与递归寻址
-    std::vector<QString> cachedNames;
-    std::vector<QString> cachedPaths;
-    std::vector<int64_t> cachedSizes;
-    std::vector<int64_t> cachedMtimes;
-    std::vector<bool> isDirFlags;
+    // 滑动窗口式 SoA 动态投影缓冲，解决千万级数据下一次性全部拼装导致的爆内存与系统级堆卡死
+    // 允许主线程 data() 零锁瞬间查询视口邻近缓存，而在视口滚动移出时由 TableModel 快速调和回收。
+    mutable std::shared_mutex cacheMutex;
+    mutable std::unordered_map<uint64_t, SoAProjRecord> soaCache;
 };
 
 class ScanController : public QObject {
     Q_OBJECT
 public:
-    explicit ScanController(QObject* parent = nullptr);
+    // 通过构造函数依赖注入，彻底断开对具体单例 MftReader::instance() 的静态依赖
+    explicit ScanController(std::shared_ptr<IDataQueryEngine> engine, QObject* parent = nullptr);
     ~ScanController() override;
 
     void setSearchText(const QString& text);
@@ -92,6 +89,7 @@ private:
     void performSearch();
     void updateKeyToPosMapping(ResultSet& rs);
 
+    std::shared_ptr<IDataQueryEngine> m_engine;
     QString m_searchText;
     ScanFilterState m_filterState;
     int m_currentSortColumn = 0;

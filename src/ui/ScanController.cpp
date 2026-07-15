@@ -8,7 +8,8 @@
 
 namespace FERREX {
 
-ScanController::ScanController(QObject* parent) : QObject(parent) {
+ScanController::ScanController(std::shared_ptr<IDataQueryEngine> engine, QObject* parent)
+    : QObject(parent), m_engine(engine) {
     m_resultSet = std::make_shared<ResultSet>();
     m_debounceTimer = new QTimer(this);
     m_debounceTimer->setSingleShot(true);
@@ -38,8 +39,6 @@ ScanController::ScanController(QObject* parent) : QObject(parent) {
 
         {
             std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
-            // 2026-06-xx 物理防线：校验基准快照。如果期间执行了搜索，m_resultSet 会更新，
-            // 此时后台异步完成的增量排序结果已经失效（基于旧数据），必须舍弃，防止搜索结果被“秒消失”。
             if (m_resultSet != m_sortBaseSnap) {
                 qDebug() << "[ScanController] 舍弃过时的重排序结果";
                 return;
@@ -63,7 +62,6 @@ void ScanController::setSearchText(const QString& text) {
 }
 
 void ScanController::setFilterState(const ScanFilterState& state) {
-    // 简单比对逻辑省略，直接赋值
     m_filterState = state;
 }
 
@@ -87,10 +85,8 @@ int ScanController::resultCount() const {
 }
 
 void ScanController::performSearch() {
-    // 还原旧版本-3：彻底剥离多媒体异步过滤（还原设计一），使其总是返回纯粹的全量数据
-    // [已物理移除] performSearch 中的 if (state.galleryOnly) { ... } 过滤数据块，恢复数据库检索只进行基本的过滤（不再参与自适应或网格的媒体剪裁）
-    MftReader::instance().setSearchCanceled(true); // 物理通知底层搜寻终止
-    ++m_currentSortId; // 瞬间使之前所有未运行完的异步排序任务和批处理增量失效并快速退出
+    MftReader::instance().setSearchCanceled(true);
+    ++m_currentSortId;
 
     if (m_watcher.isRunning()) {
         m_watcher.cancel();
@@ -103,7 +99,6 @@ void ScanController::performSearch() {
     QElapsedTimer timer;
     timer.start();
 
-    // 2026-06-xx 性能优化：对于明确为空且未开启自动显示的请求，直接在 UI 线程构造空结果，避免线程调度开销
     const QString text = m_searchText;
     const ScanFilterState state = m_filterState;
 
@@ -119,19 +114,17 @@ void ScanController::performSearch() {
     }
 
     auto future = QtConcurrent::run([this, text, state]() {
-        // 在新搜索后台线程体启动之初，重置取消状态为 false。因为此时上一个任务必然已经响应了取消或者已被 cancel 中断
         MftReader::instance().setSearchCanceled(false);
 
         QElapsedTimer subTimer;
         subTimer.start();
         
         std::vector<uint64_t> keys;
-        // 如果开启自动显示且查询为空，则执行全量搜索（带过滤）
         if (state.autoDisplay && text.isEmpty() && state.extensionList.isEmpty()) {
-            keys = MftReader::instance().search("", state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+            keys = m_engine->queryKeys("", state);
         }
         else {
-            keys = MftReader::instance().search(text, state.useRegex, state.caseSensitive, state.extensionList, state.includeHidden, state.includeSystem, state.includeDollar);
+            keys = m_engine->queryKeys(text, state);
         }
 
         if (MftReader::instance().isSearchCanceled()) {
@@ -143,9 +136,7 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // [性能重构方案物理对齐]：彻底解耦筛选与显示渲染。后台搜索线程不应该去高开销获取元数据，
-        // 否则会频繁霸占 MftReader.m_dataLock 锁，造成前台 UI 在 data() 渲染时由于锁等待而卡死。
-        // 将后台元数据装饰块完全移除，回归极速过滤模式。
+        // 采用滑动窗口 SoA 填充，此处不再对全量 200 万数据预填充，彻底避免堆空间锁导致的系统级卡死！
         qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
@@ -156,7 +147,7 @@ void ScanController::performSearch() {
         if (m_watcher.isCanceled()) return;
         
         std::shared_ptr<ResultSet> newSet = m_watcher.result();
-        if (!newSet) return; // 拦截空指针，绝对不覆盖当前界面的搜索数据
+        if (!newSet) return;
 
         {
             std::unique_lock<std::shared_mutex> lock(m_resultsMutex);
@@ -169,7 +160,6 @@ void ScanController::performSearch() {
     m_watcher.setFuture(future);
 }
 
-// 2026-06-xx 极致性能重构：排序键投影 (Key Projection) 结构体
 struct SortProxy {
     uint64_t key;
     int64_t iVal = 0;
@@ -177,7 +167,6 @@ struct SortProxy {
 };
 
 bool ScanController::compareKeys(uint64_t a, uint64_t b, int column, int order) {
-    // 降级兼容路径：仅在增量插入时使用，性能非瓶颈
     auto& reader = MftReader::instance();
     int idxA = reader.getIndexByKey(a);
     int idxB = reader.getIndexByKey(b);
@@ -191,7 +180,7 @@ bool ScanController::compareKeys(uint64_t a, uint64_t b, int column, int order) 
         case 3: less = reader.getModifyTime(idxA) < reader.getModifyTime(idxB); break;
         default: return false;
     }
-    return (order == 0 /* Qt::AscendingOrder */) ? less : !less;
+    return (order == 0) ? less : !less;
 }
 
 void ScanController::sort(int column, int order) {
@@ -201,10 +190,8 @@ void ScanController::sort(int column, int order) {
     if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
 
     std::shared_ptr<ResultSet> snap = snapshot();
-    uint32_t mySortId = ++m_currentSortId; // 分配当前任务的唯一排序递增版本
+    uint32_t mySortId = ++m_currentSortId;
     
-    // 2026-06-xx 极致架构优化：去锁化投影排序。
-    // 理由：通过物理拷贝文件名/数值至投影结构，彻底杜绝排序过程中的锁竞争与野指针风险。
     auto future = QtConcurrent::run([this, snap, column, order, mySortId]() {
         auto newSet = std::make_shared<ResultSet>();
         newSet->keys = snap->keys;
@@ -212,8 +199,6 @@ void ScanController::sort(int column, int order) {
 
         auto& reader = MftReader::instance();
 
-        // 1. 投影准备阶段：申请极其短暂的读锁，直接物理拷贝 SoA 投影
-        // 理由：彻底避免在整个 getPathFast/排序 循环中持续霸占读锁，防止 GUI 线程因写锁排队而被挂起。
         std::unordered_map<uint64_t, uint32_t> local_frn_to_idx;
         std::vector<uint32_t> local_name_offsets;
         std::vector<uint8_t> local_string_pool;
@@ -315,7 +300,6 @@ void ScanController::sort(int column, int order) {
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
-        // 2. 排序阶段：完全去锁化计算 (顺序执行，以确保最大环境兼容性)
         std::sort(proxies.begin(), proxies.end(), [column, order](const SortProxy& a, const SortProxy& b) {
             bool less = false;
             if (column == 0 || column == 1) {
@@ -328,7 +312,6 @@ void ScanController::sort(int column, int order) {
 
         if (mySortId != m_currentSortId.load(std::memory_order_relaxed)) return std::shared_ptr<ResultSet>(nullptr);
 
-        // 3. 写回结果并构建映射
         for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
         updateKeyToPosMapping(*newSet);
         return newSet;
@@ -354,13 +337,10 @@ void ScanController::processBatchUpdates() {
     auto events = MftReader::instance().pullChangeJournal();
     if (events.empty()) return;
 
-    // 2026-06-xx 极致性能重构：将增量变动处理与重排序移至后台线程，彻底解决 200万+ 数据下的 UI 假死
     if (m_sortWatcher.isRunning()) {
-        // 如果当前正在执行重排序，则暂缓处理，等待下一次聚合通知（Debounce 效应）
         return;
     }
 
-    // [性能重构方案物理对齐]：当积压的 USN 事件数超过 2000 时，不进行繁重的后台增量排序，直接降级进行快速的全量异步重索，彻底规避锁冲突
     if (static_cast<int>(events.size()) > 2000) {
         qDebug() << "[ScanController] 积压事件数超过2000阈值 (" << events.size() << ")，快速降级至全量异步重新检索";
         triggerSearch(true);
@@ -368,12 +348,9 @@ void ScanController::processBatchUpdates() {
     }
 
     std::shared_ptr<ResultSet> snap = snapshot();
-    uint32_t mySortId = ++m_currentSortId; // 分配当前任务的唯一排序递增版本
+    uint32_t mySortId = ++m_currentSortId;
     auto future = QtConcurrent::run([this, snap, events, text = m_searchText, state = m_filterState, 
                                      column = m_currentSortColumn, order = m_currentSortOrder, mySortId]() {
-        // 2026-06-xx 极致性能优化：延迟拷贝。
-        // 理由：直接对 snap 进行 * 解引用拷贝会克隆整个 unordered_map (200万项)，
-        // 这在 UI 线程频繁触发时会导致严重的亚秒级停顿（假死）。
         std::shared_ptr<ResultSet> newSet;
         bool changed = false;
 
@@ -384,7 +361,6 @@ void ScanController::processBatchUpdates() {
                 return std::shared_ptr<ResultSet>(nullptr);
             }
 
-            // 在未确定变动前，使用旧 snap 的映射进行 O(1) 预判
             auto itPos = snap->keyToPos.find(ev.key);
             
             auto checkMatch = [&](uint32_t idx) {
@@ -429,7 +405,6 @@ void ScanController::processBatchUpdates() {
         if (changed && newSet) {
             newSet->keys.erase(std::remove(newSet->keys.begin(), newSet->keys.end(), 0), newSet->keys.end());
             
-            // 执行后台安全增量重排序 (因为事件积压限制在 2000 个以内，故不拷贝千万级巨型 SoA Map，直接在后台线程下通过短时读锁检索)
             std::vector<SortProxy> proxies;
             proxies.reserve(newSet->keys.size());
             {
@@ -467,12 +442,9 @@ void ScanController::processBatchUpdates() {
             return newSet;
         }
         
-        // 2026-06-xx 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
-        // 理由：sortWatcher 的结果会直接替换 m_resultSet，防止 UI 突然清空
         return std::make_shared<ResultSet>(*snap);
     });
 
-    // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果
     m_sortBaseSnap = snap;
     m_sortWatcher.setFuture(future);
 }

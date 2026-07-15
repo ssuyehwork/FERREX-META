@@ -22,6 +22,11 @@ public:
     bool eventFilter(QObject* obj, QEvent* event) override;
     bool editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option, const QModelIndex& index) override;
 
+    struct RenderLine {
+        QString text;
+        int y;
+    };
+
 private:
     int m_hasThumbnailRole = Qt::UserRole + 1;
     int m_pathRole = -1;

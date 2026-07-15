@@ -711,7 +711,8 @@ void ScanDialog::setupUi() {
 
     mainLayout->addWidget(searchContainer);
 
-    m_controller = new ScanController(this);
+    auto engine = std::shared_ptr<IDataQueryEngine>(&MftReader::instance(), [](IDataQueryEngine*){});
+    m_controller = new ScanController(engine, this);
     m_tableModel = new ScanTableModel(m_controller, this);
 
     m_listResultView = new ListResultView(this);
