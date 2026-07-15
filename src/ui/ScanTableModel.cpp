@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #include "ScanTableModel.h"
+#include "ThumbnailManager.h"
 #include "ScanDialog.h"
 #include "ScanController.h"
 #include "IScanResultView.h"
@@ -238,7 +239,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
 
         // 2026-06-xx 兜底逻辑：若未预取，则计算路径查询，由于 getPath 带有行内缓存，性能依然可控
-        QString qPath = getPath();
+        QString qPath = isLoaded ? m_currentResultSet->cachedPaths[row] : QString();
         auto meta = MetadataManager::instance().getMeta(qPath.toStdWString());
         if (!meta.color.empty()) {
             QColor tagC = UiHelper::parseColorName(QString::fromStdWString(meta.color));
@@ -460,27 +461,24 @@ void ScanTableModel::setVisibleRange(int top, int bottom) {
         int start = std::max<int>(0, top - 500);
         int end = std::min<int>(total - 1, bottom + 500);
 
-        // 申请极短时间的引擎只读锁，一次性装配 1100 行视口数据投影
-        {
-            QReadLocker lock(&reader.m_dataLock);
-            for (int i = start; i <= end; ++i) {
-                if (m_isDestroying) return;
+        // 一次性装配 1100 行视口数据投影
+        for (int i = start; i <= end; ++i) {
+            if (m_isDestroying) return;
 
-                uint64_t key = snap->keys[i];
-                // 若该滑动节点尚未进行 SoA 投影填充，则进行动态按需装配
-                if (snap->cachedPaths[i].isEmpty()) {
-                    int actualIndex = reader.getIndexByKey(key);
-                    if (actualIndex != -1) {
-                        snap->cachedNames[i] = reader.getName(actualIndex);
-                        snap->cachedPaths[i] = reader.getFullPath(actualIndex);
-                        snap->cachedSizes[i] = reader.getSize(actualIndex);
-                        snap->cachedMtimes[i] = reader.getModifyTime(actualIndex);
-                        snap->isDirFlags[i] = reader.isDirectory(actualIndex);
+            uint64_t key = snap->keys[i];
+            // 若该滑动节点尚未进行 SoA 投影填充，则进行动态按需装配
+            if (snap->cachedPaths[i].isEmpty()) {
+                int actualIndex = reader.getIndexByKey(key);
+                if (actualIndex != -1) {
+                    snap->cachedNames[i] = reader.getName(actualIndex);
+                    snap->cachedPaths[i] = reader.getFullPath(actualIndex);
+                    snap->cachedSizes[i] = reader.getSize(actualIndex);
+                    snap->cachedMtimes[i] = reader.getModifyTime(actualIndex);
+                    snap->isDirFlags[i] = reader.isDirectory(actualIndex);
 
-                        // 同时按需触发元数据获取（如果有未就绪项）
-                        if (!reader.isMetadataFetched(actualIndex)) {
-                            const_cast<MftReader&>(reader).requestMetadata(actualIndex);
-                        }
+                    // 同时按需触发元数据获取（如果有未就绪项）
+                    if (!reader.isMetadataFetched(actualIndex)) {
+                        const_cast<MftReader&>(reader).requestMetadata(actualIndex);
                     }
                 }
             }

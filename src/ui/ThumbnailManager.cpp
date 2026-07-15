@@ -10,12 +10,6 @@
 
 namespace FERREX {
 
-// COM 线程隔离初始化辅助
-struct ScopedComInit {
-    ScopedComInit() { CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); }
-    ~ScopedComInit() { CoUninitialize(); }
-};
-
 ThumbnailManager& ThumbnailManager::instance() {
     static ThumbnailManager inst;
     return inst;
