@@ -34,11 +34,6 @@ private:
         QRect banRect;
     };
     Metrics calculateMetrics(const QStyleOptionViewItem& option) const;
-
-    struct RenderLine {
-        QString text;
-        int y;
-    };
 };
 
 } // namespace FERREX

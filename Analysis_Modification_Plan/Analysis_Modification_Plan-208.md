@@ -8,7 +8,7 @@
 主要表现在：
 1. **控制层与视图层的职责重度污染与双向依赖**：控制器（`ScanController`）与数据模型（`ScanTableModel`）通过信号与裸指针严重绑定，数据模型内部包含了大量的异步任务调度和 L1/L2 缓存加载细节，导致应当作为纯数据代理的 Model 承担了业务引擎控制器的角色。
 2. **数据层未完成抽象与硬编码引用**：模型与视图通过 `MftReader::instance()` 强行交互，无法实现数据查询引擎的可插拔与测试模拟，违反了依赖倒置原则（DIP）。
-3. **并发生命周期的拼凑补丁特征**：高频交互下的防抖、定时器、线程池销毁等机制由于缺乏系统化工程规划，零星分布在各个 UI 类中，增加了系统的不可维护性与偶发崩溃隐患。
+3. **并发生命周期的拼凑补丁特征**：高频交互下的防抖、定时器、线程池销毁等机制由于缺乏系统化工程规划，零星分布 in 各个 UI 类中，增加了系统的不可维护性与偶发崩溃隐患。
 
 本方案针对这些逻辑架构缺陷，基于“清晰分层、低耦合高内聚、高维护性、易扩展性、明确的性能优化、降低团队协作成本”的工业级架构标准，提出一整套**全局架构专业化评估与模块化解耦重构规划蓝图**。
 
@@ -55,9 +55,9 @@
 
 ## 4. 详细解决方案
 
-### 4.1 全局三层架构物理分层重构规范 (清晰分层) (对应用户原话："全局三层架构物理分层重构规范")
+### 4.1 全局三层架构物理分层重构规范 (清晰分层)
 
-重构后，系统物理架构应该清晰划分为三层 (对应用户原话："三层" 且含数量词 "三")，各层之间通过标准接口单向交互，绝对禁止反向侵入：
+重构后，系统物理架构应该清晰划分为三层，各层之间通过标准接口单向交互，绝对禁止反向侵入：
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -84,11 +84,11 @@
 
 ---
 
-### 4.2 数据引擎接口提取与依赖注入重构 (低耦合高内聚 · 易扩展) (对应用户原话："数据引擎接口提取与依赖注入重构")
+### 4.2 数据引擎接口提取与依赖注入重构 (低耦合高内聚 · 易扩展)
 
 彻底消灭 `ScanController` 和 `ScanTableModel` 内部对具体类 `MftReader` 的强耦合，通过标准 `IDataQueryEngine` 进行解耦替换：
 
-#### [解耦契约 1] (对应用户原话："解耦契约 1" 且含数量词 "1") 在 `src/core/ModelContract.h` 中充实接口设计：
+#### [解耦契约 1] 在 `src/core/ModelContract.h` 中充实接口设计：
 ```cpp
 #pragma once
 #include <QString>
@@ -133,7 +133,7 @@ public:
 } // namespace FERREX
 ```
 
-#### [控制层注入] (对应用户原话："控制层注入") `ScanController` 声明与构造函数的解耦改进：
+#### [控制层注入] `ScanController` 声明与构造函数的解耦改进：
 ```cpp
 class ScanController : public QObject {
     Q_OBJECT
@@ -148,11 +148,11 @@ private:
 
 ---
 
-### 4.3 缩略图与缓存控制子系统纯解耦重组 (易维护 · 职责明确) (对应用户原话："缩略图与缓存控制子系统纯解耦重组")
+### 4.3 缩略图与缓存控制子系统纯解耦重组 (易维护 · 职责明确)
 
 将零零散散分布于 `ScanTableModel` 内的线程池、L1/L2 缓存、LIFO队列等重度业务逻辑，完全打包、高聚类地解耦抽取为独立的业务组件 `ThumbnailManager`。
 
-#### [解耦类 2] (对应用户原话："解耦类 2" 且含数量词 "2") 设计高内聚的 `ThumbnailManager` (完全移除 TableModel 污染)：
+#### [解耦类 2] 设计高内聚的 `ThumbnailManager` (完全移除 TableModel 污染)：
 ```cpp
 namespace FERREX {
 
@@ -182,8 +182,8 @@ private:
     ~ThumbnailManager() override;
 
     QThreadPool* m_pool = nullptr;
-    QCache<QString, QPixmap> m_l1Cache;       // L1 精确匹配缓存 (Key: key_size_mtime) (对应用户原话："L1" 且含数量词 "1")
-    QCache<QString, QPixmap> m_l2DoubleTrack;  // L2 变焦兜底双轨缓存 (Key: key) (对应用户原话："L2" 且含数量词 "2")
+    QCache<QString, QPixmap> m_l1Cache;       // L1 精确匹配缓存 (Key: key_size_mtime)
+    QCache<QString, QPixmap> m_l2DoubleTrack;  // L2 变焦兜底双轨缓存 (Key: key)
     QSet<uint64_t> m_pendingKeys;
     QSet<uint64_t> m_failedKeys;
 };
@@ -193,31 +193,31 @@ private:
 
 **对 `ScanTableModel` 的降噪效果：**
 重构后，`ScanTableModel::data()` 在处理 `Qt::DecorationRole` 时：
-1. (对应用户原话："1" 且含顺序词 "1") 只需要调用 `ThumbnailManager::instance().requestThumbnail(...)`；
-2. (对应用户原话："2" 且含顺序词 "2") 如果返回空，直接提供 `QVariant()` 阻断，没有多余的状态字和线程调度排队；
-3. (对应用户原话："3" 且含顺序词 "3") 当 `ThumbnailManager` 发射 `thumbnailReady` 信号时，TableModel 响应刷新对应的 row 范围即可。
-**代码行数可直接骤减 300+ 行 (对应用户原话："300+ 行" 且含数量词 "300")，Model 职责重回纯粹！**
+1. 只需要调用 `ThumbnailManager::instance().requestThumbnail(...)`；
+2. 如果返回空，直接提供 `QVariant()` 阻断，没有多余的状态字和线程调度排队；
+3. 当 `ThumbnailManager` 发射 `thumbnailReady` 信号时，TableModel 响应刷新对应的 row 范围即可。
+**代码行数可直接骤减 300+ 行，Model 职责重回纯粹！**
 
 ---
 
-### 4.4 消除运行期动态 HACK 补丁 (极致性能优化) (对应用户原话："消除运行期动态 HACK 补丁")
+## 4. 消除运行期动态 HACK 补丁 (极致性能优化)
 
 - **废除渲染时配置轮询**：
   移除 `data()` 内部每次高频进入都要做 `if (m_lastPixmapCache.maxCost() == 0)` 的运行期分支判定，所有物理控制在对象生命周期初始化阶段即绑定就绪。
 - **视图 Delegate 绝对去状态化无损绘制**：
-  在 `ThumbnailDelegate` 内彻底移除类似 `index.data(Qt::UserRole + 1).toInt() == 1` (对应用户原话："1" 且含数量词 "1") 等涉及业务加载逻辑的状态位读取。
+  在 `ThumbnailDelegate` 内彻底移除类似 `index.data(Qt::UserRole + 1).toInt() == 1` 等涉及业务加载逻辑的状态位读取。
   - **核心准则**：Delegate 在绘制时应当闭上眼睛、直接将 `index.data(Qt::DecorationRole)` 转为 `QPixmap` 或者是 `QIcon` 渲染。
-  - 如果模型由于加载中提供了空（`QVariant()`），则 Delegate 配合背景色绘制平滑占位卡片或棋盘格，直直到底层异步管道完成后触发重绘。这正是“旧版本-3” (对应用户原话："旧版本-3" 且含数量词 "3") 基准最流畅的秘诀所在。
+  - 如果模型由于加载中提供了空（`QVariant()`），则 Delegate 配合背景色绘制平滑占位卡片或棋盘格，直至底层异步管道完成后触发重绘。这正是“旧版本-3”基准最流畅的秘诀所在。
 
 ---
 
-### 4.5 控制器端 SoA 高速投影二次优化与免锁设计 (明确性能) (对应用户原话："控制器端 SoA 高速投影二次优化与免锁设计")
+## 4.5 控制器端 SoA 高速投影二次优化与免锁设计 (明确性能)
 
 既有设计中通过 SoA 将路径、大小在 `ResultSet` 内进行缓存，但：
-1. (对应用户原话："1" 且含顺序词 "1") 如果数据量突破 200 万项 (对应用户原话："200 万" 且含数量词 "200 万")，拷贝 `std::vector<QString>` 的 SoA 分配和内存空转开销依然不容小觑。
-2. (对应用户原话："2" 且含顺序词 "2") 即使已经进行了 SoA 后台投影，在 `ScanTableModel::data()` 里处理 `DisplayRole` 的第 1、2、3 列 (对应用户原话："第 1、2、3 列" 且含顺序词 "第 1、2、3") 时，依然在通过 `reader.getFullPath()` 运行时去主数据引擎检索，锁竞争依旧严重。
+1. 如果数据量突破 200 万项，拷贝 `std::vector<QString>` 的 SoA 分配和内存空转开销依然不容小觑。
+2. 即使已经进行了 SoA 后台投影，在 `ScanTableModel::data()` 里处理 `DisplayRole` 的第 1、2、3 列时，依然在通过 `reader.getFullPath()` 运行时去主数据引擎检索，锁竞争依旧严重。
 
-#### [SoA 高性能改造方案] (对应用户原话："SoA 高性能改造方案")
+#### [SoA 高性能改造方案]
 在 `ResultSet` 内部实现**完全的零锁运行时读取**。
 在 `ScanController::performSearch` 生成 `ResultSet` 时，对当前匹配的键组分批建立只读投影快照，对频繁被视图读取的属性做物理字段映射：
 
@@ -227,10 +227,10 @@ struct ResultSet {
     std::unordered_map<uint64_t, int> keyToPos;
 
     // SoA 快照直接映射
-    std::vector<QString> cachedNames;  // 1:1 投影对应第 0 列渲染 (对应用户原话："1:1" 与 "第 0 列" 且含数量词/顺序词)
-    std::vector<QString> cachedPaths;  // 1:1 投影对应第 1 列渲染 (对应用户原话："1:1" 与 "第 1 列" 且含数量词/顺序词)
-    std::vector<int64_t> cachedSizes;  // 1:1 投影对应第 2 列渲染 (对应用户原话："1:1" 与 "第 2 列" 且含数量词/顺序词)
-    std::vector<int64_t> cachedMtimes; // 1:1 投影对应第 3 列渲染 (对应用户原话："1:1" 与 "第 3 列" 且含数量词/顺序词)
+    std::vector<QString> cachedNames;  // 1:1 投影对应第 0 列渲染
+    std::vector<QString> cachedPaths;  // 1:1 投影对应第 1 列渲染
+    std::vector<int64_t> cachedSizes;  // 1:1 投影对应第 2 列渲染
+    std::vector<int64_t> cachedMtimes; // 1:1 投影对应第 3 列渲染
 };
 ```
 在 `ScanTableModel::data()` 渲染时，**绝对禁止**调用 MftReader 相关的检索方法。数据获取应当简单粗暴到极致：
@@ -241,17 +241,17 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
 
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
-            case 0: return m_currentResultSet->cachedNames[row]; // (对应用户原话："第 0 列")
-            case 1: return m_currentResultSet->cachedPaths[row]; // (对应用户原话："第 1 列")
-            case 2: return formatSize(m_currentResultSet->cachedSizes[row]); // (对应用户原话："第 2 列")
-            case 3: return formatTime(m_currentResultSet->cachedMtimes[row]); // (对应用户原话："第 3 列")
+            case 0: return m_currentResultSet->cachedNames[row];
+            case 1: return m_currentResultSet->cachedPaths[row];
+            case 2: return formatSize(m_currentResultSet->cachedSizes[row]);
+            case 3: return formatTime(m_currentResultSet->cachedMtimes[row]);
         }
     }
     ...
 }
 ```
 **性能收益：**
-物理实现彻底免锁！主线程 `TableModel::data()` 对底层 `MftReader::m_dataLock` 锁的运行时竞争彻底下降为 **0** (对应用户原话："0" 且含数量词 "0")。由于没有了读写锁排队，在 200万+ (对应用户原话："200万+" 且含数量词 "200万") 数据的滚动时可消除任何微卡顿，达成水准之上的工业级体验。
+物理实现彻底免锁！主线程 `TableModel::data()` 对底层 `MftReader::m_dataLock` 锁的运行时竞争彻底下降为 **0**。由于没有了读写锁排队，在 200万+ 数据的滚动时可消除 any 微卡顿，达成水准之上的工业级体验。
 
 ---
 
@@ -268,24 +268,10 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
 
 ## 6. 实现准则与预警【核心】
 
-1. **依赖注入与单例降噪**： (对应用户原话："1. 依赖注入与单例降噪" 且含顺序词 "1")
+1. **依赖注入与单例降噪**：
    在实现 `IDataQueryEngine` 时，原 `MftReader` 虽然可保留为具体的实现载体，但任何 UI 控制逻辑只能通过 `std::shared_ptr<IDataQueryEngine>` 对外暴露，以防止业务模型在后续向数据库索引架构迁移时产生过度耦合。
-2. **QCache 的多线程访问安全预警**： (对应用户原话："2. QCache 的多线程访问安全预警" 且含顺序词 "2")
+2. **QCache 的多线程访问安全预警**：
    重构后的 `ThumbnailManager` 在处理 L1/L2 缓存时，注意 `QCache` 本身不是线程安全的。在工作线程调用 `insert()` 与主线程调用 `object()` 获取 Pixmap 时，必须使用互斥锁（`std::mutex`）或者 `QMutex` 进行严格同步，防止高并发下指针损坏造成崩溃。
-3. **内存控制报警线**： (对应用户原话："3. 内存控制报警线" 且含顺序词 "3")
+3. **内存控制报警线**：
    在千万级数据下，SoA 缓存加载若一次性将所有匹配行的 `QString` 拼装出来会产生巨大的内存开销。
-   - 解决方案：必须通过滑动窗口机制（Sliding Window），每次仅对当前可见行及其上下 500 行 (对应用户原话："500" 且含数量词 "500") 的 `ResultSet` 节点进行 SoA 投影填充，从而兼顾零锁性能和极低的内存占用率。
-
----
-
-## 7. Memories.md 合规检查
-
-| 组件 / 模式 | Memories.md 规范要求 | 本方案是否符合 |
-|-------------|----------------------|----------------|
-| 虚拟化模型 | 基于 `QAbstractTableModel` 的虚拟化模型实现百万级秒开 | ✅ （重构后的 `ScanTableModel` 纯化为轻量数据适配，并进行免锁 SoA 快照投影与滑动窗口机制，更优地支持千万级/百万级秒开渲染且内存极低） |
-
----
-
-## 8. 待确认事项（可选）
-
-*暂无需要确认的事项，所有重构约束与物理红线已完全对准。*
+   - 解决方案：必须通过滑动窗口机制（Sliding Window），每次仅对当前可见行及其上下 500 行的 `ResultSet` 节点进行 SoA 投影填充，从而兼顾零锁性能和极低的内存占用率。

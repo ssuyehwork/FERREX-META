@@ -20,7 +20,6 @@
 #include <QThreadPool>
 #include <QTimer>
 #include "ScchCache.h"
-#include "../core/ModelContract.h"
 
 #ifdef min
 #undef min
@@ -45,7 +44,7 @@ class UsnJournalTreeSynchronizer;
 class DiskIndexCacheCoordinator;
 class MemoryQueryEngine;
 
-class MftReader : public QObject, public IDataQueryEngine {
+class MftReader : public QObject {
     Q_OBJECT
     friend class ScanController; // 2026-06-xx 极致架构：允许控制器直接访问 SoA，消除锁竞争开销
     friend class NtfsVolumeMftParser;
@@ -76,10 +75,6 @@ public:
     // 驱动器隔离状态管理
     void updateActiveDrives(const QStringList& activeDrives);
     bool isDriveIndexed(const QString& drive);
-
-    // IDataQueryEngine 接口实现
-    std::vector<uint64_t> queryKeys(const QString& keyword, const ScanFilterState& filterState) override;
-    FileMetaRecord getRecordByKey(uint64_t key) const override;
 
     // 查询接口 (支持驱动器掩码隔离)
     // 2026-06-xx 物理重构：返回稳定的复合 FRN 主键而非数组下标，杜绝跨线程索引漂移

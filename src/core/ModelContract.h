@@ -4,51 +4,18 @@
 #include <QStringList>
 #include <vector>
 #include <cstdint>
-#include <memory>
 
 namespace FERREX {
 
-struct ScanFilterState {
-    QStringList extensionList;
-    bool useRegex = false;
-    bool caseSensitive = false;
-    bool includeHidden = true;
-    bool includeSystem = true;
-    bool includeDollar = true;
-    bool autoDisplay = false;
+struct ScanFilterState;
 
-    bool isEmpty() const {
-        return extensionList.isEmpty() && !useRegex && !caseSensitive && includeHidden && includeSystem && includeDollar && !autoDisplay;
-    }
-};
-
-/**
- * @brief 文件元数据统一只读记录 (零锁高性能快照结构)
- */
-struct FileMetaRecord {
-    uint64_t key = 0;
-    QString name;
-    QString fullPath;
-    int64_t size = 0;
-    int64_t mtime = 0;
-    bool isDirectory = false;
-};
-
-/**
- * @brief 抽象检索与元数据只读查询引擎接口
- */
 class IDataQueryEngine {
 public:
     virtual ~IDataQueryEngine() = default;
-
-    // 异步或同步执行匹配搜寻，仅返回不含状态的物理 Key 列表
-    virtual std::vector<uint64_t> queryKeys(
-        const QString& keyword,
-        const ScanFilterState& filterState
+    virtual std::vector<uint64_t> search(
+        const QString& text,
+        const ScanFilterState& state
     ) = 0;
-
-    // 极速获取特定条目的只读元数据，屏蔽具体底层存储（如内存、MFT 或 SQLite）的读取细节
-    virtual FileMetaRecord getRecordByKey(uint64_t key) const = 0;
 };
 
 /**
