@@ -728,7 +728,18 @@ void MftReader::mergeDriveResult(const std::wstring& volume, const MftReader::Dr
         m_sizes.push_back(e.size); // 2026-05-14 修正：将扫描到的大小压入 SoA
         m_timestamps.push_back(e.modifyTime); m_attributes.push_back(e.attributes);
         m_metadata_fetched.push_back(0);
-        
+
+        // 2026-07-29 物理修复 (Analysis_Modification_Plan-202.md)：
+        // 新写入的记录必须同步登记进 m_frn_to_idx，不能只依赖事后的 compact()。
+        // compact() 在 !force 且 m_dead_count == 0（全新扫描必然如此）时会提前
+        // return，导致刚合并进来的这批数据永远进不了映射表——搜索/getFullPath
+        // 全部走 m_frn_to_idx.find()，找不到就直接失败或返回空路径，这正是
+        // "立即扫描并索引"后搜不到数据、缩略图卡片全灰的根因。
+        // 这里在写锁范围内（调用方 buildIndex 持有 QWriteLocker）直接同步维护，
+        // 代价是 O(本次新增条目数)，不需要再依赖 compact(true) 对全部已加载
+        // 条目做一次代价高得多的 O(全量) 重建。
+        m_frn_to_idx[makeKey(driveIdx, e.frn)] = (uint32_t)(m_frns.size() - 1);
+
         const char* namePtr = reinterpret_cast<const char*>(result.string_pool.data() + e.nameOffset);
         m_name_offsets.push_back((uint32_t)m_string_pool.size());
         m_string_pool.insert(m_string_pool.end(), namePtr, namePtr + strlen(namePtr) + 1);
