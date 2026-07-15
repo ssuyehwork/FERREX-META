@@ -161,102 +161,75 @@ int ScanTableModel::columnCount(const QModelIndex& /*parent*/) const { return 4;
 QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid()) return QVariant();
     int row = index.row();
-    if (row < 0 || row >= (int)m_currentResultSet->keys.size()) return QVariant();
-    
+    if (row < 0 || row >= static_cast<int>(m_currentResultSet->keys.size())) return QVariant();
+
     uint64_t key = m_currentResultSet->keys[row];
     auto& reader = MftReader::instance();
-    int actualIndex = reader.getIndexByKey(key);
-    if (actualIndex == -1) return QVariant(); // 文件可能已被删除
 
-    // 2026-06-xx 极致性能重构：行内计算缓存。
-    // 理由：getFullPath() 是极其昂贵的递归操作且包含读锁，
-    // 在一次 data() 调用中（或者同一行的多列渲染中）必须消除重复计算。
-    thread_local static int lastRow = -1;
-    thread_local static uint64_t lastKey = 0;
-    thread_local static QString cachedPath;
-    
-    auto getPath = [&]() {
-        if (lastRow == row && lastKey == key && !cachedPath.isEmpty()) return cachedPath;
-        lastRow = row; lastKey = key;
-        cachedPath = reader.getFullPath(actualIndex);
-        return cachedPath;
-    };
-    
+    // 【核心去锁方案】：所有渲染所需的字符/大小属性直接从 SoA 视口投影中快速读取，拒绝高开销引擎锁与递归查询
+    bool isLoaded = !m_currentResultSet->cachedPaths[row].isEmpty();
+
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
+        if (!isLoaded) {
+            // 滑动窗口尚未填充完的节点，提供快速骨架屏或优雅占位，杜绝等待
+            if (index.column() == 0) return QString("加载中...");
+            if (index.column() == 1) return QString("...");
+            return "-";
+        }
+
         switch (index.column()) {
-            case 0: return reader.getName(actualIndex);
-            case 1: return getPath();
+            case 0: return m_currentResultSet->cachedNames[row];
+            case 1: return m_currentResultSet->cachedPaths[row];
             case 2: {
-                if (reader.isDirectory(actualIndex)) return "-";
-                int64_t size = reader.getSize(actualIndex);
-                if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    return "...";
-                }
+                if (m_currentResultSet->isDirFlags[row]) return "-";
+                int64_t size = m_currentResultSet->cachedSizes[row];
+                if (size == 0) return "...";
                 if (size < 1024) return QString("%1 B").arg(size);
                 if (size < 1024 * 1024) return QString("%1 KB").arg(size / 1024.0, 0, 'f', 2);
                 if (size < 1024LL * 1024 * 1024) return QString("%1 MB").arg(size / (1024.0 * 1024.0), 0, 'f', 2);
                 return QString("%1 GB").arg(size / (1024.0 * 1024.0 * 1024.0), 0, 'f', 2);
             }
             case 3: {
-                int64_t ts = reader.getModifyTime(actualIndex);
-                if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-                    return "-";
-                }
-                if (ts == 0) return "-";
+                int64_t ts = m_currentResultSet->cachedMtimes[row];
+                if (ts <= 0) return "-";
                 return QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
             }
         }
     } else if (role == Qt::DecorationRole && index.column() == 0) {
-        // 2026-06-xx 性能优化：对接 MftReader 预拆分的扩展名字端，消除 UI 层重复解析
-        QString ext = reader.getExtQString(actualIndex);
-        
+        if (!isLoaded) {
+            return reader.getCachedIcon("folder", false); // 未就绪前默认返回常规文件系统图标，杜绝黑卡片
+        }
+
+        bool isDir = m_currentResultSet->isDirFlags[row];
+        QString path = m_currentResultSet->cachedPaths[row];
+        QFileInfo fi(path);
+        QString ext = fi.suffix().toLower();
+
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
-        if (thumbExts.contains(ext) && !reader.isDirectory(actualIndex)) {
-            // 2026-06-xx 极致性能优化：使用 CompositeKey + Size + Mtime 构建 O(1) 的原子 CacheKey
-            int64_t size = reader.getSize(actualIndex);
-            int64_t mtime = reader.getModifyTime(actualIndex);
-            QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
+        if (thumbExts.contains(ext) && !isDir) {
+            int64_t size = m_currentResultSet->cachedSizes[row];
+            int64_t mtime = m_currentResultSet->cachedMtimes[row];
 
-            // 1. 精确尺寸缓存匹配
-            QPixmap* cached = m_thumbCache.object(cacheKey);
-            if (cached) return *cached;
+            ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
+            int thumbSize = dlg ? dlg->m_config.iconSize : 64;
 
-            // 2.【核心改进：先判断历史缩略图并做平滑拉伸】
-            QPixmap* lastCached = m_lastPixmapCache.object(QString::number(key));
-            if (lastCached) {
-                // 后台静默生成符合全新精确尺寸的高画质大图
-                if (!m_requestedThumbs.contains(key)) {
-                    m_requestedThumbs.insert(key);
-                    ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                    int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
-                    m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
-                    if (!m_thumbTimer->isActive()) m_thumbTimer->start();
-                }
-
-                // 物理资产优先：直接返回原始的历史 Pixmap 资产，由 Delegate 进行后续 Cover/Contain 平滑拉伸，绝不闪现系统默认图标
-                return *lastCached;
+            // 调用双轨 LRU 缓存管家获取资产（100% 同步按需判定，防白屏和系统关联图标闪烁）
+            bool hasPerfectMatch = false;
+            QPixmap pix = ThumbnailManager::instance().requestThumbnail(key, path, ext, thumbSize, size, mtime, hasPerfectMatch);
+            if (!pix.isNull()) {
+                return pix; // 返回精确或历史大图拉伸资产
             }
 
-            // C. 失败兜底阻断器：如果已经被标记为彻底提取失败，则可以穿透放行，退回到最下方的系统默认图标展示。
-            if (m_failedThumbs.contains(key)) {
+            // 若彻底提取失败，回退使用系统关联图标
+            if (ThumbnailManager::instance().isFailed(key)) {
                 return reader.getCachedIcon(ext, false);
             }
 
-            // D. 加载期强制阻断方案：此时缩略图在加载队列中尚未产生。为了杜绝默认图标的插足闪跃，模型层强制返回“符合规范的空 QVariant()”。
-            if (!m_requestedThumbs.contains(key)) {
-                m_requestedThumbs.insert(key);
-                ScanDialog* dlg = qobject_cast<ScanDialog*>(parent());
-                int thumbSize = dlg ? dlg->m_config.iconSize : 64; // 不再对列表视图强行截断 24px，使其跟随滚轮联动缩放 [1]
-                
-                m_thumbTaskQueue.append({key, thumbSize, ext, cacheKey});
-                if (!m_thumbTimer->isActive()) m_thumbTimer->start();
-            }
-
-            return QVariant(); // 【核心物理阻断点】向视图提供空数据，掐断默认图标的透传通路！
+            return QVariant(); // 纯空，提供给视图进行背景瓦片占位绘制
         }
-        
-        // 常规不支持缩略图的后缀（如 txt, exe），直接放行，回退到系统默认图标
-        return reader.getCachedIcon(ext, reader.isDirectory(actualIndex));
+
+        // 常规文件与目录，直接返回默认关联图标
+        return reader.getCachedIcon(ext, isDir);
     } else if (role == Qt::ForegroundRole) {
         // 2026-06-xx 极致性能重构：优先从结果集的预取元数据中获取颜色，消除磁盘 IO 风险
         auto it = m_currentResultSet->metadata.find(key);
@@ -272,19 +245,22 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             if (tagC.isValid()) return tagC;
         }
         // 2026-06-xx 按照用户要求：名称列（第0列）强制显示为蓝色
-        if (index.column() == 0 || reader.isDirectory(actualIndex)) return QColor("#3498db");
+        if (index.column() == 0 || (isLoaded && m_currentResultSet->isDirFlags[row])) return QColor("#3498db");
     } else if (role == Qt::ToolTipRole) {
         // 2026-06-xx 极致性能重构：消除 ToolTipRole 中的重复路径回溯
         // 2026-07-12 物理对齐需求：ToolTipOverlay 显示的内容包含项目名称、路径、大小、修改时间 (并兼容备注和标签)
-        QString name = reader.getName(actualIndex);
-        QString qPath = getPath();
+        if (!isLoaded) {
+            return QString("加载中...");
+        }
+        QString name = m_currentResultSet->cachedNames[row];
+        QString qPath = m_currentResultSet->cachedPaths[row];
         
         QString sizeStr;
-        if (reader.isDirectory(actualIndex)) {
+        if (m_currentResultSet->isDirFlags[row]) {
             sizeStr = "-";
         } else {
-            int64_t size = reader.getSize(actualIndex);
-            if (size == 0 && !reader.isMetadataFetched(actualIndex)) {
+            int64_t size = m_currentResultSet->cachedSizes[row];
+            if (size == 0) {
                 sizeStr = "...";
             } else if (size < 1024) {
                 sizeStr = QString("%1 B").arg(size);
@@ -298,10 +274,8 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         }
 
         QString mtimeStr;
-        int64_t ts = reader.getModifyTime(actualIndex);
-        if (ts == 0 && !reader.isMetadataFetched(actualIndex)) {
-            mtimeStr = "-";
-        } else if (ts == 0) {
+        int64_t ts = m_currentResultSet->cachedMtimes[row];
+        if (ts <= 0) {
             mtimeStr = "-";
         } else {
             mtimeStr = QDateTime::fromMSecsSinceEpoch(ts).toString("yyyy-MM-dd HH:mm");
@@ -322,14 +296,17 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return key;
     } else if (role == Qt::UserRole + 1) {
         // 返回缩略图物理资产状态：0=未就绪/不支持, 1=有可用缩略图 (用于 Delegate 实施“缩略图第一优先、系统图标靠后兜底”绘制)
-        // 对接 MftReader 预拆分字段
-        QString ext = reader.getExtQString(actualIndex);
+        if (!isLoaded) return 0;
+        bool isDir = m_currentResultSet->isDirFlags[row];
+        QString path = m_currentResultSet->cachedPaths[row];
+        QFileInfo fi(path);
+        QString ext = fi.suffix().toLower();
         static const QSet<QString> thumbExts = {"psd", "ai", "eps", "jpg", "jpeg", "png", "webp", "svg"};
         
-        if (!thumbExts.contains(ext) || reader.isDirectory(actualIndex)) return 0;
+        if (!thumbExts.contains(ext) || isDir) return 0;
 
-        int64_t size = reader.getSize(actualIndex);
-        int64_t mtime = reader.getModifyTime(actualIndex);
+        int64_t size = m_currentResultSet->cachedSizes[row];
+        int64_t mtime = m_currentResultSet->cachedMtimes[row];
         QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
         
         // 只要 L1 精确匹配命中，或者 L2 历史备份可用，即视为存在可用物理缩略图资产并返回线索 1，彻底删除任何多余的过渡加载状态。
@@ -339,12 +316,13 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return 0;
     } else if (role == Qt::UserRole + 2) {
         // [性能重构方案物理对齐]：返回宽高比 (用于 JustifiedView 布局)
-        // 2026-07-11 物理重构：自适应模式仅限于视频和图形图像文件，文件夹与其余常规文件直接返回 -1.0 禁用自适应拉伸 (对应用户原话：“所谓的自适应仅限于视频、图形图像，除此之外仅剩下常规文件类型了”)
-        if (reader.isDirectory(actualIndex)) {
+        if (!isLoaded || m_currentResultSet->isDirFlags[row]) {
             return -1.0;
         }
 
-        QString ext = reader.getExtQString(actualIndex).toLower();
+        QString path = m_currentResultSet->cachedPaths[row];
+        QFileInfo fi(path);
+        QString ext = fi.suffix().toLower();
         static const QSet<QString> mediaExts = {
             // 图形图像类
             "jpg", "jpeg", "png", "bmp", "webp", "gif", "ico", "psd", "ai", "svg",
@@ -469,7 +447,51 @@ void ScanTableModel::fetchMore(const QModelIndex& parent) {
 void ScanTableModel::setVisibleRange(int top, int bottom) {
     m_visibleTop = top;
     m_visibleBottom = bottom;
-    m_metadataTimer->start();
+
+    // 【核心按需滑动装配方案】：引入 100% 视口惰性填充机制，杜绝 200万+ 数据下的全量堆动态分配
+    // 理由：仅针对可见视口及上下 500 行的缓冲区 [VisibleTop - 500, VisibleBottom + 500] 范围进行短时装配。
+    auto snap = m_currentResultSet;
+    if (!snap || snap->keys.empty()) return;
+
+    (void)QtConcurrent::run([snap, top, bottom, this]() {
+        auto& reader = MftReader::instance();
+
+        int total = static_cast<int>(snap->keys.size());
+        int start = std::max<int>(0, top - 500);
+        int end = std::min<int>(total - 1, bottom + 500);
+
+        // 申请极短时间的引擎只读锁，一次性装配 1100 行视口数据投影
+        {
+            QReadLocker lock(&reader.m_dataLock);
+            for (int i = start; i <= end; ++i) {
+                if (m_isDestroying) return;
+
+                uint64_t key = snap->keys[i];
+                // 若该滑动节点尚未进行 SoA 投影填充，则进行动态按需装配
+                if (snap->cachedPaths[i].isEmpty()) {
+                    int actualIndex = reader.getIndexByKey(key);
+                    if (actualIndex != -1) {
+                        snap->cachedNames[i] = reader.getName(actualIndex);
+                        snap->cachedPaths[i] = reader.getFullPath(actualIndex);
+                        snap->cachedSizes[i] = reader.getSize(actualIndex);
+                        snap->cachedMtimes[i] = reader.getModifyTime(actualIndex);
+                        snap->isDirFlags[i] = reader.isDirectory(actualIndex);
+
+                        // 同时按需触发元数据获取（如果有未就绪项）
+                        if (!reader.isMetadataFetched(actualIndex)) {
+                            const_cast<MftReader&>(reader).requestMetadata(actualIndex);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 切回主线程触发局部刷新，信号范围精准锁定在 start 到 end 行，绝不产生越界
+        QMetaObject::invokeMethod(this, [this, start, end]() {
+            if (m_isDestroying) return;
+            emit dataChanged(index(start, 0), index(end, 3));
+        }, Qt::QueuedConnection);
+    });
 }
 
 void ScanTableModel::forceFetchAll() {
