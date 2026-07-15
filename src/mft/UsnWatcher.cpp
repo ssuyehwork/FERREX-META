@@ -130,27 +130,22 @@ void UsnWatcher::handleRecord(USN_RECORD_V2* pRecord) {
     std::wstring lowerName = fileName;
     std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::towlower);
 
-    // 1. 项目自身及调试日志拦截
-    if (lowerName.find(L"ferrex_debug.log") != std::wstring::npos ||
-        lowerName.find(L"log_") != std::wstring::npos) {
+    // 【核心根治方案】：建立无拷贝静态前缀与尾缀秒级过滤，替代昂贵的高频全模糊 wstring 检索
+    static const std::vector<std::wstring> static_ignored_suffixes = {
+        L".log", L".bin.tmp", L".idx.tmp", L".db-wal", L".db-journal", L".db-shm"
+    };
+    static const std::vector<std::wstring> static_ignored_prefixes = {
+        L"log_", L"etilqs_"
+    };
+
+    if (lowerName == L"ferrex_debug.log" || lowerName == L"ferrex_scan_config.json" || lowerName.find(L"diskindex") != std::wstring::npos) {
         return;
     }
-    // 2. 索引与高速缓存临时文件拦截（只精准拦截 .bin.tmp / .idx.tmp 等临时及 diskindex 内部资产，保留常规用户 .bin / .idx 文件变更）
-    if (lowerName.find(L".bin.tmp") != std::wstring::npos ||
-        lowerName.find(L".idx.tmp") != std::wstring::npos ||
-        lowerName.find(L"diskindex") != std::wstring::npos) {
-        return;
+    for (const auto& suf : static_ignored_suffixes) {
+        if (lowerName.size() >= suf.size() && lowerName.compare(lowerName.size() - suf.size(), suf.size(), suf) == 0) return;
     }
-    // 3. 配置文件拦截
-    if (lowerName.find(L"ferrex_scan_config.json") != std::wstring::npos) {
-        return;
-    }
-    // 4. 数据库临时事务、日志、以及 SQLite/LevelDB 引擎临时锁资产拦截
-    if (lowerName.find(L".db-wal") != std::wstring::npos ||
-        lowerName.find(L".db-journal") != std::wstring::npos ||
-        lowerName.find(L".db-shm") != std::wstring::npos ||
-        lowerName.find(L"etilqs_") != std::wstring::npos) {
-        return;
+    for (const auto& pre : static_ignored_prefixes) {
+        if (lowerName.size() >= pre.size() && lowerName.compare(0, pre.size(), pre) == 0) return;
     }
 
     if (reason & (USN_REASON_FILE_CREATE | USN_REASON_CLOSE | USN_REASON_RENAME_NEW_NAME)) {
