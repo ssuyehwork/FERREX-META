@@ -43,6 +43,14 @@ struct ResultSet {
     std::vector<uint64_t> keys;
     std::unordered_map<uint64_t, int> keyToPos;
     std::unordered_map<uint64_t, RenderMeta> metadata;
+    
+    // 工业级 SoA 数据投影：将路径、大小等在后台线程利用引擎短暂读锁一次性装配完毕
+    // 彻底切断主线程 TableModel::data() 运行时对 MftReader 的高开销锁竞争与递归寻址
+    std::vector<QString> cachedNames;
+    std::vector<QString> cachedPaths;
+    std::vector<int64_t> cachedSizes;
+    std::vector<int64_t> cachedMtimes;
+    std::vector<bool> isDirFlags;
 };
 
 class ScanController : public QObject {
