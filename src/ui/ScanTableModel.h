@@ -13,6 +13,7 @@
 #include <QList>
 #include <QMimeData>
 #include <atomic>
+#include "ThumbnailManager.h"
 
 #ifdef min
 #undef min
@@ -28,6 +29,7 @@ namespace FERREX {
 
 class ScanController;
 struct ResultSet;
+class ThumbnailManager;
 
 class ScanTableModel : public QAbstractTableModel {
     Q_OBJECT
