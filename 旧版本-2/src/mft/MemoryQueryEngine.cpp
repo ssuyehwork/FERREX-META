@@ -102,20 +102,19 @@ std::vector<uint64_t> MemoryQueryEngine::search(MftReader* reader, const QString
         std::iota(chunks.begin(), chunks.end(), 0);
 
         qInfo() << "[MftReader] 并行搜索启动. 总数据量:" << currentTotal << "分块数:" << numChunks << "线程数:" << nThreads;
-        
-        // 【核心根治方案】：将读锁一次性外置于 blockingMap 之外！
-        // 理由：彻底消除各工作线程在 Map 迭代闭包内部高频争抢 reader->m_dataLock 的排队行为，实现纯无锁物理并行计算。
-        {
-            QReadLocker lock(&reader->m_dataLock);
-            
-            QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
-                if (reader->isSearchCanceled()) return;
+        QtConcurrent::blockingMap(chunks.begin(), chunks.end(), [&](size_t chunkIdx) {
+            // 分块执行开始前，首先检测外部取消信号
+            if (reader->isSearchCanceled()) return; // 瞬间拦截，不参与任何耗时逻辑
 
-                std::vector<uint64_t> localRes;
-                size_t startPos = chunkIdx * grainSize;
+            std::vector<uint64_t> localRes;
+            size_t startPos = chunkIdx * grainSize;
+            
+            {
+                QReadLocker lock(&reader->m_dataLock);
                 size_t endPos = (std::min)(startPos + grainSize, reader->m_frns.size());
 
                 for (size_t i = startPos; i < endPos; ++i) {
+                    // 每执行一定步长检测一次，保证百万级扫描极速响应取消
                     if ((i & 4095) == 0 && reader->isSearchCanceled()) return;
 
                     if (reader->m_frns[i] == 0) continue;
@@ -158,13 +157,9 @@ std::vector<uint64_t> MemoryQueryEngine::search(MftReader* reader, const QString
                         if (match) localRes.push_back(MftReader::makeKey(dIdx, reader->m_frns[i]));
                     }
                 }
-                
-                if (!localRes.empty()) { 
-                    std::lock_guard<std::mutex> l(mtx); 
-                    finalRes.insert(finalRes.end(), localRes.begin(), localRes.end()); 
-                }
-            });
-        }
+            }
+            if (!localRes.empty()) { std::lock_guard<std::mutex> l(mtx); finalRes.insert(finalRes.end(), localRes.begin(), localRes.end()); }
+        });
     }
     return finalRes;
 }

@@ -72,6 +72,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
     }
 
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
+    m_lastPixmapCache.setMaxCost(200); // 消除 data() 中的拦截，统一在此完成初始化分配
     m_throttleTimer = new QTimer(this);
     m_throttleTimer->setInterval(100); 
 
@@ -141,12 +142,12 @@ ScanTableModel::~ScanTableModel() {
     if (m_metadataTimer) { m_metadataTimer->stop(); delete m_metadataTimer; m_metadataTimer = nullptr; }
 
     if (m_thumbPool) {
+        // 1. 快速排空排队任务
         m_thumbPool->clear();
-        QThreadPool* poolToDestroy = m_thumbPool;
+        // 2. 干净同步回收（结合 m_isDestroying 瞬间折返，微秒级退出，绝对安全且无死等）
+        m_thumbPool->waitForDone();
+        delete m_thumbPool;
         m_thumbPool = nullptr;
-        QThreadPool::globalInstance()->start([poolToDestroy]() {
-            delete poolToDestroy;
-        });
     }
 }
 
@@ -215,11 +216,6 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
             int64_t size = reader.getSize(actualIndex);
             int64_t mtime = reader.getModifyTime(actualIndex);
             QString cacheKey = QString("%1_%2_%3").arg(key).arg(size).arg(mtime);
-
-            // 限制双轨缓存的最大容量，防止极端高频缩放累积内存
-            if (m_lastPixmapCache.maxCost() == 0) {
-                m_lastPixmapCache.setMaxCost(200); // 默认限制 200 项可见卡片 LRU 备份
-            }
 
             // 1. 精确尺寸缓存匹配
             QPixmap* cached = m_thumbCache.object(cacheKey);

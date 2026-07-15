@@ -1,7 +1,22 @@
 #pragma once
 #include <Qt>
+#include <QString>
+#include <QStringList>
+#include <vector>
+#include <cstdint>
 
 namespace FERREX {
+
+struct ScanFilterState;
+
+class IDataQueryEngine {
+public:
+    virtual ~IDataQueryEngine() = default;
+    virtual std::vector<uint64_t> search(
+        const QString& text,
+        const ScanFilterState& state
+    ) = 0;
+};
 
 /**
  * @brief 工业级模型契约 (ModelContract)

@@ -1,0 +1,154 @@
+#include "ToolTipOverlay.h"
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+#include <QTimer>
+#include <QThread>
+
+namespace FERREX {
+
+ToolTipOverlay::ToolTipOverlay() : QWidget(nullptr) {
+    // 彻底弃用 Qt::ToolTip，防止 OS 动画残留
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint | 
+                  Qt::WindowTransparentForInput | Qt::NoDropShadowWindowHint | Qt::WindowDoesNotAcceptFocus);
+    setObjectName("ToolTipOverlay");
+
+    setAttribute(Qt::WA_TranslucentBackground);
+    setAttribute(Qt::WA_ShowWithoutActivating);
+
+    // 通过原生 Win32 API 强制执行 topmost 置顶
+#ifdef Q_OS_WIN
+    QTimer::singleShot(0, this, [this]() {
+        HWND hwnd = reinterpret_cast<HWND>(winId());
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+    });
+#else
+    setWindowFlag(Qt::WindowStaysOnTopHint, true);
+#endif
+    
+    m_doc.setUndoRedoEnabled(false);
+    // 强制锁定调色板高对比度淡灰白 (#EEEEEE)
+    QPalette pal = palette();
+    pal.setColor(QPalette::WindowText, QColor("#EEEEEE"));
+    pal.setColor(QPalette::Text, QColor("#EEEEEE"));
+    pal.setColor(QPalette::ButtonText, QColor("#EEEEEE"));
+    setPalette(pal);
+
+    m_doc.setDefaultStyleSheet("body, div, p, span, b, i { color: #EEEEEE !important; font-family: 'Microsoft YaHei', 'Segoe UI'; }"); 
+    setStyleSheet("QWidget { color: #EEEEEE !important; background: transparent; }");
+
+    QFont f = font();
+    f.setPointSize(9);
+    m_doc.setDefaultFont(f);
+
+    m_hideTimer.setSingleShot(true);
+    connect(&m_hideTimer, &QTimer::timeout, this, &QWidget::hide);
+
+    hide();
+}
+
+void ToolTipOverlay::showText(const QPoint& globalPos, const QString& text, int timeout, const QColor& borderColor) {
+    if (thread() != QThread::currentThread()) {
+        QMetaObject::invokeMethod(this, [this, globalPos, text, timeout, borderColor]() { 
+            showText(globalPos, text, timeout, borderColor); 
+        });
+        return;
+    }
+
+    if (text.isEmpty()) { hide(); return; }
+
+    // 脏检查：防止在微动时引发重绘闪烁
+    if (isVisible() && m_text == text && m_currentBorderColor == borderColor) {
+        move(globalPos + QPoint(15, 15));
+        return;
+    }
+    
+    if (timeout > 0) {
+        timeout = qBound(500, timeout, 60000); 
+    }
+
+    m_currentBorderColor = borderColor;
+
+    QString htmlBody;
+    if (text.contains("<") && text.contains(">")) {
+        htmlBody = text;
+    } else {
+        htmlBody = text.toHtmlEscaped().replace("\n", "<br>");
+    }
+
+    m_text = QString(
+        "<html><head><style>div, p, span, body { color: #EEEEEE !important; }</style></head>"
+        "<body style='margin:0; padding:0; color:#EEEEEE; font-family:\"Microsoft YaHei\",\"Segoe UI\",sans-serif;'>"
+        "<div style='color:#EEEEEE !important;'>%1</div>"
+        "</body></html>"
+    ).arg(htmlBody);
+    
+    m_doc.setHtml(m_text);
+    m_doc.setDocumentMargin(0); 
+    
+    m_doc.setTextWidth(-1); 
+    qreal idealW = m_doc.idealWidth();
+    
+    if (idealW > 450) {
+        m_doc.setTextWidth(450); 
+    } else {
+        m_doc.setTextWidth(idealW); 
+    }
+    
+    QSize textSize = m_doc.size().toSize();
+    
+    int padX = 12; 
+    int padY = 8;
+    
+    int w = textSize.width() + padX * 2;
+    int h = textSize.height() + padY * 2;
+    
+    w = qMax(w, 40);
+    h = qMax(h, 24);
+    
+    resize(w, h);
+    
+    QPoint pos = globalPos + QPoint(15, 15);
+    
+    QScreen* screen = QGuiApplication::screenAt(globalPos);
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    if (screen) {
+        QRect screenGeom = screen->geometry();
+        if (pos.x() + width() > screenGeom.right()) {
+            pos.setX(globalPos.x() - width() - 15);
+        }
+        if (pos.y() + height() > screenGeom.bottom()) {
+            pos.setY(globalPos.y() - height() - 15);
+        }
+    }
+    
+    move(pos);
+    show();
+    update();
+
+    if (timeout > 0) {
+        m_hideTimer.start(timeout);
+    } else {
+        m_hideTimer.stop();
+    }
+}
+
+void ToolTipOverlay::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    
+    QRectF rectF(0.5, 0.5, width() - 1, height() - 1);
+    
+    p.setPen(QPen(m_currentBorderColor, 1));
+    p.setBrush(QColor("#2B2B2B"));
+    // 按照 ArcMeta 标准规范：气泡圆角尺寸严格设定为 2px
+    p.drawRoundedRect(rectF, 2, 2);
+    
+    p.save();
+    p.translate(12, 8); 
+    m_doc.drawContents(&p);
+    p.restore();
+}
+
+} // namespace FERREX
