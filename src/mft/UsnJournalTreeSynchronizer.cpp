@@ -1,4 +1,3 @@
-#include <mutex>
 #include "UsnJournalTreeSynchronizer.h"
 #include <QWriteLocker>
 #include <QReadLocker>
