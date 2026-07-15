@@ -71,7 +71,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         });
     });
 
-    connect(&ThumbnailManager::instance(), &ThumbnailManager::thumbnailReady, this, [this](uint64_t key, const QPixmap& pixmap, double aspectRatio) {
+    connect(&ThumbnailManager::instance(), &ThumbnailManager::thumbnailReady, this, [this](uint64_t key, const QPixmap& /*pixmap*/, double aspectRatio) {
         if (m_isDestroying) return;
         m_aspectRatios[key] = aspectRatio;
 
@@ -375,7 +375,7 @@ void ScanTableModel::forceFetchAll() {
     endInsertRows();
 }
 
-void ScanTableModel::clearThumbCache(bool keepLastCache) {
+void ScanTableModel::clearThumbCache(bool /*keepLastCache*/) {
     ThumbnailManager::instance().clearCache();
     m_requestedThumbs.clear();
 }
