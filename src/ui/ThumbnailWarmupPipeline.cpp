@@ -20,7 +20,7 @@ void ThumbnailWarmupPipeline::triggerWarmup() {
     int maxThreads = pool->maxThreadCount();
 
     for (int t = 0; t < maxThreads; ++t) {
-        pool->start([weakThis]() {
+        pool->start([weakThis, t, maxThreads]() {
             if (!weakThis) return;
 
             static QThreadStorage<ScopedComInit> comStorage;
@@ -30,7 +30,15 @@ void ThumbnailWarmupPipeline::triggerWarmup() {
 
             int total = MftReader::instance().totalCount();
             if (total > 0) {
-                for (int i = 0; i < std::min(total, 5000); ++i) {
+                int maxWarm = std::min(total, 5000);
+                int rangeSize = maxWarm / maxThreads;
+                if (rangeSize <= 0) rangeSize = maxWarm;
+
+                // 为每一个并发工作线程分配专属的区间
+                int startIdx = t * rangeSize;
+                int endIdx = (t == maxThreads - 1) ? maxWarm : (t + 1) * rangeSize;
+
+                for (int i = startIdx; i < endIdx; ++i) {
                     if (!MftReader::instance().isDirectory(i)) {
                         QString ext = MftReader::instance().getExtQString(i);
                         if (UiHelper::isGraphicsFile(ext)) {
@@ -38,7 +46,7 @@ void ThumbnailWarmupPipeline::triggerWarmup() {
                             if (!dummyPath.isEmpty()) {
                                 UiHelper::getShellThumbnail(dummyPath, 64);
                             }
-                            break;
+                            break; // 只提取本区间的第一个文件即宣告完成
                         }
                     }
                 }

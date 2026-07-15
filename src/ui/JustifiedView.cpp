@@ -315,6 +315,17 @@ void JustifiedView::doLayout() {
     if (!model()) return;
     int count = model()->rowCount();
     
+    // 物理防护：自动显示等引起的百万级数据量超限硬拦截
+    // 卡片布局在主线程同步进行，超过 10,000 项在 GUI 线程排版会导致严重挂起
+    if (count > 10000) {
+        m_geometries.clear();
+        m_totalHeight = 0;
+        updateGeometries();
+        viewport()->update();
+        // 在状态栏或通过 ToolTipOverlay 弱提示用户：由于数据量高达百万，卡片视图已自动阻断以防止崩溃，请键入关键词过滤或切换到高度优化的列表模式
+        return;
+    }
+
     if (count == 0) {
         m_geometries.clear();
         m_totalHeight = 0;
