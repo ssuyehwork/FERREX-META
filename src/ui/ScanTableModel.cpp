@@ -187,7 +187,7 @@ QVariant ScanTableModel::data(const QModelIndex& index, int role) const {
         return reader.getFullPath(actualIndex);
     };
 
-    auto isDir = [&]() {
+    auto isDir = [&]() -> bool {
         if (hasCached) return m_currentResultSet->isDirFlags[row];
         return reader.isDirectory(actualIndex);
     };
