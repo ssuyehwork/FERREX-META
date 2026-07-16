@@ -124,7 +124,7 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
             
             // 2026-06-xx 物理加固：在发射 dataChanged 前强制核对行号边界，防止越界触发断言
             if (startRow >= 0 && endRow < m_displayCount) {
-                emit dataChanged(index(startRow, 0), index(endRow, 3), {Qt::DecorationRole, Qt::DisplayRole, Qt::UserRole + 2});
+                emit dataChanged(index(startRow, 0), index(endRow, 3));
             }
             i = j;
         }
