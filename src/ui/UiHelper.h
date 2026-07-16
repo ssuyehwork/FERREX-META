@@ -428,10 +428,14 @@ public:
 
 public:
     static QImage getShellThumbnail(const QString& path, int size) {
+        qInfo() << "[TRACE][getShellThumbnail] 进入获取. 路径:" << path << "大小:" << size;
 #ifdef Q_OS_WIN
         static QThreadStorage<ScopedComInit> s_comInit;
         if (!s_comInit.hasLocalData()) s_comInit.setLocalData(ScopedComInit());
 #endif
+        QElapsedTimer timer;
+        timer.start();
+
         // 引入磁盘缓存机制
         QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         QString cacheDir = QDir(appData).filePath("thumbs/");
@@ -445,8 +449,15 @@ public:
 
         if (QFile::exists(cachePath)) {
             QImage img;
-            if (img.load(cachePath)) return img;
+            if (img.load(cachePath)) {
+                qInfo() << "[TRACE][getShellThumbnail] 🎯 完美命中磁盘缓存！耗时:" << timer.elapsed() << "ms";
+                return img;
+            }
         }
+
+        qInfo() << "[TRACE][getShellThumbnail] 缓存未命中，调用 Shell API 获取...";
+        QElapsedTimer comTimer;
+        comTimer.start();
 
 #ifdef Q_OS_WIN
         PIDLIST_ABSOLUTE pidl = nullptr;
@@ -461,7 +472,15 @@ public:
             if (SUCCEEDED(hr)) {
                 SIZE nativeSize = { size, size };
                 HBITMAP hBitmap = nullptr;
+                
+                qInfo() << "[TRACE][getShellThumbnail] 执行 GetImage, 线程ID:" << QThread::currentThreadId();
                 hr = pFactory->GetImage(nativeSize, SIIGBF_THUMBNAILONLY | SIIGBF_RESIZETOFIT, &hBitmap);
+                
+                int64_t elapsed = comTimer.elapsed();
+                if (elapsed > 200) {
+                    qWarning() << "[TRACE][getShellThumbnail] ⚠️ GetImage 耗时严重警告! 文件:" << path << " 耗时:" << elapsed << "ms";
+                }
+
                 if (SUCCEEDED(hr) && hBitmap) {
                     BITMAP bmpInfo;
                     GetObject(hBitmap, sizeof(bmpInfo), &bmpInfo);

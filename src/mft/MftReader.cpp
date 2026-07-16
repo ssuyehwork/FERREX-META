@@ -419,10 +419,22 @@ int MftReader::totalCount() const {
 }
 
 int MftReader::activeCount() const {
+    qInfo() << "[TRACE][activeCount] 准备申请 m_dataLock 读锁...";
+    QElapsedTimer lockTimer;
+    lockTimer.start();
+    
     QReadLocker lock(&m_dataLock);
+    int64_t lockMs = lockTimer.elapsed();
+    if (lockMs > 5) {
+        qWarning() << "[TRACE][activeCount] ⚠️ 警告：读锁申请发生严重延迟！等待时间:" << lockMs << "ms";
+    }
     
     uint32_t activeMask = m_drive_active_mask.load(std::memory_order_relaxed);
     int count = 0;
+    
+    qInfo() << "[TRACE][activeCount] 开始全量 SoA 活性遍历, 数据量:" << m_frns.size();
+    QElapsedTimer loopTimer;
+    loopTimer.start();
     
     // SoA 内存连续，在 400 万量级下此遍历通常在 2ms 内完成，效率极高 (Analysis_Modification_Plan-154.md)
     for (size_t i = 0; i < m_frns.size(); ++i) {
@@ -433,6 +445,7 @@ int MftReader::activeCount() const {
             count++;
         }
     }
+    qInfo() << "[TRACE][activeCount] 遍历完成. 活性统计数:" << count << " 循环耗时:" << loopTimer.elapsed() << "ms";
     return count;
 }
 

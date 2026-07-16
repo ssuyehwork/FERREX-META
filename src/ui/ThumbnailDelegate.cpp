@@ -128,25 +128,6 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         UiHelper::getIcon("check_circle", QColor("#2ecc71"), 16).paint(painter, statusRect);
     }
 
-    // 扩展名角标
-    QString ext = payload.isDirectory ? "DIR" : payload.extension.toUpper();
-    if (!ext.isEmpty()) {
-        QColor badgeColor = UiHelper::getExtensionColor(ext);
-
-        if (!hasValidThumb) {
-            badgeColor.setAlpha(160);
-        }
-
-        QRect extRect(m.cardRect.left() + 8, m.cardRect.top() + 8, 36, 18);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(badgeColor);
-        painter->drawRoundedRect(extRect, 2, 2);
-        painter->setPen(hasValidThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
-        QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
-        painter->setFont(extFont);
-        painter->drawText(extRect, Qt::AlignCenter, ext);
-    }
-
     // ③ 文件名（卡片下方）
     painter->save();
     painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
