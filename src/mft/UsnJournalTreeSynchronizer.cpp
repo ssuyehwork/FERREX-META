@@ -48,12 +48,43 @@ void UsnJournalTreeSynchronizer::updateEntryFromUsn(MftReader* reader, USN_RECOR
         fileNameOffset = v3->FileNameOffset;
     } else return;
 
+    // 彻底物理阻断：拦截任何本应用、ArcMeta或thumbs、db3、ini等引起的 USN Journal 自激死循环！
+    QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
+    QString nameLower = name.toLower();
+    if (nameLower.contains("ferrex") ||
+        nameLower.contains("arcmeta") ||
+        nameLower.contains("thumbs") ||
+        nameLower.contains("sagethumbs") ||
+        nameLower.contains(".tmp") ||
+        nameLower.contains("memreduct") ||
+        nameLower.contains("preferences")) {
+        return;
+    }
+
+    if (header->MajorVersion == 2) {
+        frn = record->FileReferenceNumber;
+        parentFrn = record->ParentFileReferenceNumber;
+        usn = record->Usn;
+        attr = record->FileAttributes;
+        timestamp = record->TimeStamp;
+        fileNameLength = record->FileNameLength;
+        fileNameOffset = record->FileNameOffset;
+    } else if (header->MajorVersion == 3) {
+        USN_RECORD_V3* v3 = reinterpret_cast<USN_RECORD_V3*>(record);
+        frn = *reinterpret_cast<uint64_t*>(&v3->FileReferenceNumber);
+        parentFrn = *reinterpret_cast<uint64_t*>(&v3->ParentFileReferenceNumber);
+        usn = v3->Usn;
+        attr = v3->FileAttributes;
+        timestamp = v3->TimeStamp;
+        fileNameLength = v3->FileNameLength;
+        fileNameOffset = v3->FileNameOffset;
+    } else return;
+
     uint64_t fileSize = 0; 
     int64_t finalModifyTime = filetimeToUnixMs(timestamp.QuadPart);
     uint32_t finalAttr = attr;
 
     // --- 1. 锁外重度计算 & 编解码 ---
-    QString name = QString::fromUtf16(reinterpret_cast<const char16_t*>(reinterpret_cast<uint8_t*>(record) + fileNameOffset), fileNameLength / 2);
     QByteArray utf8 = name.toUtf8();
     std::string extStr;
     splitNameAndExt(utf8.toStdString(), extStr);

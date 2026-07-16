@@ -64,13 +64,8 @@ ScanTableModel::ScanTableModel(ScanController* controller, QObject* parent)
         allSSD = false; // 未知环境下保守处理
     }
 
-    if (allSSD) {
-        // 对于 SSD，设置并发上限为理想线程数的一半，平衡系统负载
-        m_thumbPool->setMaxThreadCount(std::max<int>(1, QThread::idealThreadCount() / 2));
-    } else {
-        // 对于 HDD，保持串行以减少寻道开销
-        m_thumbPool->setMaxThreadCount(1);
-    }
+    // 强制缩略图和大图解析线程并发限制为 1，杜绝多线程 COM STA 套间冲突引发的假死和底层卡顿
+    m_thumbPool->setMaxThreadCount(1);
 
     m_thumbCache.setMaxCost(500); // 限制缩略图内存占用
     m_lastPixmapCache.setMaxCost(200); // 消除 data() 中的拦截，统一在此完成初始化分配
