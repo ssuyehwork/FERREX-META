@@ -51,6 +51,9 @@ struct ResultSet {
     std::vector<int64_t> cachedSizes;
     std::vector<int64_t> cachedMtimes;
     std::vector<bool> isDirFlags;
+
+    // 盘符活性统计数据缓存：使主线程 100% 摆脱 MftReader::activeCount() 的大锁遍历！
+    int activeCountCache = 0;
 };
 
 class ScanController : public QObject {

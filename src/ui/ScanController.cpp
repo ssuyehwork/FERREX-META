@@ -171,6 +171,9 @@ void ScanController::performSearch() {
             }
         }
 
+        // 2. 将原先需要在主线程调用 activeCount() 遍历的大开销，在这里一次性后台计算好
+        rs->activeCountCache = reader.activeCount();
+
         qInfo() << "[ScanController] 异步搜索与 SoA 投影完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
@@ -377,6 +380,8 @@ void ScanController::sort(int column, int order) {
             }
         }
 
+        newSet->activeCountCache = reader.activeCount();
+
         return newSet;
     });
 
@@ -510,12 +515,16 @@ void ScanController::processBatchUpdates() {
 
             for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
             updateKeyToPosMapping(*newSet);
+
+            newSet->activeCountCache = reader.activeCount();
             return newSet;
         }
         
         // 2026-06-xx 物理修复：如果没有实际变动，必须返回原 snap 副本而非空指针
         // 理由：sortWatcher 的结果会直接替换 m_resultSet，防止 UI 突然清空
-        return std::make_shared<ResultSet>(*snap);
+        auto sameSet = std::make_shared<ResultSet>(*snap);
+        sameSet->activeCountCache = reader.activeCount();
+        return sameSet;
     });
 
     // 2026-06-xx 物理对标：异步重排序时，如果后台任务忙，跳过此批次以实现 Debounce 效果
