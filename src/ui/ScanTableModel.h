@@ -14,7 +14,6 @@
 #include <QList>
 #include <QMimeData>
 #include <atomic>
-#include "../core/ModelContract.h"
 
 #ifdef min
 #undef min

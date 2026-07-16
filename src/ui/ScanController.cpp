@@ -143,28 +143,10 @@ void ScanController::performSearch() {
         rs->keys = std::move(keys);
         updateKeyToPosMapping(*rs);
 
-        // 工业级 SoA 前置路径和元数据投影缓存，彻底消除 UI 线程上的 I/O 与锁竞争
-        auto& reader = MftReader::instance();
-        size_t n = rs->keys.size();
-        rs->cachedNames.resize(n);
-        rs->cachedPaths.resize(n);
-        rs->cachedSizes.resize(n);
-        rs->cachedMtimes.resize(n);
-        rs->isDirFlags.resize(n);
-
-        for (size_t i = 0; i < n; ++i) {
-            uint64_t key = rs->keys[i];
-            int idx = reader.getIndexByKey(key);
-            if (idx != -1) {
-                rs->cachedNames[i] = reader.getName(idx);
-                rs->cachedPaths[i] = reader.getFullPath(idx);
-                rs->cachedSizes[i] = reader.getSize(idx);
-                rs->cachedMtimes[i] = reader.getModifyTime(idx);
-                rs->isDirFlags[i] = reader.isDirectory(idx);
-            }
-        }
-
-        qInfo() << "[ScanController] 异步搜索与 SoA 投影完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
+        // [性能重构方案物理对齐]：彻底解耦筛选与显示渲染。后台搜索线程不应该去高开销获取元数据，
+        // 否则会频繁霸占 MftReader.m_dataLock 锁，造成前台 UI 在 data() 渲染时由于锁等待而卡死。
+        // 将后台元数据装饰块完全移除，回归极速过滤模式。
+        qInfo() << "[ScanController] 异步搜索完成. 引擎耗时:" << searchMs << "ms, 结果数:" << rs->keys.size();
 
         return rs;
     });
@@ -349,27 +331,6 @@ void ScanController::sort(int column, int order) {
         // 3. 写回结果并构建映射
         for (size_t i = 0; i < newSet->keys.size(); ++i) newSet->keys[i] = proxies[i].key;
         updateKeyToPosMapping(*newSet);
-
-        // 重组 SoA 前置路径和元数据投影缓存，保持与排序后的 keys 完全对齐
-        size_t n = newSet->keys.size();
-        newSet->cachedNames.resize(n);
-        newSet->cachedPaths.resize(n);
-        newSet->cachedSizes.resize(n);
-        newSet->cachedMtimes.resize(n);
-        newSet->isDirFlags.resize(n);
-
-        for (size_t i = 0; i < n; ++i) {
-            uint64_t key = newSet->keys[i];
-            int idx = reader.getIndexByKey(key);
-            if (idx != -1) {
-                newSet->cachedNames[i] = reader.getName(idx);
-                newSet->cachedPaths[i] = reader.getFullPath(idx);
-                newSet->cachedSizes[i] = reader.getSize(idx);
-                newSet->cachedMtimes[i] = reader.getModifyTime(idx);
-                newSet->isDirFlags[i] = reader.isDirectory(idx);
-            }
-        }
-
         return newSet;
     });
 

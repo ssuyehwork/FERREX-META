@@ -13,10 +13,7 @@
 #include <QAbstractItemView>
 #include <QTextLayout>
 #include <QTextOption>
-#include <QCache>
 #include "UiHelper.h"
-#include "JustifiedView.h"
-#include "../core/ModelContract.h"
 
 namespace FERREX {
 
@@ -46,27 +43,18 @@ ThumbnailDelegate::Metrics ThumbnailDelegate::calculateMetrics(const QStyleOptio
     return m;
 }
 
-struct LayoutLines {
-    QString line1;
-    QString line2;
-};
-static QCache<QString, LayoutLines> s_layoutLinesCache(2000);
-
 void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
-    FerrexItemPayload payload = index.data(Qt::UserRole).value<FerrexItemPayload>();
-
     Metrics m = calculateMetrics(option);
     bool isSelected = (option.state & QStyle::State_Selected);
-
-    // 强类型契约代替 QVariant property 属性
-    const JustifiedView* jv = qobject_cast<const JustifiedView*>(option.widget);
-    bool isGrid = jv ? (jv->layoutMode() == JustifiedView::GridMode) : false;
+    bool isGrid = option.widget ? option.widget->property("gridMode").toBool() : false;
 
     QVariant decoData = index.data(Qt::DecorationRole);
     
     QPixmap thumb;
     bool hasValidThumb = false;
 
+    // 【物理还原缩略图 QPixmap 优先准入与无损渲染机制】：彻底废除关于缩略图渲染的 thumbStatus == 1 前置校验！
+    // 只要 decoData 能转换为 QPixmap，不管当前状态字，均认为这属于可用的、高清晰度的缩略图物理资产，优先提取渲染！
     if (decoData.canConvert<QPixmap>()) {
         thumb = decoData.value<QPixmap>();
         if (!thumb.isNull()) {
@@ -88,7 +76,9 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->setBrush(QColor("#2d2d2d"));
     painter->drawRect(m.cardRect);
 
+    // 关键路径重构：缩略图优先（直接以 100% 完全不透明度绘制）
     if (hasValidThumb) {
+        // 缩略图平滑拉伸并充满卡片（100% Cover/Contain）
         QPixmap scaled = thumb.scaled(m.cardRect.size(), 
                                       isGrid ? Qt::KeepAspectRatio : Qt::KeepAspectRatioByExpanding, 
                                       Qt::SmoothTransformation);
@@ -97,15 +87,20 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
         
         painter->drawPixmap(x, y, scaled);
     } else {
+        // 系统默认图标只作为【没有缩略图或生成失败时】的最后兜底回退手段
+        // 在没有有效缩略图物理资产时，直接以 100% 的完全不透明度绘制默认的文件类型关联图标，绝不闪现空白卡片
         QIcon icon = qvariant_cast<QIcon>(decoData);
         if (!icon.isNull()) {
             painter->setOpacity(1.0);
+
+            // [性能重构方案物理对齐]：彻底消除 High-DPI 尺寸膨胀与拉伸缺陷，统一在逻辑像素矩形下使用 icon.paint 进行 1:1 等比例、完美居中绘制
             int iconSize = qMin(m.cardRect.width(), m.cardRect.height()) * 0.55;
             QRect iconRect(m.cardRect.center().x() - iconSize / 2,
                            m.cardRect.center().y() - iconSize / 2,
                            iconSize, iconSize);
             
             icon.paint(painter, iconRect);
+
             painter->setOpacity(1.0);
         }
     }
@@ -123,35 +118,45 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     painter->restore();
 
     // 状态位图标绘制
-    if (payload.isManaged) {
-        QRect statusRect(m.cardRect.right() - 22, m.cardRect.top() + 8, 16, 16);
-        UiHelper::getIcon("check_circle", QColor("#2ecc71"), 16).paint(painter, statusRect);
+    if (m_managedRole != -1) {
+        bool isManaged = index.data(m_managedRole).toBool();
+        if (isManaged) {
+            QRect statusRect(m.cardRect.right() - 22, m.cardRect.top() + 8, 16, 16);
+            UiHelper::getIcon("check_circle", QColor("#2ecc71"), 16).paint(painter, statusRect);
+        }
     }
 
     // 扩展名角标
-    QString ext = payload.isDirectory ? "DIR" : payload.extension.toUpper();
-    if (!ext.isEmpty()) {
-        QColor badgeColor = UiHelper::getExtensionColor(ext);
+    if (m_pathRole != -1) {
+        QString path = index.data(m_pathRole).toString();
+        QFileInfo info(path);
+        QString ext = info.isDir() ? "DIR" : info.suffix().toUpper();
+        if (!ext.isEmpty()) {
+            QColor badgeColor = UiHelper::getExtensionColor(ext);
 
-        if (!hasValidThumb) {
-            badgeColor.setAlpha(160);
+            if (!hasValidThumb) {
+                badgeColor.setAlpha(160);
+            }
+
+            QRect extRect(m.cardRect.left() + 8, m.cardRect.top() + 8, 36, 18);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(badgeColor);
+            painter->drawRoundedRect(extRect, 2, 2);
+            painter->setPen(hasValidThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
+            QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
+            painter->setFont(extFont);
+            painter->drawText(extRect, Qt::AlignCenter, ext);
         }
-
-        QRect extRect(m.cardRect.left() + 8, m.cardRect.top() + 8, 36, 18);
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(badgeColor);
-        painter->drawRoundedRect(extRect, 2, 2);
-        painter->setPen(hasValidThumb ? QColor("#FFFFFF") : QColor(255, 255, 255, 180));
-        QFont extFont = painter->font(); extFont.setPointSize(8); extFont.setBold(true);
-        painter->setFont(extFont);
-        painter->drawText(extRect, Qt::AlignCenter, ext);
     }
+
+    // [已停用] 星级渲染逻辑：星级已不再使用，此处直接跳过以节省 CPU 消耗
 
     // ③ 文件名（卡片下方）
     painter->save();
+    QString name = index.data(Qt::DisplayRole).toString();
     painter->setPen(isSelected ? QColor("#3498db") : QColor("#EEEEEE"));
 
-    if (!isSelected && !payload.isManaged) {
+    if (m_managedRole != -1 && !isSelected && !index.data(m_managedRole).toBool()) {
         painter->setPen(QColor(238, 238, 238, 120));
     }
 
@@ -159,76 +164,83 @@ void ThumbnailDelegate::paint(QPainter* painter, const QStyleOptionViewItem& opt
     textFont.setPointSize(8);
     painter->setFont(textFont);
 
-    int textWidth = m.textRect.width() - 8;
+    QString displayName = name;
+    displayName.replace("_", "_\u200B");
+    displayName.replace(".", ".\u200B");
+
+    // 采用方案 A：使用 QTextLayout 进行精准的双行物理修剪与第二行末尾省略
+    QTextLayout textLayout(displayName, painter->font());
+    QTextOption textOption;
+    textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+    textOption.setAlignment(Qt::AlignCenter);
+    textLayout.setTextOption(textOption);
+
+    textLayout.beginLayout();
+    int lineCount = 0;
+    int textWidth = m.textRect.width() - 8; // 两侧留出 4px 安全边距 (对应 adjusted(4, 0, -4, 0))
+    int currentY = m.textRect.top();
     int fontHeight = option.fontMetrics.height();
 
-    // 缓存判断：避免高频 Heap 内存分配并适应重命名刷新
-    QString cacheKey = QString("%1_%2_%3").arg(payload.key).arg(payload.name).arg(textWidth);
-    LayoutLines* cached = s_layoutLinesCache.object(cacheKey);
+    // 存储切分出的各行
+    struct RenderLine {
+        QString text;
+        int y;
+    };
+    QList<RenderLine> linesToRender;
 
-    if (!cached) {
-        QTextLayout textLayout(payload.displayName, painter->font());
-        QTextOption textOption;
-        textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        textOption.setAlignment(Qt::AlignCenter);
-        textLayout.setTextOption(textOption);
+    while (true) {
+        QTextLine line = textLayout.createLine();
+        if (!line.isValid()) {
+            break;
+        }
+        line.setLineWidth(textWidth);
+        lineCount++;
 
-        textLayout.beginLayout();
-        int lineCount = 0;
-        QString line1, line2;
-
-        while (true) {
-            QTextLine line = textLayout.createLine();
-            if (!line.isValid()) {
-                break;
-            }
-            line.setLineWidth(textWidth);
-            lineCount++;
-
-            if (lineCount == 1) {
+        if (lineCount == 1) {
+            // 第一行完整保留
+            int start = line.textStart();
+            int len = line.textLength();
+            linesToRender.append({displayName.mid(start, len), currentY});
+            currentY += fontHeight;
+        } else if (lineCount == 2) {
+            // 关键路径：检查是否存在第三行
+            QTextLine nextLine = textLayout.createLine();
+            if (nextLine.isValid()) {
+                // 确实存在第三行或更多，第二行必须承接全部剩余的长尾内容，并做 ElideMiddle 裁剪
+                int start = line.textStart();
+                QString remainingText = displayName.mid(start);
+                // 物理省略
+                QString elidedRemaining = option.fontMetrics.elidedText(remainingText, Qt::ElideMiddle, textWidth);
+                linesToRender.append({elidedRemaining, currentY});
+            } else {
+                // 没有第三行，第二行正常显示
                 int start = line.textStart();
                 int len = line.textLength();
-                line1 = payload.displayName.mid(start, len);
-            } else if (lineCount == 2) {
-                QTextLine nextLine = textLayout.createLine();
-                if (nextLine.isValid()) {
-                    int start = line.textStart();
-                    QString remainingText = payload.displayName.mid(start);
-                    line2 = option.fontMetrics.elidedText(remainingText, Qt::ElideMiddle, textWidth);
-                } else {
-                    int start = line.textStart();
-                    int len = line.textLength();
-                    line2 = payload.displayName.mid(start, len);
-                }
-                break;
+                linesToRender.append({displayName.mid(start, len), currentY});
             }
+            break; // 绝对阻断第三行，退出排版循环
         }
-        textLayout.endLayout();
-
-        cached = new LayoutLines{line1, line2};
-        s_layoutLinesCache.insert(cacheKey, cached);
     }
+    textLayout.endLayout();
 
-    // 物理无分配渲染
-    if (!cached->line1.isEmpty()) {
-        QRect lineRect(m.textRect.left() + 4, m.textRect.top(), textWidth, fontHeight);
-        painter->drawText(lineRect, Qt::AlignCenter, cached->line1);
-    }
-    if (!cached->line2.isEmpty()) {
-        QRect lineRect(m.textRect.left() + 4, m.textRect.top() + fontHeight, textWidth, fontHeight);
-        painter->drawText(lineRect, Qt::AlignCenter, cached->line2);
+    // 物理渲染
+    for (const auto& rLine : linesToRender) {
+        QRect lineRect(m.textRect.left() + 4, rLine.y, textWidth, fontHeight);
+        painter->drawText(lineRect, Qt::AlignCenter, rLine.text);
     }
 
     painter->restore();
 
     // ④ 空文件夹特殊标记
-    if (!isSelected && payload.isEmptyFolder) {
-        painter->save();
-        painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(QColor("#41F2F2"), 1, Qt::DashLine));
-        painter->setBrush(Qt::NoBrush);
-        painter->drawRoundedRect(m.cardRect, 6, 6);
-        painter->restore();
+    if (!isSelected && m_isEmptyRole != -1) {
+        if (index.data(m_isEmptyRole).toBool()) {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing);
+            painter->setPen(QPen(QColor("#41F2F2"), 1, Qt::DashLine));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(m.cardRect, 6, 6);
+            painter->restore();
+        }
     }
 
     painter->restore();
