@@ -54,19 +54,29 @@ bool ViewportTooltipController::handleEvent(QObject* watched, QEvent* event) {
 
         if (event->type() == QEvent::MouseMove) {
             QMouseEvent* me = static_cast<QMouseEvent*>(event);
-            QPoint viewportPos = view->viewport()->mapFromGlobal(me->globalPosition().toPoint());
+            QPoint currentGlobalPos = me->globalPosition().toPoint();
+
+            // 坐标防抖：光标位移变化累计不超过 5 像素时不进行重复事件处理与提示框高频显隐，消灭闪烁
+            int dx = std::abs(currentGlobalPos.x() - m_hoveredGlobalPos.x());
+            int dy = std::abs(currentGlobalPos.y() - m_hoveredGlobalPos.y());
+
+            QPoint viewportPos = view->viewport()->mapFromGlobal(currentGlobalPos);
             QModelIndex idx = view->indexAt(viewportPos);
 
             if (idx.isValid()) {
                 QModelIndex col0Idx = m_dialog->m_tableModel->index(idx.row(), 0);
                 
+                if (col0Idx == m_hoveredIndex && dx < 5 && dy < 5) {
+                    return false; // 防抖直接拦截返回，消灭频繁触发 hideTip() 的闪烁现象
+                }
+
                 m_itemToolTipTimer->stop();
                 QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
                     ToolTipOverlay::hideTip();
                 }, Qt::QueuedConnection);
 
                 m_hoveredIndex = col0Idx;
-                m_hoveredGlobalPos = me->globalPosition().toPoint();
+                m_hoveredGlobalPos = currentGlobalPos;
                 m_itemToolTipTimer->start();
             } else {
                 m_itemToolTipTimer->stop();

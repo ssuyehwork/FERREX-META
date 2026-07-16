@@ -234,6 +234,15 @@ ScanDialog::ScanDialog(QWidget* parent)
                 "QSlider::handle:horizontal { width: 12px; height: 12px; margin: -5px 0; " 
                 "  background: #FF8C00; border-radius: 6px; }" 
             ); 
+
+            // 变焦 500ms 延迟持久化定时器，消除高频磁盘 I/O
+            m_zoomSaveTimer = new QTimer(this);
+            m_zoomSaveTimer->setInterval(500);
+            m_zoomSaveTimer->setSingleShot(true);
+            connect(m_zoomSaveTimer, &QTimer::timeout, this, [this]() {
+                m_config.save();
+            });
+
             connect(m_sizeSlider, &QSlider::valueChanged, this, [this](int v) { 
                 m_config.iconSize = v; 
                 if (m_currentActiveView) {
@@ -249,7 +258,7 @@ ScanDialog::ScanDialog(QWidget* parent)
                 }
 
                 m_zoomDebounceTimer->start();
-                m_configSaveTimer->start();
+                m_zoomSaveTimer->start(); // 代替高频同步写盘，实现变焦无损防抖
             }); 
             
             QPushButton* rulesBtn = new QPushButton();

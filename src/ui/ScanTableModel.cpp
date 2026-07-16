@@ -145,9 +145,13 @@ ScanTableModel::~ScanTableModel() {
     if (m_thumbPool) {
         // 1. 快速排空排队任务
         m_thumbPool->clear();
-        // 2. 干净同步回收（结合 m_isDestroying 瞬间折返，微秒级退出，绝对安全且无死等）
-        m_thumbPool->waitForDone();
-        delete m_thumbPool;
+
+        // 2. 将线程池的同步销毁工作在后台线程中异步执行，防止主线程（GUI 线程）退出时发生同步 waitForDone 阻塞死等！
+        auto* pool = m_thumbPool;
+        (void)QtConcurrent::run([pool]() {
+            pool->waitForDone();
+            delete pool;
+        });
         m_thumbPool = nullptr;
     }
 }
