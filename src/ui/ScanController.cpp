@@ -87,6 +87,10 @@ int ScanController::resultCount() const {
 }
 
 void ScanController::performSearch() {
+    qInfo() << "[TRACE][performSearch] 物理触发. 检索文字:" << m_searchText
+            << " Regex:" << m_filterState.useRegex
+            << " AutoDisplay:" << m_filterState.autoDisplay;
+
     // 还原旧版本-3：彻底剥离多媒体异步过滤（还原设计一），使其总是返回纯粹的全量数据
     // [已物理移除] performSearch 中的 if (state.galleryOnly) { ... } 过滤数据块，恢复数据库检索只进行基本的过滤（不再参与自适应或网格的媒体剪裁）
     MftReader::instance().setSearchCanceled(true); // 物理通知底层搜寻终止
@@ -94,9 +98,12 @@ void ScanController::performSearch() {
 
     if (m_watcher.isRunning()) {
         m_watcher.cancel();
-        qInfo() << "[ScanController] 取消正在运行的搜索任务";
+        qInfo() << "[TRACE][performSearch] 物理发出取消上一个正在运行的检索任务指令";
     }
-    if (m_sortWatcher.isRunning()) m_sortWatcher.cancel();
+    if (m_sortWatcher.isRunning()) {
+        m_sortWatcher.cancel();
+        qInfo() << "[TRACE][performSearch] 物理发出取消上一个重排序任务指令";
+    }
 
     emit searchStarted();
     
