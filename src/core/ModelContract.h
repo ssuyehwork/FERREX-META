@@ -4,8 +4,22 @@
 #include <QStringList>
 #include <vector>
 #include <cstdint>
+#include <QMetaType>
 
 namespace FERREX {
+
+struct FerrexItemPayload {
+    uint64_t key = 0;              // 唯一 FRN 主键
+    QString name;                  // 文件名
+    QString displayName;           // 【极其重要】前置在数据层算好的截断双行 displayName，杜绝在 paint() 现场做 QTextLayout 等分配！
+    QString fullPath;              // 级联前置计算好、绝对无阻塞的安全路径
+    QString extension;             // 预处理后缀
+    bool isDirectory = false;      // 是否为目录
+    double aspectRatio = 1.0;      // 已经由数据层计算好、过滤好的排版宽高比
+    int thumbStatus = 0;           // 0=普通图标, 1=缩略图就绪
+    bool isManaged = false;        // 关系管理状态
+    bool isEmptyFolder = false;    // 是否为空文件夹
+};
 
 struct ScanFilterState;
 
@@ -43,3 +57,5 @@ enum CommonRole {
 };
 
 } // namespace FERREX
+
+Q_DECLARE_METATYPE(FERREX::FerrexItemPayload)
