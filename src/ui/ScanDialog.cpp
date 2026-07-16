@@ -1152,7 +1152,13 @@ void ScanDialog::onFilterOptionChanged() {
 void ScanDialog::updateStatus(const QString& text, bool scanning, int64_t totalCount) {
     Q_UNUSED(text);
     if (m_titleStatusLabel) {
-        int64_t total = (totalCount >= 0) ? totalCount : MftReader::instance().activeCount();
+        int64_t total = 0;
+        if (totalCount >= 0) {
+            total = totalCount;
+        } else {
+            auto snap = m_controller->snapshot();
+            total = snap ? snap->activeCountCache : 0;
+        }
         m_titleStatusLabel->setText(QString("%1 - %2").arg(scanning ? "SCANNING" : "READY").arg(formatNumber(total)));
         m_titleStatusLabel->setStyleSheet(scanning ? "color: #FF8C00; font-size: 10px; font-weight: bold;" : "color: #46B478; font-size: 10px; font-weight: bold;");
     }
