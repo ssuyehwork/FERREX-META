@@ -12,8 +12,6 @@ JustifiedResultView::JustifiedResultView(QWidget* parent) : IScanResultView(pare
     m_justifiedView->setLayoutMode(JustifiedView::JustifiedMode);
     
     auto* delegate = new ThumbnailDelegate(m_justifiedView);
-    delegate->setHasThumbnailRole(Qt::UserRole + 1);
-    delegate->setPathRole(Qt::UserRole + 3); 
     m_justifiedView->setItemDelegate(delegate);
     
     m_justifiedView->setSelectionMode(QAbstractItemView::ExtendedSelection);

@@ -9,6 +9,7 @@
 #include <QAbstractItemDelegate>
 #include <QTimer>
 #include <algorithm>
+#include "../core/ModelContract.h"
 
 namespace FERREX {
 
@@ -113,13 +114,13 @@ QModelIndex JustifiedView::indexAt(const QPoint& point) const {
 
 void JustifiedView::dataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight, const QList<int>& roles) {
     if (m_layoutMode == GridMode) {
-        // GridMode 模式下宽度高度固定，缩略图的逐步加载（含有宽高比角色变化）完全不影响布局，因此只需在 roles 为空（大重构/搜索重置等全量刷新）时重排
+        // GridMode 模式下宽度高度固定，缩略图的逐步加载（含有含有宽高比角色变化）完全不影响布局，因此只需在 roles 为空（大重构/搜索重置等全量刷新）时重排
         if (roles.isEmpty()) {
             scheduleLayout();
         }
     } else {
         // JustifiedMode 自适应宽高模式下，需要考虑宽高比角色的改变
-        if (roles.isEmpty() || roles.contains(m_aspectRatioRole)) {
+        if (roles.isEmpty() || roles.contains(Qt::UserRole)) {
             scheduleLayout();
         }
     }
@@ -388,7 +389,8 @@ void JustifiedView::doLayout() {
             std::vector<bool> isRegularFlags;
 
             while (i < count) {
-                double origAr = model()->data(model()->index(i, 0), m_aspectRatioRole).toDouble();
+                FerrexItemPayload payload = model()->data(model()->index(i, 0), Qt::UserRole).value<FerrexItemPayload>();
+                double origAr = payload.aspectRatio;
                 bool isReg = (origAr <= 0.0);
                 double ar = origAr;
                 if (ar <= 0.01) ar = 1.0;

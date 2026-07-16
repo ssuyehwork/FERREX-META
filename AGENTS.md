@@ -82,15 +82,17 @@ Step 1 和 Step 2 都跳过了 → 从 Step 1 重新开始
 ❌ 因违规而停止等待用户指令（违规不是停下来的理由，是继续补完的理由）
 ❌ 重新输出已经完成的步骤（浪费用户时间）
 ❌ 道歉后跳回 Step 1 重做
+
+// ===================|===================
+
 三、Analysis_Modification_Plan 文档规范
 3.1 文件命名与存放
-每个话题 / 独立任务对应一个独立文件
+每个话题 / 独立任务对应一个独立文件，一旦创建之后，后期禁止在原文档上上修改，必须创建新的修改方案，以便迭代
 命名规则：Analysis_Modification_Plan-N.md，N 为自增整数，只可取当前最大值 + 1
 统一存放于项目根目录下的 Analysis_Modification_Plan/ 文件夹
 3.2 文件首行格式（强制）
 # <任务核心话题> —— Analysis_Modification_Plan-N.md
 示例：
-
 # SQLite 内存模式初始化崩溃分析 —— Analysis_Modification_Plan-7.md
 3.3 文档必含章节（缺一不可）
 # <任务核心话题> —— Analysis_Modification_Plan-N.md
@@ -128,6 +130,7 @@ Step 1 和 Step 2 都跳过了 → 从 Step 1 重新开始
 2. 必须核对并指出需要新增或调整的命名空间、变量声明位置。
 3. 对方案中涉及的高风险操作（如跨线程调用、异步回调中的 UI 操作）提供显式预警。
 4. 修改代码必须结合上下文来修改代码，做到开箱即用。
+5. 杜绝发生编译错误
 -->
 
 ## 7. Memories.md 合规检查
@@ -159,7 +162,7 @@ Step 1 和 Step 2 都跳过了 → 从 Step 1 重新开始
 以下规则适用于 Jules 输出的每一份方案文档，绝对不可违反：
 
 禁止擅自扩大修改范围 — 方案只能覆盖用户明确授权的问题域，严禁将"顺手修一下"的想法写入方案
-结合上下文，确保开箱即用 — 方案必须考虑现有代码的调用关系与依赖，不得产出孤立的、无法与现有代码集成的方案片段
+结合上下文，确保开箱即用 — 方案必须考虑现有代码的调用关系 with 依赖，不得产出孤立的、无法与现有代码集成的方案片段
 禁止以任何形式输出可直接执行的代码文件 — 方案中的代码片段仅作说明用途，必须以注释或伪代码风格标注
 五、UI 实现规范
 5.1 实现前强制考古规则（Code Archaeology First）
@@ -209,10 +212,96 @@ UI 组件：样式、尺寸、颜色、间距、交互方式
 ❌ 搜索框触发 CoreController::performSearch()
 ❌ 搜索框清空模型或切换视图状态
 ❌ 搜索框走任何独立于 FilterState 的数据加载流程
-七、新增组件规范
-新增组件前，必须查阅 Memories.md 中的标准规范，严格对照执行
-在方案文档的"第 7 节 Memories.md 合规检查"中，逐条列出对照结果
-若 Memories.md 中无对应规范，必须在方案中显式标注"此项无现有规范，建议用户补充"，不得自行制定标准
+
+十、防“泥潭模式”与恶性缝补的工业级开发红线（永久约束）
+为了杜绝开发过程中任何无脑脑补、敷衍了事、以及毁坏全局架构的临时缝补行为，任何接触本项目的 AI 或人类开发者必须铁律遵循以下工业级红线：
+
+10.1 严禁“暗号式魔数”传递：
+- 严禁通过 `Qt::UserRole + N` 等未声明无保障的魔数暗号作为跨模块通信契约。
+- 必须通过在 `src/core/ModelContract.h` 或同等契约文件中声明强类型的数据 Payload 结构体（如 `struct FerrexItemPayload`）并使用 `Q_DECLARE_METATYPE` 注册，确保通信具备 100% 编译期安全检查，杜绝运行期黑魔法及状态漂移。
+
+10.2 严禁将业务引擎吞入 Adapter（瘦身 Model 层）：
+- `ScanTableModel` 等纯数据适配器类严禁吞纳任何非转换职责。
+- 严禁在 Model 内部感知 SSD/HDD 物理硬件、调度多线程工作队列或直接初始化局部线程池。必须将此类业务逻辑高内聚地完全解耦，交由独立的 `ThumbnailManager` 等控制类/单例层进行异步生命周期托管。
+
+10.3 绝对杜绝 UI 读锁与后台写锁的“时间轴防抖”缝补：
+- 绝对禁止让主线程高频递归调用包含读锁的 `MftReader::getFullPath` 等检索逻辑来应对 UI 渲染或事件生成。
+- 必须通过后台工作线程在产生结果集时一次性生成全量或滑动窗口内的 SoA 离线投影快照（`ResultSet` 只读连续向量），使 UI 线程在 `data()` 渲染时的锁竞争彻底降为零，砸碎依靠 QTimer 防抖错开锁冲突的狗皮膏药。
+
+10.4 严格禁止 Delegate 偷看加载状态（无状态同步表现）：
+- 表现层 Delegate 必须对异步加载、缓存队列等业务状态处于“闭眼”状态。
+- 严禁在 Delegate 内部通过 `index.data(Qt::UserRole + 1)` 偷看并判定是否就绪。Delegate 必须直接且无状态地绘制 `Qt::DecorationRole`。由于加载中或变焦调节导致的占位和拉伸源控制，必须对 Delegate 透明地直接由 `ThumbnailManager` 在缓存投影阶段在底层解决并触发刷新。
+
+10.5 dataChanged 信号的严格契约对齐：
+- 在 TableModel 局部更新数据并准备向 View 发送 `dataChanged` 信号时，严禁使用不带参数 of 空信号。
+- 必须显示携带 roles 参数（如 `{ Qt::DisplayRole, Qt::DecorationRole }`），且与 View 端的过滤槽进行 1:1 对齐测试。严禁两端各自为战。
+
+10.6 绝对禁止角色权限外溢导致的“空转挡箭牌”：
+- 极力规避撰写任何 Analysis_Modification_Plan-N.md 报告时的“修改边界”歧义，必须将【Jules 分析师本 Turn 的行为禁令】与【重构方案自身的物理修改范围】进行绝对的原子切分。
+- 严禁把 Jules（作为纯分析师角色）在本 turn 中“禁止修改源码、禁止运行编译”的行为红线，错写为重构方案本身的物理范围。报告必须明文指示执行端 AI 在落实阶段对 C++ 源码（如 `ScanTableModel.cpp`, `JustifiedView.cpp` 等）进行大刀阔斧的重构修改与重新编译。彻底杜绝任何执行 AI 利用此边界歧义作为逃避写代码交付、只做文字敷衍空转的挡箭牌！
+
+十一、工业级开发守则与技术规约（Jules 极致规范）
+为了让 FERREX-META 项目的架构重构能够真正落地，并防止后续开发由于人员变动或紧急需求重新陷入“缝缝补补、职责不清”的泥潭模式，以下通用工业级技术规约作为项目的最高行为红线：
+
+11.1 架构边界与依赖控制规约（Architectural Boundaries）
+- 严禁 基础设施层（如 Core、Mft）直接或间接引入任何 GUI 依赖（如 QIcon、QColor、QPainter）。保持底层核心逻辑与表示层物理隔离。一旦引入 GUI，会导致核心引擎无法进行独立单元测试，且容易引发跨线程的 GUI 渲染崩溃。
+- 严禁 表示层（UI）绕过 ViewModel/Service 直接持有 Core 或 Parser 的实例指针。跨层直接调用会使分层架构形同虚设。UI 会直接承担业务状态机计算，使系统退化回紧耦合状态。
+- 必须 任何数据从 Domain Service 流向 UI 线程时，都必须转化为只读、自包含且不可变的快照投影（Immutable POD Projection）。CQRS（读写分离）的核心。UI 线程只负责“绘制静态投影”，数据不含有任何底层引擎的活动悬空状态，从而切断数据不一致性。
+- 应当 对系统关键行为（如 MFT 扫描、USN 解析、快照读写）定义抽象接口层，面向接口编程。确保在未来需要将 MFT 替换为 Windows Indexing Service 或其他文件系统引擎时，只需更换 Service 实现，无需更改任何界面代码。
+
+11.2 并发、多线程与零锁规约（Concurrency & Lock-Free）
+- GUI 线程黄金法则（The Golden Rule of UI）：
+  - 严禁 在 GUI 主线程进行任何形式的阻塞式 I/O（如 QFile::exists、读取快照、GetFileAttributes）或高开销算法（如千万级元素遍历、正则匹配）。
+  - 必须 保证 GUI 线程在任何生命周期下，申请并持有任意互斥锁（QMutex / std::mutex / QReadWriteLock）的持续时间 < 100μs。
+- 双缓冲更新交换规约（Double-Buffered Swap Rule）：
+  - 必须 在后台线程完成数据筛选、排序和物理属性预取，并生成静态 ResultProjection。
+  - 必须 在交换新旧结果集指针时，利用 Qt 的事件队列投递信号（Qt::QueuedConnection）或使用轻量级的原子读写屏障，将写锁的申请限制在微秒级：
+    ```cpp
+    std::shared_ptr<const ResultSet> snap = std::atomic_load(&m_activeResultSet);
+    // UI 线程随后只引用 snap 进行无阻碍绘制，即便后台正在进行新的检索或 compact 整理
+    ```
+- 硬件资源感知分配（Hardware-Aware Affinity）：
+  - 必须 动态探测宿主物理介质：
+    - 机械硬盘 (HDD)：强制限制所有后台提取器（缩略图、色板、File ID）的最高并发数为 1。
+    - 固态硬盘 (SSD)：允许并发数为 min(4, CPU物理核心数)。
+  - 应当 为耗时 I/O 任务（磁盘读写）与高计算任务（正则、色板合并）分配独立的线程池，避免计算密集型任务饿死 I/O 读写队列。
+
+11.3 内存、资源与生命周期管理机制（Memory & Resource Management）
+- 裸指针安全红线（No Raw Pointer Allocation）：
+  - 严禁 使用 new / delete 进行显式堆内存生命周期管理。所有动态组件分配必须使用 RAII 容器（如 std::unique_ptr、std::shared_ptr、QScopedPointer）。
+  - 必须 预防跨线程回调中的对象 UAF（Use-After-Free）风险。后台异步任务（如 QtConcurrent::run）在引用任何 UI 控件或适配器（ViewModel）时，必须使用 QPointer（弱引用监视器）或 std::weak_ptr 进行安全包裹，并在回调开头进行空值校验。
+- 资源泄露与爆仓阻断（Leak Prevention）：
+  - 必须 对内存敏感的临时资产（如 Pixmap 缩略图、视口缓存）设置软硬件容量上限（QCache::setMaxCost），超出阈值时必须强制由系统自动剔除。
+  - 严禁 在 SoA（结构体数组）的增量变更（如 USN 重命名）中仅做追加而不对原废弃字符串进行物理剔除。在废弃空间累计达到 10 MB 或失效条目数大于 50,000 时，系统必须通过高优先级后台异步任务自动触发 compact 紧凑化算法，物理归并和释放堆碎片。
+
+11.4 异常安全、错误容忍与日志规范（Exception & Logging）
+- 防御性编程（Defensive Programming）：
+  - 严禁 在解析 MFT 扇区或文件 ID 时，对未经验证的二进制数据进行强制指针类型转换。所有缓冲区边界读取必须有严格的断言与 offsetof 偏移保护。
+  - 必须 确保所有涉及 Windows API / Shell COM 组件调用的区域，均有严格的异常/错误捕获机制，并退回到安全兜底路径（例如：缩略图生成失败时，必须在 L2 失败追踪容器中记录并直接返回默认系统图标，阻断任务在同一失效文件上死循环重复拉取）。
+- COM 运行环境保护（Scoped COM Safety）：
+  - 必须 使用 Scoped 卫兵管理 COM 初始化生命周期：
+    ```cpp
+    struct ScopedComInit {
+        ScopedComInit() { CoInitializeEx(NULL, COINIT_APARTMENTTHREADED); }
+        ~ScopedComInit() { CoUninitialize(); }
+    };
+    ```
+- 零日志污染与定位排查规范（Zero-Pollution Logging）：
+  - 严禁 在高频渲染（paintEvent）或 SoA 遍历循环中输出调试日志。
+  - 必须 建立统一分级的日志流，并将日志写入路径锁定在用户的 %APPDATA%，严禁写入处于 MFT 监控中的工作盘符目录，杜绝因写入调试日志而导致 USN 触发无线自激循环的逻辑漏洞。
+
+11.5 极致性能与 API 一致性守则（High-Performance & Consistency）
+- UI 渲染热路径性能红线（Hot Path Constraints）：
+  - 在视图 Delegate 的 paint 逻辑或 TableModel 的 data 逻辑中：
+    - 严禁 发生任何堆分配。
+    - 严禁 临时执行 QString::fromUtf8 或通过 std::string 物理拷贝构造。
+    - 应当 使用 std::wstring_view 或 std::string_view 进行前缀/后缀匹配；字符串拼接必须预先使用 reserve 预分配内存，降低堆内存抖动（Heap Thrashing）。
+- 只读零复制规则（Zero-Copy Rule）：
+  - 在 Core 引擎的查询和数据传输中，严禁 克隆大型数据集实体。Any 结果集传递必须采用 C++ 11 右值移动语义 std::move，或者直接传递 std::shared_ptr，将数据装配和对齐耗时锁死在常数时间 O(1)。
+- API 一致性与 Role 规约（Contract Standard）
+  - 必须 物理隔离全应用的 CommonRole 定义。
+  - 自定义 Model 返回的所有自定义 Role（UserRole 及以上）必须在 ModelContract.h 进行全局唯一注册和声明，严禁在各组件、各类 Delegate 中私自硬编码 Role 偏移，杜绝潜在的跨视图碰撞与解析失效风险。
+
 八、禁止行为清单（Jules 硬红线）
 #	禁止行为	说明
 1	修改任何 .cpp / .h / .qml / .pro / .cmake 等代码文件	角色边界

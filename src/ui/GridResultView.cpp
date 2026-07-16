@@ -12,8 +12,6 @@ GridResultView::GridResultView(QWidget* parent) : IScanResultView(parent) {
     m_justifiedView->setLayoutMode(JustifiedView::GridMode);
     
     auto* delegate = new ThumbnailDelegate(m_justifiedView);
-    delegate->setHasThumbnailRole(Qt::UserRole + 1);
-    delegate->setPathRole(Qt::UserRole + 3);
     m_justifiedView->setItemDelegate(delegate);
     
     m_justifiedView->setSelectionMode(QAbstractItemView::ExtendedSelection);

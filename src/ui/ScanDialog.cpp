@@ -1179,7 +1179,8 @@ void ScanDialog::updateStatusBar() {
         int64_t totalSize = 0;
         auto& reader = MftReader::instance();
         for (const auto& index : selectedRows) {
-            uint64_t key = m_tableModel->data(index, Qt::UserRole).toULongLong();
+            FerrexItemPayload payload = m_tableModel->data(index, Qt::UserRole).value<FerrexItemPayload>();
+            uint64_t key = payload.key;
             int actualIdx = reader.getIndexByKey(key);
             if (actualIdx != -1 && !reader.isDirectory(actualIdx)) totalSize += reader.getSize(actualIdx);
         }
